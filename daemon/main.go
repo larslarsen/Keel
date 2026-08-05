@@ -37,6 +37,8 @@ func main() {
 			os.Exit(runKeys(os.Args[2:]))
 		case "bundle":
 			os.Exit(runBundle(os.Args[2:]))
+		case "sketch":
+			os.Exit(runSketch(os.Args[2:]))
 		case "version":
 			fmt.Println("keel-host", version)
 			os.Exit(0)
