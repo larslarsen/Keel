@@ -432,3 +432,53 @@ their page**, which is the only cause that recurs on a schedule nobody controls.
 Option B, or is shipping page state to the daemon acceptable after all? B is more work up front and
 keeps the bridge small; A is simpler and puts every future change in the daemon. Neither is written
 as a ticket yet.
+
+---
+
+# Appendix — does aggregation actually shrink the problem?
+
+Measured 2026-08-05 against a live 7,187-impression corpus.
+
+| | Count | Per impression |
+|---|---|---|
+| Raw impressions | 7,187 | — |
+| §6.2 tuples (with `day_bucket`) | 4,624 | 0.64 |
+| Same, ignoring `day_bucket` | 4,563 | 0.63 |
+| Distinct `(from, to)` edges | 4,196 | 0.58 |
+
+**Within one user, aggregation compresses by about a third and no more.** The
+ratio is flat as the corpus grows — it did not decline across eight successive
+slices — because one person rarely encounters the same recommendation pair
+twice. Roughly 0.58 of every impression is a brand-new edge.
+
+`day_bucket` is not the culprit: removing it changes almost nothing here, though
+that is partly because this corpus spans two days. Over months it would matter
+more.
+
+## What this means
+
+**The earlier claim that aggregate size grows sub-linearly with users is
+unsupported.** It was reasoning, not measurement: the argument was that the tuple
+space is bounded by videos × videos × buckets, so at scale the same edges recur.
+That may still be true — but *this data cannot show it*, because all compression
+of that kind comes from **cross-user overlap**, and there is only one user here.
+
+So the position is:
+
+- Per-user compression is ~35%. Do not plan around aggregation shrinking the
+  problem.
+- The ~80 TB/year per million users figure stands unless cross-user overlap is
+  large.
+- Whether it is large is **the open question**, and it decides whether §7.3's
+  free channels can carry the published dataset at all.
+
+## How to actually answer it
+
+Two corpora from different people, over the same period, would settle it in
+minutes: aggregate each, then measure how much the union is smaller than the sum.
+That is one number, and it is worth getting before any STAR client is written —
+the whole publication story rests on it.
+
+Failing that, an estimate from YouTube's own structure (how concentrated
+recommendation graphs are) would bound it, but a real measurement from two nodes
+is far better and now costs nothing but a second install.
