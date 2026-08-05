@@ -130,24 +130,32 @@ needs enough reporters to clear a threshold, so a small network can publish
 nothing and can therefore never bootstrap. Early open participation is the
 conventional way out.
 
-**One part of it is not achievable: the deletion.** Content-addressed data that
-any peer has fetched or pinned survives the publisher stopping. There is no
-recall, and this is a property of the transport, not a policy choice. `DESIGN_v2`
-§6 already says so for attributed publication.
+**The deletion step works, on one condition: stay off permanent hosting.**
 
-The consequence is narrow but firm:
+An earlier draft of this ticket claimed publication could not be undone. That is
+true of *archival* infrastructure — IPFS pinning services, Zenodo DOIs, Academic
+Torrents, Internet Archive — where the whole value proposition is that content
+outlives the publisher. It is not true of a node serving files from its own disk.
+If Lars runs the only serving node, deleting the files deletes them.
 
-- For Lars and informed collaborators publishing their own funnels knowingly and
-  permanently, this is a legitimate choice about their own data. Level 4 exists
-  in the design precisely for people who *want* their funnel public.
-- It cannot be offered to early adopters on the understanding that it will later
-  be withdrawn, because that undertaking cannot be honoured.
+This inverts the framing in `DESIGN_v2` §7.3, which treats durable third-party
+hosting as the goal. During bootstrap it is a liability, and the design principle
+is the opposite:
 
-So Level 4 may ship for bootstrap **only** if its consent copy states plainly
-that publication is permanent and irreversible, with no mention of later
-deletion. If that wording is unacceptable, Level 4 should stay unimplemented and
-the overlap sketch above should carry the bootstrap instead — it was designed for
-exactly this gap.
+> **Bootstrap data is served from participants' own disks and nowhere else.** No
+> pinning service, no DOI, no archive. Losing a pilot corpus costs nothing;
+> being unable to withdraw one costs everything. Durable hosting is adopted only
+> once the published artifact is STAR output, which is safe to be permanent.
+
+The residual is ordinary and small: a peer that has already fetched and merged
+holds its own copy, which the publisher cannot reach. During bootstrap the
+fetchers are a handful of known collaborators, so this is the same risk as
+sending a colleague a file — not the un-recallable global archive the earlier
+draft described.
+
+Consent copy should therefore say withdrawal removes the data from distribution
+but cannot reclaim copies already fetched. That is both accurate and a promise
+that can be kept.
 
 Do not raise `MaxImplementedLevel` past 2 in this ticket. Level 4 needs its own
 work order and its own consent review.
