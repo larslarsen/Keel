@@ -87,10 +87,72 @@ this is the choice that is expensive to reverse.
       `SearchVideos` hit counts and `Suggest` graph size before and after.
 - [ ] Transport decision recorded in `DESIGN_v2` or a design note.
 
-## Note for later
+---
 
-Once two nodes exchange catalogues, the cross-user overlap question from
-`DESIGN_BOOTSTRAP`'s aggregation appendix becomes measurable for free — aggregate
-both corpora and compare the union against the sum. That number decides whether
-STAR's output can be published over free channels, so capture it while the test
-setup exists.
+# Part 2 — measuring overlap without publishing edges
+
+Lars is right that catalogue alone compares nothing. It is a shared dictionary,
+not a dataset: the research payload is edges, and so is the cross-user overlap
+number from `DESIGN_BOOTSTRAP`'s aggregation appendix.
+
+But **measuring overlap does not require publishing edges.** Each node computes a
+HyperLogLog sketch over its own edge set; nodes exchange sketches; merging them
+gives `|A ∪ B|`, which against `|A| + |B|` is exactly the number needed.
+
+Why this is the right tool here:
+
+- Sketches are a few KB regardless of corpus size.
+- They cannot be enumerated. An HLL register array answers "roughly how many
+  distinct items" and cannot be reversed into which items — so exchanging one
+  reveals no edge, no video, and no viewing history.
+- It needs no threshold, no population, and no trust in the peer. Two nodes are
+  enough, which means it works *now*, during bootstrap, when STAR cannot.
+
+**Build this alongside the catalogue transport.** It reuses the same peer
+connection, it is small, and it produces the single number that decides whether
+the published dataset can live on free channels at all — a decision currently
+blocking the STAR client design.
+
+Acceptance: two nodes with disjoint-ish corpora exchange sketches and report
+`|A|`, `|B|`, `|A ∪ B|` and the implied overlap fraction, with the estimate
+checked against an exact union computed locally in the test.
+
+---
+
+# Part 3 — the Level 4 bootstrap question (decide, do not build yet)
+
+Lars's plan: during bootstrap, offer "publish everything" (Level 4, full
+attributed funnel), gather a real dataset, then move to STAR once there is a
+population, turning Level 4 off and deleting what was published.
+
+The sequencing reasoning is sound and solves a genuine chicken-and-egg — STAR
+needs enough reporters to clear a threshold, so a small network can publish
+nothing and can therefore never bootstrap. Early open participation is the
+conventional way out.
+
+**One part of it is not achievable: the deletion.** Content-addressed data that
+any peer has fetched or pinned survives the publisher stopping. There is no
+recall, and this is a property of the transport, not a policy choice. `DESIGN_v2`
+§6 already says so for attributed publication.
+
+The consequence is narrow but firm:
+
+- For Lars and informed collaborators publishing their own funnels knowingly and
+  permanently, this is a legitimate choice about their own data. Level 4 exists
+  in the design precisely for people who *want* their funnel public.
+- It cannot be offered to early adopters on the understanding that it will later
+  be withdrawn, because that undertaking cannot be honoured.
+
+So Level 4 may ship for bootstrap **only** if its consent copy states plainly
+that publication is permanent and irreversible, with no mention of later
+deletion. If that wording is unacceptable, Level 4 should stay unimplemented and
+the overlap sketch above should carry the bootstrap instead — it was designed for
+exactly this gap.
+
+Do not raise `MaxImplementedLevel` past 2 in this ticket. Level 4 needs its own
+work order and its own consent review.
+
+**Also flag:** `PRIVACY.md` currently states "nothing is sent today at any
+setting" and describes contribution as not built. Both become false the moment
+this ships. The policy must be updated in the same release, and the extension is
+supposed to announce material changes before they take effect.
