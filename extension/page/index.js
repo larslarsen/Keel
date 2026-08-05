@@ -155,6 +155,7 @@ function selectTab(name) {
     refreshAggregate().catch(() => {});
     wireDiskSlider();
     refreshDisk().catch(() => {});
+    refreshContribution().catch(() => {});
   }
   if (name === "search") el.q.focus();
   if (name === "suggest" && !el.suggestions.children.length) {
@@ -263,6 +264,76 @@ async function loadSuggestions() {
 el.suggestBtn.addEventListener("click", () => loadSuggestions().catch(() => {}));
 
 const MB = 1024 * 1024;
+
+const LEVELS = [
+  {
+    n: 1,
+    name: "Strictly personal",
+    body:
+      "Nothing leaves this device. You get the whole product — search, " +
+      "suggestions, blocking, analysis — and contribute nothing.",
+  },
+  {
+    n: 2,
+    name: "Cohort aggregator",
+    body:
+      "Would send counts of which videos were recommended after which, " +
+      "grouped by rough position and day, with a threshold so anything only " +
+      "you saw stays hidden.",
+  },
+  {
+    n: 3,
+    name: "Transparency contributor",
+    body:
+      "Would publish your full recommendation trails, attributed to you. " +
+      "Anyone — including YouTube — could read them, and they could not be " +
+      "withdrawn once copied.",
+  },
+];
+
+async function refreshContribution() {
+  const wrap = document.getElementById("contrib-levels");
+  const note = document.getElementById("contrib-note");
+  if (!wrap) return;
+  let level = 1;
+  let maxImpl = 1;
+  try {
+    const r = await rpc("GET_CONTRIBUTION");
+    level = r.daemon?.level ?? 1;
+    maxImpl = r.daemon?.max_implemented ?? 1;
+  } catch {
+    return;
+  }
+  note.textContent =
+    maxImpl < 2
+      ? "Keel sends nothing anywhere today. The levels below describe what " +
+        "contributing would mean when it exists; only the first is available."
+      : "Choose how much this node contributes.";
+  wrap.replaceChildren();
+  for (const l of LEVELS) {
+    const avail = l.n <= maxImpl;
+    const row = document.createElement("label");
+    row.className = "contrib" + (avail ? "" : " contrib-off");
+    row.innerHTML =
+      `<input type="radio" name="contrib" value="${l.n}"` +
+      `${l.n === level ? " checked" : ""}${avail ? "" : " disabled"}>` +
+      `<span><strong>${escapeHtml(l.name)}</strong>` +
+      `<span class="meta">${escapeHtml(l.body)}` +
+      (avail ? "" : " <em>Not available yet.</em>") +
+      `</span></span>`;
+    wrap.appendChild(row);
+  }
+  wrap.querySelectorAll('input[name="contrib"]').forEach((el) => {
+    el.addEventListener("change", async () => {
+      try {
+        await rpc("SET_CONTRIBUTION", { level: Number(el.value) });
+      } catch (err) {
+        console.warn("[Keel] contribution", err?.message || err);
+      }
+      await refreshContribution();
+    });
+  });
+}
 
 async function refreshDisk() {
   const slider = document.getElementById("disk-budget");

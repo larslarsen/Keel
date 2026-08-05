@@ -401,6 +401,8 @@ async function handle(message, sender) {
     }
 
     case "THUMBNAIL":
+    case "GET_CONTRIBUTION":
+    case "SET_CONTRIBUTION":
     case "GET_DISK_BUDGET":
     case "SET_DISK_BUDGET": {
       if (!bridge.helloOk) throw new Error("daemon not connected");

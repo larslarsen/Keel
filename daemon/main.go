@@ -143,6 +143,26 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: err.Error(), Code: "thumb_failed"})
 		}
 		return reply(out, env.ID, "THUMBNAIL_RESULT", map[string]any{"video_id": p.VideoID, "data_url": url})
+	case "GET_CONTRIBUTION":
+		return reply(out, env.ID, "CONTRIBUTION_RESULT", map[string]any{
+			"level":           st.ContributionLevel(),
+			"max_implemented": store.MaxImplementedLevel,
+		})
+	case "SET_CONTRIBUTION":
+		var p struct {
+			Level int `json:"level"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: "level required", Code: "bad_payload"})
+		}
+		lv, err := st.SetContributionLevel(p.Level)
+		if err != nil {
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: err.Error(), Code: "bad_level"})
+		}
+		return reply(out, env.ID, "CONTRIBUTION_RESULT", map[string]any{
+			"level":           lv,
+			"max_implemented": store.MaxImplementedLevel,
+		})
 	case "GET_DISK_BUDGET":
 		used, items, err := st.CacheUsage()
 		if err != nil {

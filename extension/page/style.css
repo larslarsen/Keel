@@ -122,3 +122,9 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
   object-fit: cover; border-radius: 6px; background: var(--border);
 }
 .row-text { min-width: 0; flex: 1 1 auto; }
+
+/* Contribution levels (WO-051). Equal weight — no option is nudged. */
+.contrib { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; }
+.contrib span { display: block; }
+.contrib strong { display: block; margin-bottom: 2px; }
+.contrib-off { opacity: 0.55; }
