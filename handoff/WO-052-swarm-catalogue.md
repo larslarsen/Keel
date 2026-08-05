@@ -48,9 +48,31 @@ requests are naturally scoped and small.
 This is the right shape because it makes the useful case cheap: a node needs
 titles for the few dozen videos a walk might surface, not for all of YouTube.
 
-**3. Merge.** Straight into `peer_catalogue`, which already exists and is already
-unioned into search (WO-031) and suggestions (WO-027). No new merge logic — this
-is the consumption path those tables were built for.
+**3. Merge.** Straight into `peer_catalogue` via `ImportEdges`
+(`daemon/store/peers.go:24`), which already handles both tables, replace-not-
+accumulate semantics, and malformed-row rejection. **No merge logic is needed —
+the entire consumption side already exists.** This ticket is fetch only.
+
+### What Level 2 actually buys, and what it does not
+
+`peerGraph()` (`peers.go:155`) queries `peer_edges` exclusively. Nothing in the
+suggestion walk reads `peer_catalogue`.
+
+So catalogue-only sharing improves:
+
+- **Search** — more videos become findable.
+- **Labels** — "channel unknown" rows resolve.
+
+and does **not** improve suggestions at all, because the graph the walk traverses
+never grows. An earlier draft of this ticket listed "suggestions improve
+measurably" as an acceptance criterion; that is unachievable at Level 2 and has
+been removed.
+
+This is the concrete form of the objection that catalogue alone is a dictionary
+rather than a dataset. Prefetching a peer's neighbourhood is the right *fetch
+strategy*, but at Level 2 it can only prefetch labels for videos the local walk
+already reaches. Extending the walk into territory the user has never visited
+requires `peer_edges`, which means Level 3 or 4.
 
 ## Transport — decide before building
 
@@ -83,8 +105,9 @@ this is the choice that is expensive to reverse.
       inspecting what it offers.
 - [ ] No edge data appears in any published artifact; asserted by test.
 - [ ] Published artifacts are content-addressed and signed.
-- [ ] Search and suggestions improve measurably on the receiving node — compare
-      `SearchVideos` hit counts and `Suggest` graph size before and after.
+- [ ] Search improves measurably on the receiving node — compare `SearchVideos`
+      hit counts before and after. **Suggestions are expected not to change**;
+      assert that too, so the boundary is visible rather than mistaken for a bug.
 - [ ] Transport decision recorded in `DESIGN_v2` or a design note.
 
 ---
