@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Keel</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Keel</h1>
+      <p id="daemon-banner" class="banner warn" role="status">
+        Checking desktop app…
+      </p>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-search" aria-selected="true" aria-controls="view-search">
+        Search
+      </button>
+      <button class="tab" role="tab" id="tab-suggest" aria-selected="false" aria-controls="view-suggest">
+        Suggestions
+      </button>
+      <button class="tab" role="tab" id="tab-analysis" aria-selected="false" aria-controls="view-analysis">
+        Analysis
+      </button>
+      <button class="tab" role="tab" id="tab-config" aria-selected="false" aria-controls="view-config">
+        Your data
+      </button>
+    </nav>
+
+    <main>
+      <section id="view-search" role="tabpanel" aria-labelledby="tab-search">
+        <form id="search-form" role="search">
+          <input
+            type="search"
+            id="q"
+            name="q"
+            placeholder="Search everything Keel has seen…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Search the local catalogue"
+          />
+          <button type="submit" class="btn">Search</button>
+        </form>
+        <p class="hint">
+          Every word must match. Quote a phrase to keep it together.
+          Searches only what Keel has observed on this device.
+        </p>
+        <p class="meta" id="search-meta"></p>
+        <ol id="results"></ol>
+      </section>
+
+      <section id="view-suggest" role="tabpanel" aria-labelledby="tab-suggest" hidden>
+        <div class="entropy-row">
+          <label for="entropy">Focus</label>
+          <input type="range" id="entropy" min="0" max="100" step="5" value="35" />
+          <label for="entropy">Serendipity</label>
+          <button type="button" class="btn" id="btn-suggest">Suggest</button>
+        </div>
+        <p class="hint">
+          Walks the videos Keel has seen recommended together. Serendipity
+          favours less-watched videos; focus stays near what you just watched.
+          Observed co-occurrence only — not a claim about why YouTube showed
+          anything.
+        </p>
+        <p class="meta" id="suggest-meta"></p>
+        <ol id="suggestions"></ol>
+      </section>
+
+      <section id="view-analysis" role="tabpanel" aria-labelledby="tab-analysis" hidden>
+        <p class="hint">
+          Counts of what Keel observed. Nothing here claims to know why
+          YouTube showed you anything.
+        </p>
+        <div class="stats" id="an-stats"></div>
+        <div id="analysis-body"></div>
+      </section>
+
+      <section id="view-config" role="tabpanel" aria-labelledby="tab-config" hidden>
+        <div class="stats" id="stats">
+          <div><strong id="stat-total">—</strong><span>impressions</span></div>
+          <div><strong id="stat-watch">—</strong><span>WATCH_NEXT</span></div>
+          <div><strong id="stat-home">—</strong><span>HOME</span></div>
+        </div>
+        <p class="meta" id="time-range"></p>
+        <p class="meta" id="channel-note"></p>
+
+        <h2>Export</h2>
+        <p class="meta">
+          Writes every row, every column, to a file on this device. Nothing is
+          sent anywhere.
+        </p>
+        <div class="btn-row">
+          <button type="button" class="btn" id="btn-export">Export</button>
+          <button type="button" class="btn" id="btn-wipe">Wipe</button>
+        </div>
+        <p class="meta" id="data-status" role="status"></p>
+        <h2>What leaves this device</h2>
+        <p class="meta" id="aggregate-note"></p>
+        <p class="meta">
+          Only the grouped counts above are ever shared — never the raw rows.
+          Exact positions and timestamps are dropped before anything leaves.
+        </p>
+
+        <h2>Disk space</h2>
+        <p class="meta">
+          Cached thumbnails only. Your observations are never deleted to make
+          room — they are the part that cannot be re-fetched.
+        </p>
+        <div class="entropy-row">
+          <input type="range" id="disk-budget" min="16" max="4096" step="16" value="256" />
+          <span class="meta" id="disk-label"></span>
+        </div>
+
+        <div id="wipe-confirm" class="confirm" hidden>
+          <p id="wipe-confirm-text"></p>
+          <div class="btn-row">
+            <button type="button" class="btn btn-danger" id="btn-wipe-confirm">
+              Delete everything
+            </button>
+            <button type="button" class="btn" id="btn-wipe-cancel">Cancel</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

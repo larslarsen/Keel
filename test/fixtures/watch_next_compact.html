@@ -1,0 +1,44 @@
+<!-- Historical ytd-compact-video-renderer rail (legacy watch-next).
+     IDs from real public videos; middle card intentionally title-less for
+     slot_index gap coverage. See test/README.md. -->
+<div id="related">
+  <ytd-watch-next-secondary-results-renderer>
+    <div id="items">
+      <ytd-compact-video-renderer>
+        <a id="thumbnail" href="/watch?v=dQw4w9WgXcQ" title="Never Gonna Give You Up">
+          <ytd-thumbnail-overlay-time-status-renderer>
+            <span id="text">3:32</span>
+          </ytd-thumbnail-overlay-time-status-renderer>
+        </a>
+        <a id="video-title" href="/watch?v=dQw4w9WgXcQ" title="Never Gonna Give You Up">Never Gonna Give You Up</a>
+        <ytd-channel-name>
+          <a href="/channel/UCuAXFkgsw1L7xaCfnd5JJOw">Rick Astley</a>
+        </ytd-channel-name>
+        <div id="metadata-line">
+          <span>1.5B views</span>
+          <span>15 years ago</span>
+        </div>
+      </ytd-compact-video-renderer>
+      <ytd-compact-video-renderer>
+        <!-- Missing title → failure; must leave slot gap -->
+        <a id="thumbnail" href="/watch?v=oHg5SJYRHA0"></a>
+        <ytd-channel-name>
+          <a href="/channel/UCuAXFkgsw1L7xaCfnd5JJOw">Rick Astley</a>
+        </ytd-channel-name>
+      </ytd-compact-video-renderer>
+      <ytd-compact-video-renderer>
+        <a id="thumbnail" href="/watch?v=jNQXAC9IVRw">
+          <span id="text">0:19</span>
+        </a>
+        <a id="video-title" title="Me at the zoo">Me at the zoo</a>
+        <ytd-channel-name>
+          <a href="/channel/UC4QobU6STFB0P71PMvOGN5A">jawed</a>
+        </ytd-channel-name>
+        <div id="metadata-line">
+          <span>300M views</span>
+          <span>20 years ago</span>
+        </div>
+      </ytd-compact-video-renderer>
+    </div>
+  </ytd-watch-next-secondary-results-renderer>
+</div>

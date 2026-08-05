@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Keel</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="header-row">
+        <h1>Keel</h1>
+        <p id="daemon-banner" class="banner warn" role="status">
+          Checking desktop app…
+        </p>
+        <span class="header-actions">
+          <button
+            type="button"
+            class="btn-icon"
+            id="btn-hide-rail"
+            title="Hide YouTube's suggestions"
+            aria-label="Hide YouTube's suggestions"
+            aria-pressed="false"
+          >
+          <!-- Inline SVG: eye-off when active (hiding), eye when off. No font/image. -->
+          <svg
+            id="hide-icon"
+            class="btn-icon-svg"
+            viewBox="0 0 24 24"
+            width="12"
+            height="12"
+            aria-hidden="true"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              class="icon-eye"
+              d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
+            />
+            <circle class="icon-eye" cx="12" cy="12" r="3" />
+            <path class="icon-slash" d="M3 3l18 18" />
+          </svg>
+        </button>
+        <a
+          class="btn-icon"
+          id="link-full-page"
+          href="../page/index.html"
+          target="_blank"
+          rel="noreferrer"
+          title="Open Keel in a full tab (search, your data)"
+          aria-label="Open Keel in a full tab"
+          >⤢</a
+        >
+        </span>
+      </div>
+    </header>
+
+    <section class="panel panel-primary">
+      <h2>Our suggestions</h2>
+      <div class="entropy-row" title="Focus keeps suggestions near the current video; Serendipity wanders further">
+        <span class="entropy-label">Focus</span>
+        <input type="range" id="entropy" min="0" max="100" step="5" value="60" aria-label="Focus or serendipity" />
+        <span class="entropy-label">Serendipity</span>
+      </div>
+      <p class="meta" id="suggest-meta">Open a watch page to begin.</p>
+      <ol id="list"></ol>
+    </section>
+
+    <details class="panel panel-fold">
+      <summary>Counts</summary>
+      <div class="fold-body">
+        <div class="row">
+          <span class="fold-spacer"></span>
+          <button type="button" class="btn" id="btn-refresh">Refresh</button>
+        </div>
+        <div class="stats" id="stats">
+          <div><strong id="stat-total">—</strong><span>impressions</span></div>
+          <div><strong id="stat-watch">—</strong><span>WATCH_NEXT</span></div>
+          <div><strong id="stat-home">—</strong><span>HOME</span></div>
+        </div>
+        <p class="meta" id="time-range"></p>
+        <p class="meta" id="channel-note">
+          Channel IDs are reliable for first-paint rail cards only. Cards loaded by
+          scrolling often have no channel in the page markup, so channel analysis
+          is incomplete unless you account for unknowns.
+        </p>
+        <p class="meta">
+          Header icon hides YouTube’s suggestion rail; hidden items are still recorded.
+        </p>
+      </div>
+    </details>
+
+    <details class="panel panel-fold">
+      <summary>Blocked channels</summary>
+      <div class="fold-body">
+        <p class="meta" id="block-note">
+          Blocking is stored in Keel’s desktop app. Blocked channels are hidden
+          from this list only — they are still recorded in your local corpus.
+          YouTube’s page is not modified. Rows without a known channel ID cannot
+          be filtered here.
+        </p>
+        <label class="field" for="block-input">
+          <span class="field-label">Add channel ID (UC…)</span>
+          <div class="btn-row" style="margin-top: 0">
+            <input
+              id="block-input"
+              class="text-input"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="UCxxxxxxxxxxxxxxxxxxxxxx"
+            />
+            <button type="button" class="btn" id="btn-block-add">Block</button>
+          </div>
+        </label>
+        <ul id="block-list" class="block-list"></ul>
+      </div>
+    </details>
+
+    <details class="panel panel-fold">
+      <summary>Your data</summary>
+      <div class="fold-body">
+        <p class="meta">
+          Observations live only on this device (desktop app). Export writes a
+          JSON file to your Downloads folder. Wipe removes every stored
+          recommendation permanently.
+        </p>
+        <div class="btn-row">
+          <button type="button" class="btn" id="btn-export">Export</button>
+          <button type="button" class="btn" id="btn-wipe">Wipe</button>
+        </div>
+        <p class="meta" id="data-status" role="status"></p>
+        <div id="wipe-confirm" class="confirm" hidden>
+          <p class="confirm-body" id="wipe-confirm-text"></p>
+          <div class="btn-row">
+            <button type="button" class="btn btn-danger" id="btn-wipe-confirm">
+              Delete everything
+            </button>
+            <button type="button" class="btn" id="btn-wipe-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

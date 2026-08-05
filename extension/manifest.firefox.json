@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "Keel",
+  "version": "0.1.0",
+  "description": "See and control how YouTube recommends videos to you.",
+  "permissions": [
+    "storage",
+    "nativeMessaging",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://www.youtube.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.youtube.com/*"
+      ],
+      "js": [
+        "content/bootstrap.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/observer.js",
+        "content/extract.js",
+        "content/extract_yt.js",
+        "content/hide.js",
+        "lib/prefs.js",
+        "lib/browser.js",
+        "lib/protocol.js"
+      ],
+      "matches": [
+        "*://www.youtube.com/*"
+      ]
+    }
+  ],
+  "sidebar_action": {
+    "default_panel": "sidepanel/index.html",
+    "default_title": "Open Keel"
+  },
+  "background": {
+    "scripts": [
+      "background/sw.js"
+    ],
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Keel"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "keel@local",
+      "strict_min_version": "121.0"
+    }
+  }
+}

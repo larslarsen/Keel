@@ -1,0 +1,537 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+:root {
+  color-scheme: light dark;
+  --bg: #0f1115;
+  --panel: #181b22;
+  --border: #2a2f3a;
+  --text: #e8eaed;
+  --muted: #9aa0a6;
+  --accent: #8ab4f8;
+  --ok: #81c995;
+  --warn: #fdd663;
+  --warn-bg: #3c3420;
+  --font: system-ui, sans-serif;
+  --mono: ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8f9fa;
+    --panel: #fff;
+    --border: #dadce0;
+    --text: #202124;
+    --muted: #5f6368;
+    --accent: #1a73e8;
+    --ok: #188038;
+    --warn: #e37400;
+    --warn-bg: #fef7e0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* WO-017: document scrolls with content — do not pin height to the viewport. */
+body {
+  margin: 0;
+  padding: 12px;
+  font: 13px/1.45 var(--font);
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.banner {
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.banner.warn {
+  background: var(--warn-bg);
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
+  color: var(--text);
+}
+
+.banner.ok {
+  background: color-mix(in srgb, var(--ok) 14%, var(--panel));
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.field-label {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.field select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+/* Primary surface: natural height; whole panel document scrolls (WO-017). */
+.panel-primary {
+  flex: 0 0 auto;
+}
+
+/* Focus↔Serendipity control (WO-046). One compact row — the panel was just
+   decluttered (WO-041) and must not fill up again. */
+.entropy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+
+.entropy-label {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+#entropy {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+/* Collapsed utility sections — native details, closed by default (WO-014). */
+.panel-fold {
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.panel-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  user-select: none;
+}
+
+.panel-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel-fold > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  width: 1em;
+}
+
+.panel-fold[open] > summary::before {
+  content: "▾ ";
+}
+
+.panel-fold > summary:hover {
+  color: var(--text);
+}
+
+.panel-fold .fold-body {
+  padding: 0 12px 12px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.row h2 {
+  margin: 0;
+}
+
+.fold-spacer {
+  flex: 1;
+}
+
+.stats {
+  display: grid;
+  /* Panel width is the user's — they drag it. Let the stat tiles reflow
+     instead of pinning two columns that squash at narrow widths. */
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.stats div {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stats strong {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.meta {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  /* Natural full height — no nested scroll (WO-017). */
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-icon {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.header-row .btn-icon { width: 20px; height: 20px; font-size: 13px; }
+.header-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+.header-row .banner {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.btn-icon:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.btn-icon[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--text);
+}
+
+.btn-icon-svg .icon-slash {
+  display: none;
+}
+
+.btn-icon[aria-pressed="true"] .icon-slash {
+  display: block;
+}
+
+#list li {
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+#list .title {
+  font-weight: 560;
+  margin: 0 0 4px;
+}
+
+#list .sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* channel_id is nullable — don't render a bare "null" */
+#list .sub .unknown {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.btn-danger {
+  border-color: color-mix(in srgb, #e57373 50%, var(--border));
+  background: color-mix(in srgb, #e57373 18%, var(--panel));
+}
+
+.confirm {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.confirm-body {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+#data-status {
+  word-break: break-all;
+}
+
+#data-status.err {
+  color: var(--warn);
+}
+
+.text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.block-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.block-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.block-list .btn {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+#list .btn-block {
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.btn-why {
+  width: 26px;
+  height: 26px;
+}
+
+.explain {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 70%, var(--panel));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.explain-body {
+  margin: 0 0 6px;
+}
+
+.explain-body.err {
+  color: var(--warn);
+}
+
+.explain-label {
+  margin: 6px 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.explain-ctx {
+  margin: 0 0 6px;
+  padding-left: 1.1em;
+}
+
+.explain-ctx li {
+  margin: 0 0 3px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+}
+
+.explain-meta {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+/* Narrow panel: the user may drag this well under 300px to give the
+   YouTube player room. Keep it legible rather than merely not-broken. */
+@media (max-width: 280px) {
+  body {
+    padding: 8px;
+  }
+  .stats strong {
+    font-size: 1.15rem;
+  }
+  #list .title {
+    font-size: 12px;
+  }
+  #list .sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Thumbnails (WO-039). Fixed box so a slow or missing image never reflows. */
+#list .row-main { display: flex; gap: 8px; align-items: flex-start; }
+#list .thumb {
+  flex: 0 0 auto; width: 96px; height: 54px;
+  object-fit: cover; border-radius: 5px; background: var(--border);
+}
+#list .thumb-wrap {
+  flex: 0 0 auto; width: 96px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+}
+#list .thumb-wrap .thumb { width: 100%; }
+/* LIVE pill, YouTube-style: red badge over the thumbnail's lower-left. */
+#list .thumb-box { position: relative; }
+#list .thumb-box .thumb { display: block; }
+#list .live {
+  position: absolute; left: 4px; bottom: 4px;
+  background: #ff0000; color: #fff;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  line-height: 1.3; padding: 1px 5px; border-radius: 3px;
+}
+#list .chan {
+  font-size: 10px; line-height: 1.2; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 0 2px;
+}
+#list .row-text { min-width: 0; flex: 1 1 auto; }
+#list .title a { color: inherit; text-decoration: none; }
+#list .title a:hover { text-decoration: underline; }
+@media (max-width: 280px) {
+  #list .thumb { width: 64px; height: 36px; }
+  #list .thumb-wrap { width: 64px; }
+}
+
+/* Declutter (WO-041): buttons in a right-edge column, sub-line ellipsizes. */
+#list .sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#list .row-actions {
+  flex: 0 0 auto;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#list .slot {
+  color: var(--muted); font-variant-numeric: tabular-nums;
+  font-size: 11px; margin-right: 2px;
+}
+#list .btn-icon { padding: 2px; line-height: 0; }
+#list .btn-why, #list .btn-block { width: 20px; height: 20px; }
+#list .btn-icon svg { width: 12px; height: 12px; }

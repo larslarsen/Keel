@@ -1,0 +1,21 @@
+{
+  "name": "keel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Keel — local feed control and recommendation transparency",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/**/*.test.js",
+    "test:daemon": "cd daemon && go test ./...",
+    "manifest:chrome": "cp extension/manifest.chrome.json extension/manifest.json",
+    "manifest:firefox": "cp extension/manifest.firefox.json extension/manifest.json",
+    "prepare:chrome": "npm run manifest:chrome",
+    "prepare:firefox": "npm run manifest:firefox"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.9"
+  }
+}
