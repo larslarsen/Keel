@@ -15,8 +15,28 @@ control for how much this node contributes.
 | Level | Name | What leaves the device |
 |---|---|---|
 | **1** | Strictly Personal | **Nothing.** Full local product — search, suggestions, blocks, analysis. |
-| **2** | Cohort Aggregator | STAR-aggregated edge counts only (`DESIGN_v2` §6.2 tuple). Threshold-protected. |
-| **3** | Transparency Contributor | Full funnel state, publicly attributed and **not retractable once mirrored**. |
+| **2** | Catalogue Only | Video metadata — title, channel, length, view count. **No edges.** |
+| **3** | Cohort Aggregator | Catalogue plus STAR-aggregated edge counts (`DESIGN_v2` §6.2). Threshold-protected. |
+| **4** | Transparency Contributor | Full funnel state, publicly attributed and **not retractable once mirrored**. |
+
+### Level 2 added 2026-08-05 — deviates from `masterplan.md`
+
+`masterplan.md` defines three levels. This adds a fourth, and renumbers, because
+`DESIGN_BOOTSTRAP` §1 splits the corpus into two things with very different
+sensitivity:
+
+- **Catalogue** — facts about public videos. Bounded (~0.1–0.5 TB/year), and the
+  part that makes search work for everyone.
+- **Edges** — which video was recommended after which. Unbounded
+  (~80 TB/year per million users) and an observation of a person.
+
+Sharing one without the other is coherent and useful, so it should be offerable.
+
+**State the residual honestly:** a catalogue contribution from one person is
+still the set of videos they encountered. Far weaker than the edges — no
+structure, no positions, no ordering — but not nothing, and the UI says so.
+
+`masterplan.md` should be updated to match, or this deviation recorded there.
 
 ## Non-negotiables
 

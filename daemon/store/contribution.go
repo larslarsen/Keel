@@ -3,9 +3,16 @@
 //
 // How much this node contributes, per masterplan.md:
 //
-//	1 — Strictly Personal:      nothing leaves the device
-//	2 — Cohort Aggregator:      STAR-aggregated edge counts only (§6.2)
-//	3 — Transparency Contributor: full funnel state, publicly attributed
+//	1 — Strictly Personal:        nothing leaves the device
+//	2 — Catalogue Only:           video metadata, no recommendation edges
+//	3 — Cohort Aggregator:        catalogue + STAR-aggregated edge counts (§6.2)
+//	4 — Transparency Contributor: full funnel state, publicly attributed
+//
+// Level 2 exists because DESIGN_BOOTSTRAP §1 splits the corpus in two: the
+// catalogue is public fact about public videos, while the edges are an
+// observation of a person. Someone can help build the shared catalogue — the
+// part that makes search work for everyone — without exposing which videos were
+// recommended to them after which.
 //
 // The level lives here rather than in browser storage because the daemon is the
 // only component that could ever send anything; the extension merely displays
@@ -30,10 +37,12 @@ const (
 	// No feature may ever be gated above it — that would make the privacy
 	// promise a toll booth.
 	LevelPersonal = 1
-	// LevelCohort submits STAR-aggregated counts. Not implemented.
-	LevelCohort = 2
+	// LevelCatalogue shares video metadata only — no edges. Not implemented.
+	LevelCatalogue = 2
+	// LevelCohort adds STAR-aggregated edge counts. Not implemented.
+	LevelCohort = 3
 	// LevelTransparency publishes attributable funnel state. Not implemented.
-	LevelTransparency = 3
+	LevelTransparency = 4
 
 	metaContributionKey = "contribution_level"
 )
@@ -68,7 +77,7 @@ func (s *Store) ContributionLevel() int {
 // aspiration — a stored 2 with no STAR client is a setting that lies.
 func (s *Store) SetContributionLevel(level int) (int, error) {
 	if level < LevelPersonal || level > LevelTransparency {
-		return 0, fmt.Errorf("contribution level must be 1, 2 or 3")
+		return 0, fmt.Errorf("contribution level must be 1, 2, 3 or 4")
 	}
 	if level > MaxImplementedLevel {
 		return 0, fmt.Errorf(

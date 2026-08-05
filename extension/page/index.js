@@ -276,22 +276,30 @@ const LEVELS = [
   },
   {
     n: 2,
+    name: "Catalogue only",
+    body:
+      "Would share facts about the videos themselves — title, channel, " +
+      "length, view count — and never which video was recommended after " +
+      "which. This is the part that makes search work for everyone. It still " +
+      "reveals which videos you came across, but not how you got there.",
+  },
+  {
+    n: 3,
     name: "Cohort aggregator",
     body:
-      "Would send counts of which videos were recommended after which, " +
+      "Would add counts of which videos were recommended after which, " +
       "grouped by rough position and day, with a threshold so anything only " +
       "you saw stays hidden.",
   },
   {
-    n: 3,
+    n: 4,
     name: "Transparency contributor",
     body:
       "Would publish your full recommendation trails, attributed to you. " +
       "YouTube already knows what it showed you — what changes is that " +
       "everyone else would too, and that YouTube would know you are the one " +
       "publishing it. Researchers running similar projects on other platforms " +
-      "have been retaliated against. " +
-      "Cannot be withdrawn once copied.",
+      "have been retaliated against. Cannot be withdrawn once copied.",
   },
 ];
 
