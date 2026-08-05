@@ -308,7 +308,7 @@ async function refreshConsent() {
   const on = v === "granted";
   row.textContent = on
     ? "Keel is recording the recommendations YouTube shows you, to this device only."
-    : "Keel is not recording. Everything else still works.";
+    : "Keel is not recording, so it has nothing to search, suggest or analyse.";
   btn.textContent = on ? "Stop recording" : "Start recording";
   btn.onclick = async () => {
     await rpc("SET_CONSENT", { consent: on ? "declined" : "granted" });
