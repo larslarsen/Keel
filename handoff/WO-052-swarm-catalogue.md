@@ -53,26 +53,31 @@ titles for the few dozen videos a walk might surface, not for all of YouTube.
 accumulate semantics, and malformed-row rejection. **No merge logic is needed —
 the entire consumption side already exists.** This ticket is fetch only.
 
-### What Level 2 actually buys, and what it does not
+### CORRECTION — this ticket had the wrong model of Level 2
 
-`peerGraph()` (`peers.go:155`) queries `peer_edges` exclusively. Nothing in the
-suggestion walk reads `peer_catalogue`.
+Two earlier drafts defined Level 2 as catalogue-only and concluded suggestions
+could not improve. That was this ticket's own invention. `DESIGN_BOOTSTRAP` §5d
+already specifies the real mechanism, and it is different.
 
-So catalogue-only sharing improves:
+**Consumption is not gated by contribution level.** §5d: suggestions work "out of
+the box for every user — no download, no local graph, no centralised service."
+Block fetch and background prewarm are available at *every* level, Level 1
+included. The contribution level governs what a user's **own observations** do,
+not what the daemon may fetch.
 
-- **Search** — more videos become findable.
-- **Labels** — "channel unknown" rows resolve.
+**Blocks are edges, not catalogue.** A block is `neighbours(v)` keyed by
+`context_video_id`. Fetching one writes rows that `peerGraph()`
+(`daemon/store/peers.go:155`) reads, so the walk does grow past where the user
+has personally been.
 
-and does **not** improve suggestions at all, because the graph the walk traverses
-never grows. An earlier draft of this ticket listed "suggestions improve
-measurably" as an acceptance criterion; that is unachievable at Level 2 and has
-been removed.
+So Level 2 is not "publish your catalogue." It is **mirror and serve the public
+aggregate** — the node holds blocks it has cached and serves them to others,
+contributing storage and bandwidth rather than observations. Nothing personal
+leaves, which is what makes it the natural second rung.
 
-This is the concrete form of the objection that catalogue alone is a dictionary
-rather than a dataset. Prefetching a peer's neighbourhood is the right *fetch
-strategy*, but at Level 2 it can only prefetch labels for videos the local walk
-already reaches. Extending the walk into territory the user has never visited
-requires `peer_edges`, which means Level 3 or 4.
+The disk-space slider Lars asked for is the control surface for exactly this: it
+sizes the LRU cache of §5d step 2, which is simultaneously what the user gets
+(warm hops) and what they give (blocks others can fetch).
 
 ## Transport — decide before building
 
@@ -105,9 +110,12 @@ this is the choice that is expensive to reverse.
       inspecting what it offers.
 - [ ] No edge data appears in any published artifact; asserted by test.
 - [ ] Published artifacts are content-addressed and signed.
-- [ ] Search improves measurably on the receiving node — compare `SearchVideos`
-      hit counts before and after. **Suggestions are expected not to change**;
-      assert that too, so the boundary is visible rather than mistaken for a bug.
+- [ ] Search and suggestions both improve on the receiving node — `SearchVideos`
+      hit counts and `Suggest` graph size, before and after.
+- [ ] A Level 1 node still fetches blocks and still gets working suggestions,
+      per §5d. Consumption must not be gated on contribution.
+- [ ] Background prewarm fires on watch-page load, before the panel's SUGGEST
+      arrives, and is observable in a log or counter.
 - [ ] Transport decision recorded in `DESIGN_v2` or a design note.
 
 ---
@@ -131,27 +139,19 @@ Why this is the right tool here:
 - It needs no threshold, no population, and no trust in the peer. Two nodes are
   enough, which means it works *now*, during bootstrap, when STAR cannot.
 
-## Sketches are also how the crawl picks peers
+## Sketches: for the measurement only
 
-This is the reason to build sketching first rather than treating it as a
-measurement side-quest.
+An earlier draft claimed sketches were also the crawl's peer-selection primitive.
+They are not needed for that. §5d addresses blocks by `context_video_id`, so a
+prewarm already knows precisely which block it wants; there is nothing to rank.
+Peer selection is a DHT-lookup problem, not an overlap-estimation problem.
 
-The neighbour crawl has to answer "which peers are worth asking?" Without an
-answer it either asks everyone — which does not scale and leaks interest in every
-direction — or picks arbitrarily. A sketch of a peer's video set, merged against
-the sketch of the walk's current neighbourhood, estimates overlap in a few KB.
-That estimate *is* graph proximity, and it is the routing metric the crawl needs.
+Sketches remain worth building for the research question — and §5d names that
+question as the gate: *"Cross-user dedup factor — the gate before STAR... Resolve
+this before committing STAR."*
 
-So one primitive does two jobs:
-
-1. **Routing** — rank peers by estimated overlap with where the user currently
-   is, and ask the top few.
-2. **Research** — the same merge, run across whole corpora, yields the
-   cross-user overlap figure that decides whether published output fits on free
-   channels.
-
-**Build it alongside the catalogue transport**, before the crawl's peer-selection
-logic, since that logic depends on it.
+They are the cheapest way to resolve it, because two nodes can exchange sketches
+and get `|A ∪ B|` without either publishing an edge.
 
 ## Why not private set intersection
 
