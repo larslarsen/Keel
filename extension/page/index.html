@@ -88,8 +88,14 @@
 
         <h2>Export</h2>
         <p class="meta">
-          Writes every row, every column, to a file on this device. Nothing is
-          sent anywhere.
+          <strong>Export</strong> writes every row and column to a file on this
+          device. Nothing is sent anywhere.
+        </p>
+        <p class="meta">
+          <strong>Wipe</strong> permanently deletes every observation Keel has
+          recorded — every video, position and count — and shrinks the database
+          file on disk. It cannot be undone, and it does not change anything
+          YouTube knows about you. Your settings and blocklist are kept.
         </p>
         <div class="btn-row">
           <button type="button" class="btn" id="btn-export">Export</button>
@@ -101,6 +107,13 @@
         <p class="meta">
           Only the grouped counts above are ever shared — never the raw rows.
           Exact positions and timestamps are dropped before anything leaves.
+        </p>
+        <p class="meta">
+          Nothing leaves this device today. When contributing becomes possible,
+          counts will be sent under threshold encryption: your report stays
+          sealed unless enough other people report the same thing, so anything
+          only you saw can never be read. That is not built yet — and until it
+          is, <strong>nothing is sent at all</strong>.
         </p>
 
         <h2>Contributing</h2>
