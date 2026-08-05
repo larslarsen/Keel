@@ -55,9 +55,10 @@ func runKeys(args []string) int {
 	fmt.Printf("fingerprint %s\n", fingerprint(pub))
 	fmt.Printf("public key  %s\n", pub)
 	fmt.Println()
-	fmt.Println("The fingerprint identifies the key used to sign published releases.")
-	fmt.Println("A signature proves the release was not altered and came from this key;")
-	fmt.Println("it does not prove the key belongs to a person or that observations are true.")
+	fmt.Println("Give the fingerprint to anyone importing your bundles so they can")
+	fmt.Println("check it matches. A signature proves the bundle was not altered and")
+	fmt.Println("came from this key — it does not prove the key belongs to you, and it")
+	fmt.Println("does not make the observations inside true.")
 	fmt.Println()
 	fmt.Println("The private key never leaves this machine.")
 	return 0

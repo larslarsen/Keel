@@ -6,9 +6,8 @@
 // wrote themselves. Authorship needs a signature, which is what DESIGN_v2 §7.3
 // specifies for release manifests (`manifest.sig`, ed25519 over the manifest).
 //
-// This applies the same posture to exported release bundles, over the same
-// canonical bytes bundle.go already hashes, so the two layers compose rather
-// than duplicate.
+// This applies the same posture to peer bundles, over the same canonical bytes
+// bundle.go already hashes, so the two layers compose rather than duplicate.
 //
 // What a signature does and does not establish:
 //

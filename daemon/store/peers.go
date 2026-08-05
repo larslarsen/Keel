@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Peer data: consuming another node's measurements (WO-027, WO-047).
+// Peer data: importing another node's measurements (WO-027).
 //
-// Person-to-person import is rejected; this is the consumption path for a
-// published release (DESIGN_v2 §7.3). Imported rows live in their own tables
-// and never merge into `impressions`. That separation is load-bearing: "what
-// YouTube showed me" has to stay a statement about this machine, or every
-// figure the project publishes becomes unciteable. Suggestions draw on the
-// merged graph; analysis does not.
+// Imported rows live in their own tables and never merge into `impressions`.
+// That separation is load-bearing: "what YouTube showed me" has to stay a
+// statement about this machine, or every figure the project publishes becomes
+// unciteable. Suggestions draw on the merged graph; analysis does not.
 package store
 
 import (

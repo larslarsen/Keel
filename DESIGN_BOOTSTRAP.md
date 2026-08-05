@@ -162,7 +162,7 @@ No shared live write path, and no server for the part users actually touch.
 
 | | Catalogue | Funnel edges |
 |---|---|---|
-| Size | Bounded by YouTube's catalogue; one row per video, deduped — **~0.1–0.5 TB/year** (§5c) | One row per observation per user — unbounded, grows with users × browsing — **~80 TB/year per million users** (§5c) |
+| Size | Bounded by YouTube's catalogue; one row per video, deduped | One row per observation per user — unbounded, grows with users × browsing |
 | Spam resistance | Rows are **verifiable against YouTube** — a fake title is checkable | A fabricated edge is not distinguishable from a real one |
 | Access control | Not needed; every row is public fact | Needed; rows are observations of people |
 | Replication burden | Every peer holding the full catalogue is reasonable | Every peer holding every observation is what §7.3 says does not scale |
@@ -175,139 +175,6 @@ is weak evidence it is the right seam.
 If that holds, stage 5 becomes: catalogue in the swarm, funnel aggregates through STAR. No
 contradiction, and no server for the part users actually touch.
 
-## 5c. How big this gets — sized 2026-08-04
-
-§5b's objection — "every peer holds every observation, disks fill" — is quantifiable, so it does not
-have to be taken on faith. Fermi estimate, **metadata only** (Keel fetches thumbnails on demand,
-WO-040; no video bytes ever enter the corpus).
-
-**Assumptions.** Per-record: catalogue row ~200 B (video_id, title, channel, duration, view count,
-date); edge row ~50 B (context → video, count, slot stats); observation row ~220 B. YouTube (2026):
-~5 B discoverable videos, ~1 B hrs watched/day ≈ 5 B views/day, Shorts ≈ 75% of views by count.
-Keel observes long-form watch/home/search only — Shorts would be a large separate term. **The product
-is English-first, and YouTube's rails are largely language-locked, so the catalogue and graph scale
-with the *English* active inventory (~20–30% of global; music is the leaky cross-language category).
-Read the top two table rows low-side — the global-inventory figures above would overshoot.**
-
-| Dataset | What it feeds | 30 days | 90 days | 1 year |
-|---|---|---|---|---|
-| **Catalogue** (distinct videos watched or suggested, deduped) | Search | ~0.3–0.6 B rows · **60–120 GB** | ~0.5–1 B · **100–200 GB** | ~1.5–2.5 B · **300–500 GB** |
-| **Edge graph** (deduped co-recommendation edges + counts) | SUGGEST walk | ~30–40 B edges · **~2 TB** | ~60–100 B · **3–8 TB** | ~300–700 B · **15–35 TB** |
-| **Funnel stream** (every observation, all levels — **never stored centrally**) | Feeds the two above via STAR; discarded on aggregation | ~6 TB @ 1 M users | ~20 TB @ 1 M users | ~80 TB @ 1 M users |
-
-The funnel stream is linear in contributors: 10 M users ≈ 800 TB/year — which is the size of the
-shared-DB anti-pattern (§5b), **not a storage requirement**. No raw observation is ever stored
-centrally: the numbers are stream *throughput* for sizing the aggregation pipeline.
-
-**Readings**
-
-- **Catalogue and edge graph saturate.** Once contributors cover the active inventory, dedup caps
-  the size — a few million contributors approaches full-YouTube coverage, and adding users stops
-  growing the dataset. But saturation is exactly why distribution has to cover the *deduplicated*
-  sizes too: the graph, at ~2–35 TB, still exceeds a desktop drive. §5d is how it is served without
-  being held.
-- **The funnel stream is the unbounded term** — the concrete version of §5b's "everyone stores
-  everything." ~80 TB/year per million contributors is what a *shared live database* would force
-  every peer to hold; the figure is the anti-pattern's price tag, not a budget. The stream is
-  aggregated into the two datasets above at STAR and discarded — **no raw observation is ever stored
-  centrally**, by privacy policy (`DESIGN_v2.md` §6.0/§6.5: raw trails never leave the device; only
-  counts are published). The durable copy is each contributor's own local record, kept on their
-  machine.
-- **L3 is a small opt-in subset, not the stream.** Transparency contributors consent to attribution;
-  their attributed edges flow through the same threshold path, and the durable proof of what they
-  contributed is their own signed local record, verified on demand — not a central archive
-  (`DESIGN_v2.md` §6.5). "Attributed" means accountable, not centrally stored.
-- **The window is the control** for catalogue and graph (≈2–5× between 30 days and a year); the
-  funnel stream moves linearly in both window and contributors.
-
-**Empirical anchor — measured 2026-08-04 from a live corpus** (4,126 impressions, 44 watched videos,
-3,160 WATCH_NEXT rows):
-
-| Metric | Measured |
-|---|---|
-| Walk edge table (whole history) | ~106 KB (1,894 distinct edges) |
-| Distinct neighbours per context video | median 35 · mean 43 · **max 270** |
-| Edge weights | mean 1.67 impressions/edge · max 20 |
-| Single-user dedup ratio | distinct edges = 0.60 × impressions |
-| Search payload | titles 0.2 MB; thumbnails 6.1 MB of the 7.4 MB corpus (excluded from releases) |
-
-Readings:
-
-- **The "graph is megabytes" claim holds at the user level.** A full suggestion edge table is
-  ~100 KB; the corpus's bulk is thumbnails and text. Confirms the reviewer's read: search is the
-  text, the graph is ids and weights.
-- **Per-context neighbourhoods are bounded, not unbounded** — one user already saw 270 distinct
-  recommendations for a single video. The sub-linear term is real: the aggregate edge table is
-  capped by active inventory × neighbourhood size, not by contributor count.
-- **The single-user dedup ratio (0.60) does NOT extrapolate to the aggregate.** It is dominated by
-  new-context acquisition (each new watched video adds ~43 edges). The aggregate dedup comes from
-  *cross-user* overlap — popular contexts watched by many, heavily overlapping rails — which one
-  machine cannot measure. **That factor decides whether the aggregate edge table is ~TB
-  (publishable, servable) or tracks the funnel stream's linear growth; it is the open item to resolve
-  before the STAR path (§5d open questions).**
-
-## 5d. Suggestions and search without holding the graph — designed 2026-08-04
-
-Lars, 2026-08-04: *"I'm talking about 'everything' meaning everything you need for search."* This
-corrects §5c's framing: the useful dataset is the problem, not just an audit trail. At full scale the
-deduped graph is ~2–35 TB — already past a desktop drive. Distribution has to cover the useful
-datasets (graph + catalogue), not merely an archive nobody can hold anyway.
-
-**Key structural fact: a random walk needs neighbourhoods, not the graph.** SUGGEST walks from the
-current video, and each hop only needs the edges *out of the video it is standing on* — one video's
-neighbourhood is ~15–30 KB (hundreds of edges × ~50 B). The 35 TB is everyone's neighbourhoods at
-once; any one user only touches roughly tens of MB (up to ~1 GB after years of heavy watching).
-
-**So the graph is served, not held:**
-
-1. **Block sharding.** The graph is cut into blocks keyed by `context_video_id`
-   (`neighbours(v)` per block), signed and hash-verifiable. L3 edges are attributable, so a forged
-   block is detectable — the write-path poison objection (§5b) weakens when publication is signed
-   and verification is cheap.
-2. **Fetch-on-demand.** A walk hop that misses the local cache fetches its block. The daemon holds
-   an **LRU cache of the neighbourhoods the user actually uses** — bounded by usage, not by the
-   graph. Warm hops are instant; cold hops are one small fetch.
-3. **Background prewarm.** The observer already tells the daemon which video is being watched
-   (observations flow through it), so the seed's block is prefetched when the watch page loads —
-   before the panel's SUGGEST arrives. First request on a brand-new topic: seconds, once.
-
-Consequence: suggestions work out of the box for every user — no download, no local graph, no
-centralised service. The swarm holds the graph; users hold the slice they've touched.
-
-**Search is two-tier:**
-
-1. **Global-slice index** — inverted index over the popular/verified catalogue. Compressed
-   ~50–200 GB for a year-long window: an optional, deliberate download (Lars: *"200 GB compressed is
-   doable"*). Complete local search over everything the slice covers.
-2. **Long-tail posting lists on demand** — the same block-fetch mechanism serves term posting lists
-   outside the slice. Users who skip the download get slice coverage plus on-demand tail.
-
-Local search over your own corpus is unchanged and already works with zero network (§5 — B0).
-
-**What this removes:** the centralised search website. Lars, 2026-08-04: *"I was thinking we would
-have to monetize a centralised search website with ads or something to pay for the
-hosting/storage."* No: hosting is volunteer mirrors plus the free channels of `DESIGN_v2.md` §7.3
-(Zenodo, GitHub, BitTorrent/Academic Torrents — all zero-cost). No raw observations are stored
-anywhere; contributors keep their own local records, and the only shared data is the deduped,
-policy-safe datasets above (§5c).
-
-**Open questions (not settled by this note):**
-
-- **Substrate.** Block lookup needs a mechanism — a DHT for discovery plus mirrors for durability,
-  or signed block URLs from seeders. Latency and churn differ; nothing is chosen yet.
-- **Cross-user dedup factor — the gate before STAR.** The aggregate edge table's size hinges on how
-  many *distinct* edges the network adds per new user once popular contexts are covered. One machine
-  cannot measure it (single-user ratio is 0.60, dominated by new-context acquisition — §5c empirical
-  anchor); it needs multi-user data or a crawl. If edges dedup hard across users, the aggregate is
-  ~TB and STAR's output is publishable/servable. If they do not, it tracks the funnel stream's linear
-  growth and the L2
-  distribution shape changes. Resolve this before committing STAR.
-- **Bootstrap.** A brand-new user's first walk is cold — one or a few block fetches. Whether a small
-  shipped seed of popular neighbourhoods (B1-style) is needed, or fetch-on-first-use is enough.
-- **Staleness.** Neighbourhoods drift as YouTube retrains. Who re-hashes blocks, and how often?
-- **Long-tail serving.** On-demand tail requires *someone* to hold and serve it — a mirror choice,
-  not a business.
-
 ## 6. What this changes in the roadmap
 
 Stage 2 (local utility) and a new B1 seed-catalogue effort become the near-term product. Stage 5's
@@ -319,12 +186,8 @@ machinery behind the audit claims.
 1. ~~Is the swarm the dataset or the publication channel?~~ **Resolved 2026-08-03 — see §5b.**
    Distribution channel, kept alive by seeders. The v2 decision stands.
 2. **Who builds the seed catalogue, and from what seeds?** Affects the first weeks, not the long run.
-3. **Is a shipped dataset acceptable**, or must everything be peer-derived on principle? *§5d now
-   answers the search half — an optional download — but the principle is worth stating.*
+3. **Is a shipped dataset acceptable**, or must everything be peer-derived on principle?
 4. **Watch time** — worth pursuing, or is impression-only collection the permanent boundary?
-5. **§5d substrate and bootstrap** — the fetch-on-demand graph needs a block-lookup mechanism and a
-   first-run story. The five open questions in §5d; the **cross-user dedup factor is the one to
-   resolve first** — it gates the STAR path (§5c empirical anchor).
 
 
 ---

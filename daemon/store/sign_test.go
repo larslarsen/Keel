@@ -37,8 +37,17 @@ func readBundleFile(t *testing.T, path string) Bundle {
 	return b
 }
 
-// TestBundleSignatureRoundTrip checks that an exported bundle verifies through
-// the release-consumption seam on a second install.
+func writeBundleFile(t *testing.T, path string, b Bundle) {
+	t.Helper()
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBundleSignatureRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	a, err := Open(filepath.Join(dir, "a.sqlite"))
@@ -61,17 +70,13 @@ func TestBundleSignatureRoundTrip(t *testing.T) {
 		t.Fatalf("algorithm = %q, want %q", b.Algorithm, signAlgorithm)
 	}
 
-	// A second install verifies a correctly signed bundle.
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A second install accepts a correctly signed bundle.
 	c, err := Open(filepath.Join(dir, "c.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if _, err := c.verifyBundle(raw); err != nil {
+	if _, err := c.ImportBundle(path); err != nil {
 		t.Fatalf("valid signed bundle refused: %v", err)
 	}
 }
@@ -108,17 +113,15 @@ func TestBundleSignatureRejectsForgery(t *testing.T) {
 		t.Fatal(err)
 	}
 	tampered.ContentSHA256 = fixed
-	badRaw, err := json.Marshal(tampered)
-	if err != nil {
-		t.Fatal(err)
-	}
+	badPath := filepath.Join(dir, "tampered.json")
+	writeBundleFile(t, badPath, tampered)
 
-	if _, err := c.verifyBundle(badRaw); err == nil {
-		t.Fatal("bundle with a repaired digest but broken signature was verified")
+	if _, err := c.ImportBundle(badPath); err == nil {
+		t.Fatal("bundle with a repaired digest but broken signature was imported")
 	}
 
 	// Swapping in an attacker's own key must not launder the edit either — the
-	// signature would verify, but against a different identity, so the bundle
+	// signature would verify, but against a different identity, so the import
 	// is attributed to that key rather than silently trusted as the original.
 	attacker, err := Open(filepath.Join(dir, "attacker.sqlite"))
 	if err != nil {
@@ -136,36 +139,32 @@ func TestBundleSignatureRejectsForgery(t *testing.T) {
 	relabelled := tampered
 	relabelled.Signature = sig
 	relabelled.PublicKey = pub
-	relabelledRaw, err := json.Marshal(relabelled)
-	if err != nil {
-		t.Fatal(err)
-	}
+	relabelPath := filepath.Join(dir, "relabelled.json")
+	writeBundleFile(t, relabelPath, relabelled)
 
-	if _, err := c.verifyBundle(relabelledRaw); err != nil {
-		t.Fatalf("re-signed bundle should verify under the new key: %v", err)
+	if _, err := c.ImportBundle(relabelPath); err != nil {
+		t.Fatalf("re-signed bundle should import under the new key: %v", err)
 	}
-	// It is attributed to the key in the file, which differs from the original
-	// author's — the fact a user needs to be able to see.
+	// It landed under the node id in the file, and its key differs from the
+	// original author's — which is the fact a user needs to be able to see.
 	if relabelled.PublicKey == orig.PublicKey {
 		t.Fatal("attacker key matched the original — test is not exercising the case")
 	}
 
-	// An unsigned bundle still verifies: signing postdates the format.
+	// An unsigned bundle still imports: signing postdates the format.
 	unsigned := orig
 	unsigned.Signature = ""
 	unsigned.PublicKey = ""
 	unsigned.Algorithm = ""
-	unsignedRaw, err := json.Marshal(unsigned)
-	if err != nil {
-		t.Fatal(err)
-	}
+	unsignedPath := filepath.Join(dir, "unsigned.json")
+	writeBundleFile(t, unsignedPath, unsigned)
 
 	d, err := Open(filepath.Join(dir, "d.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if _, err := d.verifyBundle(unsignedRaw); err != nil {
-		t.Fatalf("unsigned bundle should still verify: %v", err)
+	if _, err := d.ImportBundle(unsignedPath); err != nil {
+		t.Fatalf("unsigned bundle should still import: %v", err)
 	}
 }

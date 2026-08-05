@@ -26,6 +26,11 @@ const el = {
   wipeConfirmText: document.getElementById("wipe-confirm-text"),
   wipeYes: document.getElementById("btn-wipe-confirm"),
   wipeNo: document.getElementById("btn-wipe-cancel"),
+  bundleBtn: document.getElementById("btn-bundle"),
+  importBtn: document.getElementById("btn-import"),
+  importPath: document.getElementById("import-path"),
+  shareStatus: document.getElementById("share-status"),
+  peerList: document.getElementById("peer-list"),
   entropy: document.getElementById("entropy"),
   suggestBtn: document.getElementById("btn-suggest"),
   suggestMeta: document.getElementById("suggest-meta"),
@@ -152,6 +157,7 @@ function selectTab(name) {
   }
   if (name === "config") {
     refreshStats().catch(() => {});
+    refreshPeers().catch(() => {});
     refreshAggregate().catch(() => {});
     wireDiskSlider();
     refreshDisk().catch(() => {});
@@ -197,7 +203,7 @@ function renderHits(res) {
       ` target="_blank" rel="noreferrer">${escapeHtml(h.title || h.video_id)}</a></p>` +
       `<p class="r-sub">${escapeHtml(bits)}` +
       (bits ? " · " : "") +
-      (h.seen > 0 ? `seen ${h.seen}×` : "") +
+      (h.seen > 0 ? `seen ${h.seen}×` : `from a shared bundle`) +
       (h.channel_id ? ` · ${escapeHtml(h.channel_id)}` : "") +
       `</p></div></div>`;
     el.results.appendChild(li);
@@ -252,6 +258,7 @@ async function loadSuggestions() {
         (bits ? " · " : "") +
         `seen ${s.seen}×` +
         (s.via_title ? ` · appeared after ${escapeHtml(s.via_title)}` : "") +
+        (s.from_peer ? ` · via shared bundle` : "") +
         `</p></div></div>`;
       el.suggestions.appendChild(li);
       const im = li.querySelector("img.thumb[data-vid]");
@@ -263,6 +270,8 @@ async function loadSuggestions() {
 }
 
 el.suggestBtn.addEventListener("click", () => loadSuggestions().catch(() => {}));
+
+/* ---------- sharing ---------- */
 
 const MB = 1024 * 1024;
 
@@ -398,6 +407,69 @@ function wireDiskSlider() {
   });
 }
 
+async function refreshPeers() {
+  try {
+    const r = await rpc("PEERS");
+    const p = r.bundle || {};
+    el.peerList.replaceChildren();
+    for (const peer of p.peers || []) {
+      const li = document.createElement("li");
+      li.innerHTML =
+        `<span class="an-label">${escapeHtml(peer.source)}</span>` +
+        `<span class="an-count">${peer.edges} edge(s) ` +
+        `<button type="button" class="btn" data-forget="${escapeHtml(peer.source)}">Forget</button></span>`;
+      el.peerList.appendChild(li);
+    }
+    if (!(p.peers || []).length) {
+      el.peerList.innerHTML = `<li><span class="an-label">No imported bundles.</span></li>`;
+    }
+  } catch {
+    /* daemon down; banner already says so */
+  }
+}
+
+el.peerList.addEventListener("click", async (e) => {
+  const src = e.target?.dataset?.forget;
+  if (!src) return;
+  try {
+    await rpc("FORGET_PEER", { source: src });
+    el.shareStatus.textContent = `Forgot ${src}.`;
+    await refreshPeers();
+  } catch (err) {
+    el.shareStatus.textContent = `Could not forget: ${err.message}`;
+  }
+});
+
+el.bundleBtn.addEventListener("click", async () => {
+  el.shareStatus.textContent = "Building bundle…";
+  try {
+    const r = await rpc("EXPORT_BUNDLE");
+    const b = r.bundle || {};
+    el.shareStatus.textContent =
+      `Wrote ${b.edges} edge(s) and ${b.catalogue} catalogue entr(ies) to ${b.path}`;
+  } catch (err) {
+    el.shareStatus.textContent = `Bundle failed: ${err.message}`;
+  }
+});
+
+el.importBtn.addEventListener("click", async () => {
+  const path = el.importPath.value.trim();
+  if (!path) {
+    el.shareStatus.textContent = "Give the path to a bundle file.";
+    return;
+  }
+  el.shareStatus.textContent = "Importing…";
+  try {
+    const r = await rpc("IMPORT_BUNDLE", { path });
+    const b = r.bundle || {};
+    el.shareStatus.textContent =
+      `Imported ${b.edges} edge(s) from ${b.node_id}. Suggestions now draw on them.`;
+    await refreshPeers();
+  } catch (err) {
+    el.shareStatus.textContent = `Import failed: ${err.message}`;
+  }
+});
+
 /* ---------- analysis ---------- */
 
 function tile(value, label) {
@@ -430,7 +502,10 @@ async function loadAnalysis() {
       tile(a.total_impressions ?? 0, "impressions") +
       tile(a.distinct_videos ?? 0, "distinct videos") +
       tile(a.distinct_channels ?? 0, "distinct channels") +
-      tile(a.watched_videos ?? 0, "videos you watched");
+      tile(a.watched_videos ?? 0, "videos you watched") +
+      (a.peer_edges
+        ? tile(a.peer_edges, `imported edges (${a.peer_sources} source)`)
+        : "");
     body.innerHTML =
       analysisTable(
         "Pushed hardest",

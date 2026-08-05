@@ -392,11 +392,19 @@ async function handle(message, sender) {
       return { suggest: env.payload };
     }
 
-	case "AGGREGATE_SUMMARY":
-	case "EXPORT_BUNDLE":
-	{
+    case "AGGREGATE_SUMMARY":
+    case "EXPORT_BUNDLE":
+    case "PEERS": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
       const env = await bridge.request(message.type, {});
+      if (env.type === "ERROR") throw new Error(env.payload?.message || message.type);
+      return { bundle: env.payload };
+    }
+
+    case "IMPORT_BUNDLE":
+    case "FORGET_PEER": {
+      if (!bridge.helloOk) throw new Error("daemon not connected");
+      const env = await bridge.request(message.type, message.payload || {});
       if (env.type === "ERROR") throw new Error(env.payload?.message || message.type);
       return { bundle: env.payload };
     }

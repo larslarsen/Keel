@@ -68,8 +68,8 @@ func (s *Store) CacheUsage() (bytes int64, items int64, err error) {
 
 // Thumbnail returns a data URL for a video, fetching once if not cached.
 //
-// This is the daemon's only outbound request, and it happens at most once per
-// video for the life of the cache entry.
+// The fetch is the daemon's only outbound request besides bundle import, and it
+// happens at most once per video for the life of the cache entry.
 func (s *Store) Thumbnail(videoID string) (string, error) {
 	if videoID == "" {
 		return "", fmt.Errorf("video_id required")

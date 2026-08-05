@@ -134,6 +134,21 @@
           <span class="meta" id="disk-label"></span>
         </div>
 
+        <h2>Share with someone</h2>
+        <p class="meta" id="share-warning">
+          A bundle says which videos YouTube recommended <em>to you</em>, and
+          after what. Anyone you send it to can see that. It does not contain
+          your watch history, timestamps, or account — counts are grouped by
+          day and by rough position.
+        </p>
+        <div class="btn-row">
+          <button type="button" class="btn" id="btn-bundle">Export bundle</button>
+          <input type="text" id="import-path" placeholder="/path/to/keel-bundle.json" />
+          <button type="button" class="btn" id="btn-import">Import</button>
+        </div>
+        <p class="meta" id="share-status"></p>
+        <ol class="an-list" id="peer-list"></ol>
+
         <div id="wipe-confirm" class="confirm" hidden>
           <p id="wipe-confirm-text"></p>
           <div class="btn-row">

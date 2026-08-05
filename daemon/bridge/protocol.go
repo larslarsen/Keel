@@ -264,7 +264,7 @@ type Suggestion struct {
 	ViaVideoID *string `json:"via_video_id"`
 	ViaTitle   *string `json:"via_title"`
 	// FromPeer marks a video this machine never observed — it is in the graph
-	// only because a published release put it there.
+	// only because an imported bundle put it there.
 	FromPeer bool `json:"from_peer"`
 }
 
@@ -341,11 +341,20 @@ type AggregateSummaryPayload struct {
 	Note             string `json:"note"`
 }
 
-// BundleResultPayload is EXPORT_BUNDLE_RESULT body.
+// BundleResultPayload is EXPORT_BUNDLE_RESULT / IMPORT_BUNDLE_RESULT body.
 type BundleResultPayload struct {
 	Path      string `json:"path"`
 	NodeID    string `json:"node_id"`
 	Edges     int64  `json:"edges"`
 	Catalogue int64  `json:"catalogue"`
 	Bytes     int64  `json:"bytes"`
+}
+
+// PeersPayload is PEERS_RESULT body.
+type PeersPayload struct {
+	NodeID string `json:"node_id"`
+	Peers  []struct {
+		Source string `json:"source"`
+		Edges  int64  `json:"edges"`
+	} `json:"peers"`
 }

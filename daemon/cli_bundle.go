@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Bundle subcommands (WO-034).
 //
-// The browser UI is not the only way to export a bundle. These let someone
-// export and inspect from a shell — useful for scripting, for people who never
-// open the panel, and for testing without a browser at all. There is no import:
-// person-to-person bundle exchange is rejected (WO-047).
+// The browser UI is not the only way to move a bundle. These let someone
+// export, import and inspect from a shell — useful for scripting, for people
+// who never open the panel, and for testing without a browser at all.
 package main
 
 import (
@@ -25,7 +24,7 @@ func openStore() (*store.Store, error) {
 // runBundle handles `keel-host bundle …`.
 func runBundle(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: keel-host bundle export|summary")
+		fmt.Fprintln(os.Stderr, "usage: keel-host bundle export|import|peers")
 		return 2
 	}
 	st, err := openStore()
@@ -63,8 +62,57 @@ func runBundle(args []string) int {
 		fmt.Printf("  node id %s\n", res.NodeID)
 		// Stated at the point of sharing, not buried in a doc.
 		fmt.Println("\nThis file says which videos YouTube recommended to you, and after what.")
-		fmt.Println("It contains no watch history, no timestamps and no account details.")
-		fmt.Println("Use it only as input to the published-release path.")
+		fmt.Println("Anyone you send it to can see that. It contains no watch history,")
+		fmt.Println("no timestamps and no account details.")
+		return 0
+
+	case "import":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: keel-host bundle import <path|https://url>")
+			return 2
+		}
+		res, err := st.ImportBundle(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("imported %d edge(s) and %d catalogue entr(ies) from %s\n",
+			res.Edges, res.Catalogue, res.NodeID)
+		fmt.Println("Suggestions will now draw on them. Remove with: keel-host bundle forget " + res.NodeID)
+		return 0
+
+	case "forget":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: keel-host bundle forget <node-id>")
+			return 2
+		}
+		n, err := st.ForgetPeer(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("removed %d edge(s) from %s\n", n, args[1])
+		return 0
+
+	case "peers":
+		id, err := st.NodeID()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		peers, err := st.Peers()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("this install: %s\n", id)
+		if len(peers) == 0 {
+			fmt.Println("no imported bundles")
+			return 0
+		}
+		for _, p := range peers {
+			fmt.Printf("  %-24s %d edge(s)\n", p.Source, p.Edges)
+		}
 		return 0
 
 	case "summary":

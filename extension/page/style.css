@@ -115,6 +115,13 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
 .an-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .an-count { color: var(--muted); font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
 
+#import-path {
+  flex: 1; min-width: 200px; padding: 8px 10px; font: inherit;
+  color: var(--text); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+#share-warning { border-left: 2px solid var(--accent); padding-left: 10px; }
+
 /* Thumbnails (WO-039). */
 .row-main { display: flex; gap: 12px; align-items: flex-start; }
 .thumb {

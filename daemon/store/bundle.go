@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// Bundle serialisation (WO-028): writing measurements to a file.
+// Bundle serialisation (WO-028): writing measurements to a file and reading
+// one back.
 //
 // A bundle is the aggregate layer on disk — nothing more. The same bytes are
 // what a STAR submission aggregates over and what a published dataset
 // contains, so this is a transport detail rather than a separate data path.
 //
-// Person-to-person bundle exchange is rejected (WO-047): importing a bundle
-// means trusting the sender, and a signature proves who wrote the bytes, never
-// that the observations happened (DESIGN_v2 §6.4). There is therefore no path
-// that reads another person's bundle. Export remains — producing the aggregate
-// is how a node contributes — and the digest and signature machinery below is
-// the verification seam a published release (DESIGN_v2 §7.3) will be consumed
-// through.
+// It is **attributable**. A bundle says which videos YouTube recommended to
+// the person who made it. That is DESIGN_v2 §6's L3 posture, and it is only
+// acceptable as an informed choice — the caller must surface that, not bury it.
 package store
 
 import (
@@ -20,11 +17,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
 )
+
+// MaxBundleBytes caps what will be read from a URL. Bundles are ~236 KB at
+// 1,100 observations; 64 MiB is far past any honest one and stops a hostile
+// URL from filling the disk.
+const MaxBundleBytes = 64 << 20
 
 // BundleSchemaVersion is the on-disk bundle format.
 const BundleSchemaVersion = 1
@@ -49,7 +54,7 @@ type Bundle struct {
 	ContentSHA256 string `json:"content_sha256"`
 	// Signature and PublicKey establish authorship over the same canonical
 	// bytes the digest covers (WO-037). Optional: an unsigned bundle still
-	// verifies, because refusing one would break every bundle written before
+	// imports, because refusing one would break every bundle written before
 	// signing existed.
 	Signature string                   `json:"signature,omitempty"`
 	PublicKey string                   `json:"public_key,omitempty"`
@@ -82,8 +87,8 @@ func contentDigest(cat []bridge.CatalogueEntry, edges []bridge.EdgeObservation) 
 
 // NodeID returns this install's identifier, creating one on first use.
 //
-// Random and local. It identifies an exported aggregate for replacement and
-// verification, not a person — nothing derives it from the machine or user.
+// Random and local. It exists so imports can be attributed and replaced, not
+// to assert an identity — nothing derives it from the machine or the user.
 func (s *Store) NodeID() (string, error) {
 	var id string
 	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'node_id'`).Scan(&id)
@@ -159,13 +164,16 @@ func (s *Store) ExportBundle(path, cohort string) (*bridge.BundleResultPayload, 
 	}, nil
 }
 
-// verifyBundle validates a bundle's structure, digest and signature.
+// ImportBundle reads a bundle and merges it under its node ID.
 //
-// Person-to-person import is gone (WO-047); this is the verification seam a
-// published release (DESIGN_v2 §7.3) will be consumed through — the same
-// checks an import used to run, before anything is merged under its node ID.
-// It writes nothing.
-func (s *Store) verifyBundle(data []byte) (*Bundle, error) {
+// The file is untrusted: a bundle can be edited by anyone who handles it, and
+// nothing signs it. Structure is validated; the contents are not verifiable and
+// this does not pretend otherwise (DESIGN_v2 §6.4).
+func (s *Store) ImportBundle(path string) (*bridge.BundleResultPayload, error) {
+	data, err := readBundle(path)
+	if err != nil {
+		return nil, err
+	}
 	var b Bundle
 	if err := json.Unmarshal(data, &b); err != nil {
 		return nil, fmt.Errorf("not a Keel bundle: %w", err)
@@ -183,9 +191,10 @@ func (s *Store) verifyBundle(data []byte) (*Bundle, error) {
 	if b.NodeID == mine {
 		return nil, fmt.Errorf("that bundle came from this install")
 	}
-	// A digest mismatch means the bytes are not the ones their author produced
-	// — the first line of integrity defence for a release that crossed
-	// untrusted ground.
+	// Verify before merging. A bundle crosses untrusted ground — a web host, a
+	// USB stick, a chat app — and a digest mismatch means the bytes are not the
+	// ones its author produced. It does not prove who wrote it; that needs the
+	// signature layer §7.3 specifies.
 	if b.ContentSHA256 != "" {
 		got, err := contentDigest(b.Catalogue, b.Edges)
 		if err != nil {
@@ -206,5 +215,48 @@ func (s *Store) verifyBundle(data []byte) (*Bundle, error) {
 			return nil, fmt.Errorf("bundle signature: %w", err)
 		}
 	}
-	return &b, nil
+	edges, cat, err := s.ImportEdges(b.NodeID, b.Edges, b.Catalogue)
+	if err != nil {
+		return nil, err
+	}
+	return &bridge.BundleResultPayload{
+		Path:      path,
+		NodeID:    b.NodeID,
+		Edges:     edges,
+		Catalogue: cat,
+		Bytes:     int64(len(data)),
+	}, nil
+}
+
+// readBundle reads a bundle from a local path or an http(s) URL.
+//
+// URL support is what makes DESIGN_v2 §7.3's model work in practice: every
+// channel it names — Zenodo, GitHub Releases, Internet Archive — is an ordinary
+// HTTPS download, reachable from behind any firewall. No peer-to-peer
+// connection is established, so none has to be negotiated.
+//
+// This is the daemon's only outbound request, and it happens only when a person
+// explicitly asks to import something.
+func readBundle(src string) ([]byte, error) {
+	if !strings.HasPrefix(src, "http://") && !strings.HasPrefix(src, "https://") {
+		return os.ReadFile(src)
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(src)
+	if err != nil {
+		return nil, fmt.Errorf("fetch bundle: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch bundle: %s", resp.Status)
+	}
+	// LimitReader rather than trusting Content-Length, which a server controls.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxBundleBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxBundleBytes {
+		return nil, fmt.Errorf("bundle larger than %d bytes", MaxBundleBytes)
+	}
+	return data, nil
 }

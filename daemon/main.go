@@ -111,6 +111,8 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		return handleSuggest(env, out, st)
 	case "EXPORT_BUNDLE":
 		return handleExportBundle(env, out, st)
+	case "IMPORT_BUNDLE":
+		return handleImportBundle(env, out, st)
 	case "SET_COHORT":
 		var p struct {
 			Locale string `json:"locale"`
@@ -125,6 +127,10 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 			return replyErr(out, env.ID, err)
 		}
 		return reply(out, env.ID, "COHORT_RESULT", map[string]any{"cohort": c})
+	case "PEERS":
+		return handlePeers(env, out, st)
+	case "FORGET_PEER":
+		return handleForgetPeer(env, out, st)
 	case "AGGREGATE_SUMMARY":
 		sum, err := st.AggregateSummary(cohortFor(st))
 		if err != nil {
@@ -354,6 +360,9 @@ Usually launched by the browser; not run by hand.
   keel-host uninstall [-dry-run]                 remove host manifests
 
   keel-host bundle export [-out FILE]            write your aggregated corpus
+  keel-host bundle import FILE|URL                 merge someone else's bundle
+  keel-host bundle peers                         list imported bundles
+  keel-host bundle forget NODE-ID                remove one
   keel-host keys                                show your signing fingerprint
   keel-host bundle summary                       what would leave this device
 
@@ -419,4 +428,51 @@ func handleExportBundle(env *bridge.Envelope, out io.Writer, st *store.Store) er
 		return replyErr(out, env.ID, err)
 	}
 	return reply(out, env.ID, "EXPORT_BUNDLE_RESULT", res)
+}
+
+func handleImportBundle(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil || p.Path == "" {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "path required", Code: "bad_payload",
+		})
+	}
+	res, err := st.ImportBundle(p.Path)
+	if err != nil {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: err.Error(), Code: "import_failed",
+		})
+	}
+	return reply(out, env.ID, "IMPORT_BUNDLE_RESULT", res)
+}
+
+func handlePeers(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	peers, err := st.Peers()
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	id, err := st.NodeID()
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	payload := map[string]any{"node_id": id, "peers": peers}
+	return reply(out, env.ID, "PEERS_RESULT", payload)
+}
+
+func handleForgetPeer(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	var p struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil || p.Source == "" {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "source required", Code: "bad_payload",
+		})
+	}
+	n, err := st.ForgetPeer(p.Source)
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	return reply(out, env.ID, "FORGET_PEER_RESULT", map[string]any{"removed": n})
 }

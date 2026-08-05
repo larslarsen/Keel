@@ -8,7 +8,7 @@ Browser extension + local Go daemon. Gives people control over the video recomme
 
 ## Read before coding
 
-1. `handoff/WO-047-remove-p2p-sharing-ux.md` — **current work order. Start here.**
+1. `handoff/WO-046-panel-shows-our-suggestions.md` — **current work order. Start here.**
    `handoff/README.md` indexes every order and its status.
 2. `ROADMAP.md` — phase state and queue.
 3. `BUILD_P0.md` — P0 spec; §9 is the closed acceptance record.

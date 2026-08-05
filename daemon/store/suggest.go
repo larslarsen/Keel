@@ -2,8 +2,8 @@
 // Local suggestion engine (WO-023).
 //
 // Recommends from the co-recommendation graph the corpus already contains: an
-// edge A→B means "B was observed in A's rail". No network, no engagement
-// signal — see DESIGN_BOOTSTRAP §4.
+// edge A→B means "B was observed in A's rail". No peer data, no network, no
+// engagement signal — see DESIGN_BOOTSTRAP §4.
 //
 // The walk is random-walk-with-restart, computed by power iteration rather
 // than by actually sampling. Same distribution, deterministic, and testable —
@@ -132,9 +132,9 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	if err != nil {
 		return nil, err
 	}
-	// Merge imported release edges. One person's watching produces very few
-	// graph roots, so depth has to come from somewhere else — the published
-	// release graph (DESIGN_SHARING §5), consumed through the peer tables.
+	// Merge imported peer edges. This is the whole reason to import: one
+	// person's watching produces very few graph roots, so depth has to come
+	// from somewhere else (DESIGN_SHARING §5).
 	pg, peerCount, err := s.peerGraph()
 	if err != nil {
 		return nil, err
@@ -240,9 +240,9 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 			d := m.duration
 			sg.DurationS = &d
 		}
-		// A video with no local observation reached the walk only through a
-		// release edge. Flagging it keeps provenance visible rather than
-		// presenting someone else's graph as your own.
+		// A video with no local observation reached the walk only through an
+		// imported edge. Flagging it keeps provenance visible rather than
+		// presenting a peer's graph as your own.
 		sg.FromPeer = m.seen == 0
 		if v, ok := via[r.id]; ok && v != "" {
 			vv := v
@@ -285,9 +285,9 @@ func (s *Store) videoMeta(idList []string) (map[string]*vmeta, error) {
 	if len(idList) == 0 {
 		return out, nil
 	}
-	// Union the local corpus with published-release catalogue rows: a release
-	// edge is useless if the video it points at has no title to show. Local
-	// metadata wins where both exist, since it was observed here.
+	// Union the local corpus with imported catalogue rows: a peer's edge is
+	// useless if the video it points at has no title to show. Local metadata
+	// wins where both exist, since it was observed here.
 	rows, err := s.db.Query(`
 SELECT video_id, MAX(title), MAX(channel_id), MAX(view_count), MAX(duration_s), COUNT(*) AS seen
 FROM impressions GROUP BY video_id
@@ -336,11 +336,12 @@ func (s *Store) blocklistSet() (map[string]bool, error) {
 	return out, nil
 }
 
-// mergeGraphs combines local and release adjacency, then renormalises.
+// mergeGraphs combines local and peer adjacency, then renormalises.
 //
-// Release edges are weighted equally with local ones. That gets depth fastest;
-// the source is still recorded in peer_edges, so down-weighting later is a
-// query change rather than a rebuild (DESIGN_SHARING open question 1).
+// Peer edges are weighted equally with local ones. That gets depth fastest,
+// which is the point of importing at all; the source is still recorded in
+// peer_edges, so down-weighting later is a query change rather than a
+// re-import (DESIGN_SHARING open question 1).
 func mergeGraphs(local, peer map[string][]edge) map[string][]edge {
 	acc := map[string]map[string]float64{}
 	add := func(g map[string][]edge) {

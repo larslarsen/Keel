@@ -6,8 +6,9 @@
 //	(from, to, surface, slot_bucket, day_bucket, cohort) → count
 //
 // This is the one representation every downstream path consumes — STAR
-// submissions and published datasets. Raw impressions never leave this machine
-// in any of those paths; the tuple is the boundary.
+// submissions, published datasets, and any bundle shared with another person.
+// Raw impressions never leave this machine in any of those paths; the tuple is
+// the boundary.
 //
 // Bucketing is not cosmetic. Exact slots and exact timestamps are
 // high-dimensional and compose into a fingerprint across repeated releases

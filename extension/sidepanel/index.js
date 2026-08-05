@@ -20,9 +20,8 @@ const el = {
   home: document.getElementById("stat-home"),
   time: document.getElementById("time-range"),
   channelNote: document.getElementById("channel-note"),
-  meta: document.getElementById("suggest-meta"),
+  meta: document.getElementById("live-meta"),
   list: document.getElementById("list"),
-  entropy: document.getElementById("entropy"),
   refresh: document.getElementById("btn-refresh"),
   hideRail: document.getElementById("btn-hide-rail"),
   exportBtn: document.getElementById("btn-export"),
@@ -39,14 +38,13 @@ const el = {
 
 /** @type {Set<string>} */
 let blocklistSet = new Set();
-/** Last full page proof from SW (unfiltered). Used for the seed, not the list. */
+/** Last full page proof from SW (unfiltered). Display filters by blocklist. */
 let lastPageCache = null;
 
-/** Focus↔Serendipity 0–100. Default must sit in the serendipity half so the
- * panel never mirrors the rail out of the box (WO-046 §Why). */
-let entropy = 70;
-/** key = `${pageLoadId}|${seed}|${entropy}` — re-run the walk only when it changes. */
-let lastSuggestKey = "";
+/** @type {string | null} */
+let renderedPageKey = null;
+/** key = `${video_id}|${slot_index}` → <li> — reuse nodes across updates. */
+const renderedKeys = new Map();
 let lastStatsAt = 0;
 
 async function rpc(type, payload) {
@@ -110,6 +108,10 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function rowKey(imp) {
+  return `${imp.video_id}|${imp.slot_index}`;
 }
 
 function fmtWhen(ms) {
@@ -219,36 +221,41 @@ function readableChannel(id) {
   return typeof id === "string" && id.startsWith("@") ? id : "";
 }
 
-/**
- * One row of our own ranking (WO-046): the daemon's graph walk, not YouTube's
- * rail. Suggestions carry a channel key but no display name yet, so the label
- * under the thumbnail only appears when the key is already human-readable.
- */
-function makeSuggestionLi(s) {
+function makeLi(imp) {
   const li = document.createElement("li");
+  // channel_id is nullable — lockup cards often carry no channel link.
   const thumb =
     `<img class="thumb" loading="lazy" decoding="async" referrerpolicy="no-referrer"` +
     ` alt="" width="96" height="54"` +
-    ` data-vid="${encodeURIComponent(s.video_id)}">`;
-  const chan = readableChannel(s.channel_id);
-  const thumbBox = chan
-    ? `<div class="thumb-wrap">${thumb}<span class="chan">${escapeHtml(chan)}</span></div>`
+    ` data-vid="${encodeURIComponent(imp.video_id)}">`;
+  // Live streams read differently: no duration, a red LIVE pill on the
+  // thumbnail like YouTube's own, so a stream jumps out at a glance.
+  const isLive = Array.isArray(imp.badges) && imp.badges.includes("LIVE");
+  let thumbBox = isLive
+    ? `<div class="thumb-box">${thumb}<span class="live">LIVE</span></div>`
     : thumb;
-  const href = `https://www.youtube.com/watch?v=${encodeURIComponent(s.video_id)}`;
+  // Under the thumbnail, in small text: the channel the extension read off the
+  // card (its @handle or display name), falling back to the @handle channel_id
+  // for cards that carried a link but no name text.
+  const chan = imp.channel_name || readableChannel(imp.channel_id) || null;
+  if (chan) {
+    thumbBox = `<div class="thumb-wrap">${thumbBox}<span class="chan">${escapeHtml(chan)}</span></div>`;
+  }
+  const href = `https://www.youtube.com/watch?v=${encodeURIComponent(imp.video_id)}`;
+  // Sub-line carries information a person can use. The raw video_id and UC
+  // channel key were opaque and cost a line each (WO-041); they live in the
+  // record and in the block button's dataset, not on screen.
   const bits = [
-    fmtDuration(s.duration_s),
-    typeof s.view_count === "number" && s.view_count > 0
-      ? `${fmtCount(s.view_count)} views`
-      : "",
+    fmtDuration(imp.duration_s),
+    imp.view_count ? `${fmtCount(imp.view_count)} views` : "",
+    imp.published_at || "",
   ].filter(Boolean);
   li.innerHTML =
     `<div class="row-main">${thumbBox}<div class="row-text">` +
-    `<p class="title"><a href="${href}" target="_blank" rel="noreferrer">${escapeHtml(s.title || s.video_id)}</a></p>` +
-    `<div class="sub">${escapeHtml(bits.join(" · "))}` +
-    (bits.length ? " · " : "") +
-    `seen ${s.seen}×` +
-    (s.via_title ? ` · appeared after ${escapeHtml(s.via_title)}` : "") +
-    `</div></div><span class="row-actions"></span></div>`;
+    `<p class="title"><span class="slot">${imp.slot_index}</span> ` +
+    `<a href="${href}" target="_blank" rel="noreferrer">${escapeHtml(imp.title)}</a></p>` +
+    `<div class="sub">${escapeHtml(bits.join(" · "))}</div>` +
+    `</div><span class="row-actions"></span></div>`;
 
   const actions = li.querySelector(".row-actions");
 
@@ -261,21 +268,21 @@ function makeSuggestionLi(s) {
     '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 16v-1"/><path d="M12 13a2.5 2.5 0 1 0-1.5-4.5"/></svg>';
   why.addEventListener("click", (e) => {
     e.stopPropagation();
-    toggleExplain(li, s.video_id);
+    toggleExplain(li, imp.video_id);
   });
   actions.appendChild(why);
 
-  if (s.channel_id && isChannelId(s.channel_id)) {
+  if (imp.channel_id && isChannelId(imp.channel_id)) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "btn-icon btn-block";
-    const blocked = blocklistSet.has(s.channel_id);
+    const blocked = blocklistSet.has(imp.channel_id);
     btn.title = blocked ? "Unblock this channel" : "Block this channel";
     btn.setAttribute("aria-label", btn.title);
     btn.innerHTML = blocked
       ? '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>'
       : '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>';
-    btn.dataset.channelId = s.channel_id;
+    btn.dataset.channelId = imp.channel_id;
     btn.dataset.action = blocked ? "unblock" : "block";
     btn.addEventListener("click", () => {
       const id = btn.dataset.channelId;
@@ -318,7 +325,10 @@ function renderBlocklist(list) {
       btn.textContent = "Unblock";
       btn.addEventListener("click", () => {
         rpc("UNBLOCK_CHANNEL", { channel_id: id })
-          .then((r) => renderBlocklist(r.blocklist))
+          .then((r) => {
+            renderBlocklist(r.blocklist);
+            if (lastPageCache) renderPage(lastPageCache);
+          })
           .catch((err) =>
             console.warn("[Keel panel] unblock", err?.message || err)
           );
@@ -328,9 +338,8 @@ function renderBlocklist(list) {
       el.blockList.appendChild(li);
     }
   }
-  // The daemon excludes blocked channels from the walk; re-run so the change
-  // shows up in the list (WO-046).
-  refreshSuggestions({ force: true }).catch(() => {});
+  // Re-apply view filter when blocklist changes.
+  if (lastPageCache) renderPage(lastPageCache);
 }
 
 async function loadBlocklist() {
@@ -343,65 +352,66 @@ async function loadBlocklist() {
 }
 
 /**
- * The panel's primary list is our ranking, not YouTube's rail (WO-046). The
- * rail is never rendered as a browsable list — even in fallback paths, the
- * panel says it has nothing rather than mirror the page behind it.
+ * Incremental list update: never wipe+rebuild the whole <ol> on every
+ * STORE_UPDATED. Reuse <li> nodes by video_id|slot_index; only create,
+ * move, or remove as the set changes. Full clear only on page_load change
+ * or rail generation change.
  */
+function renderPage(lastPage) {
+  if (lastPage) lastPageCache = lastPage;
+  const source = lastPage || lastPageCache;
+  const all = source?.impressions || [];
+  // WO-016: filter at display only — corpus still has every row.
+  const rows = all.filter(
+    (imp) => !imp.channel_id || !blocklistSet.has(imp.channel_id)
+  );
+  const pageId = source?.pageLoadId ?? null;
+  const pageKey = `${pageId}|${source?.generation ?? ""}|${[...blocklistSet].join(",")}`;
 
-/** Seed the walk with the video currently being watched (context_video_id is
- * on every impression; they all share it on one page). Empty on non-watch
- * pages — the daemon then falls back to its last-watch context. */
-function currentSeed() {
-  const imps = lastPageCache?.impressions || [];
-  for (const imp of imps) if (imp.context_video_id) return imp.context_video_id;
-  return "";
-}
-
-function renderSuggestions(res, seed) {
-  const list = (res && res.suggestions) || [];
-  if (!list.length) {
+  if (pageKey !== renderedPageKey) {
     el.list.replaceChildren();
-    el.meta.textContent =
-      "Nothing to suggest yet — Keel needs to have seen a few watch pages first.";
+    renderedKeys.clear();
+    renderedPageKey = pageKey;
+  }
+
+  if (!rows.length) {
+    el.meta.textContent = pageId
+      ? `page ${String(pageId).slice(0, 8)}… · no cards yet` +
+        (all.length && !rows.length
+          ? ` (${all.length} hidden by blocklist)`
+          : "")
+      : "Open a watch page to begin.";
+    if (renderedKeys.size) {
+      el.list.replaceChildren();
+      renderedKeys.clear();
+    }
     return;
   }
+
+  const hidden = all.length - rows.length;
   el.meta.textContent =
-    `From ${escapeHtml(res.seed_title || seed || "your last watch")}` +
-    ` · graph ${res.graph_nodes} node(s), ${res.graph_edges} edge(s)` +
-    (seed ? "" : " · no watch page open, using last-watch context");
-  el.list.replaceChildren();
-  for (const s of list) el.list.appendChild(makeSuggestionLi(s));
-}
+    `${rows.length} suggestion${rows.length === 1 ? "" : "s"}` +
+    (hidden > 0 ? ` · ${hidden} blocked` : "") +
+    (source.failures ? ` · ${source.failures} extract fail(s)` : "");
 
-/** Re-run the walk only when the watched video or the entropy changed — never
- * on every scan tick (WO-046). */
-async function refreshSuggestions({ force = false } = {}) {
-  const seed = currentSeed();
-  const pageId = lastPageCache?.pageLoadId ?? "";
-  const key = `${pageId}|${seed}|${entropy}`;
-  if (!force && key === lastSuggestKey) return;
-  lastSuggestKey = key;
-  el.meta.textContent = "Walking the graph…";
-  try {
-    const r = await rpc("SUGGEST", {
-      seed_video_id: seed,
-      entropy,
-      limit: 25,
-    });
-    renderSuggestions(r.suggest || {}, seed);
-  } catch (err) {
-    el.list.replaceChildren();
-    el.meta.textContent =
-      "Suggestions unavailable — start Keel's desktop app and open a watch page.";
+  const nextKeys = new Set();
+  for (const imp of rows) {
+    const k = rowKey(imp);
+    nextKeys.add(k);
+    let li = renderedKeys.get(k);
+    if (!li) {
+      li = makeLi(imp);
+      renderedKeys.set(k, li);
+    }
+    // appendChild moves existing nodes — reorders without recreate.
+    el.list.appendChild(li);
   }
-}
 
-/** Absorb a page proof from the SW; re-run the walk on a new page_load_id. */
-function absorbLastPage(lastPage) {
-  const changed =
-    !lastPageCache || lastPageCache.pageLoadId !== lastPage.pageLoadId;
-  lastPageCache = lastPage;
-  if (changed) refreshSuggestions({ force: true }).catch(() => {});
+  for (const [k, li] of renderedKeys) {
+    if (nextKeys.has(k)) continue;
+    li.remove();
+    renderedKeys.delete(k);
+  }
 }
 
 function renderStats(stats) {
@@ -481,7 +491,7 @@ el.list.addEventListener("click", (e) => {
  */
 function applyStoreUpdate(payload) {
   if (!payload || typeof payload !== "object") return;
-  if (payload.lastPage) absorbLastPage(payload.lastPage);
+  if (payload.lastPage) renderPage(payload.lastPage);
   if (payload.stats) {
     renderStats(payload.stats);
     return;
@@ -541,10 +551,7 @@ async function doWipe() {
       first_observed_at: null,
       last_observed_at: null,
     });
-    // No corpus left and no rail to fall back to (WO-046).
-    lastPageCache = null;
-    lastSuggestKey = "";
-    refreshSuggestions({ force: true }).catch(() => {});
+    renderPage({ pageLoadId: null, impressions: [], failures: 0 });
     setDataStatus(`Deleted ${deleted} row(s). Corpus is empty.`);
   } catch (err) {
     setDataStatus(err.message || String(err), true);
@@ -563,12 +570,12 @@ async function refreshStats({ force = false } = {}) {
     const st = await rpc("GET_STATS");
     setDaemonUi(Boolean(st.connected));
     renderStats(st.stats);
-    if (st.lastPage) absorbLastPage(st.lastPage);
+    if (st.lastPage) renderPage(st.lastPage);
   } catch (err) {
     setDaemonUi(false, err.message);
     try {
       const s = await rpc("GET_STATUS");
-      if (s.lastPage) absorbLastPage(s.lastPage);
+      if (s.lastPage) renderPage(s.lastPage);
     } catch {
       /* ignore */
     }
@@ -643,13 +650,6 @@ if (el.hideRail) {
     rpc("SET_HIDE_MODE", { mode: next }).catch((err) => {
       console.warn("[Keel panel] SET_HIDE_MODE", err?.message || err);
     });
-  });
-}
-
-if (el.entropy) {
-  el.entropy.addEventListener("input", () => {
-    entropy = Number(el.entropy.value) || 0;
-    refreshSuggestions({ force: true }).catch(() => {});
   });
 }
 

@@ -1056,22 +1056,18 @@ func TestBundleRoundTrip(t *testing.T) {
 		}
 	}
 
-	// A second install verifies the bundle, then gains the edge through the
-	// release-consumption path (WO-047).
+	// A second install imports it and gains the edge.
 	b, err := Open(filepath.Join(dir, "b.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	bundle, err := b.verifyBundle(raw)
+	in, err := b.ImportBundle(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bundle.NodeID == "" || len(bundle.Edges) == 0 {
-		t.Fatalf("verified bundle had nothing: %+v", bundle)
-	}
-	if _, _, err := b.ImportEdges(bundle.NodeID, bundle.Edges, bundle.Catalogue); err != nil {
-		t.Fatal(err)
+	if in.NodeID == "" || in.Edges == 0 {
+		t.Fatalf("import produced nothing: %+v", in)
 	}
 	sug, err := b.Suggest(seed, 50, 10)
 	if err != nil {
@@ -1085,13 +1081,17 @@ func TestBundleRoundTrip(t *testing.T) {
 		t.Fatalf("peer catalogue title missing, got %q", sug.Suggestions[0].Title)
 	}
 
-	// Your own bundle is refused — merging it would double your own counts.
-	if _, err := a.verifyBundle(raw); err == nil {
-		t.Fatal("verifying own bundle should be refused")
+	// Importing your own bundle is refused — it would double your own counts.
+	if _, err := a.ImportBundle(path); err == nil {
+		t.Fatal("importing own bundle should be refused")
 	}
 
 	// Garbage is rejected with a readable error rather than a panic.
-	if _, err := b.verifyBundle([]byte("not json")); err == nil {
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(bad, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.ImportBundle(bad); err == nil {
 		t.Fatal("garbage bundle should be refused")
 	}
 }
@@ -1254,14 +1254,10 @@ func TestBundleDigestDetectsTampering(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	tamperedRaw, err := os.ReadFile(bad)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := c.ImportBundle(bad); err == nil {
+		t.Fatal("tampered bundle was imported — the digest is not being checked")
 	}
-	if _, err := c.verifyBundle(tamperedRaw); err == nil {
-		t.Fatal("tampered bundle verified — the digest is not being checked")
-	}
-	// verifyBundle writes nothing, so the alteration cannot have leaked in.
+	// And nothing from it landed.
 	peers, err := c.Peers()
 	if err != nil {
 		t.Fatal(err)
