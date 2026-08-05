@@ -108,10 +108,41 @@ Why this is the right tool here:
 - It needs no threshold, no population, and no trust in the peer. Two nodes are
   enough, which means it works *now*, during bootstrap, when STAR cannot.
 
-**Build this alongside the catalogue transport.** It reuses the same peer
-connection, it is small, and it produces the single number that decides whether
-the published dataset can live on free channels at all — a decision currently
-blocking the STAR client design.
+## Sketches are also how the crawl picks peers
+
+This is the reason to build sketching first rather than treating it as a
+measurement side-quest.
+
+The neighbour crawl has to answer "which peers are worth asking?" Without an
+answer it either asks everyone — which does not scale and leaks interest in every
+direction — or picks arbitrarily. A sketch of a peer's video set, merged against
+the sketch of the walk's current neighbourhood, estimates overlap in a few KB.
+That estimate *is* graph proximity, and it is the routing metric the crawl needs.
+
+So one primitive does two jobs:
+
+1. **Routing** — rank peers by estimated overlap with where the user currently
+   is, and ask the top few.
+2. **Research** — the same merge, run across whole corpora, yields the
+   cross-user overlap figure that decides whether published output fits on free
+   channels.
+
+**Build it alongside the catalogue transport**, before the crawl's peer-selection
+logic, since that logic depends on it.
+
+## Why not private set intersection
+
+PSI answers the same question exactly rather than approximately, and it was the
+earlier proposal. It is deferred:
+
+- It needs an interactive protocol per pair, so it cannot be used for cheap
+  routing across many candidate peers.
+- The routing use only needs a ranking, where an approximate answer is
+  sufficient.
+- Sketching is a few hundred lines and reuses one code path for both jobs.
+
+Revisit PSI if an exact private intersection is ever needed for its own sake.
+Nothing here forecloses it.
 
 Acceptance: two nodes with disjoint-ish corpora exchange sketches and report
 `|A|`, `|B|`, `|A ∪ B|` and the implied overlap fraction, with the estimate
