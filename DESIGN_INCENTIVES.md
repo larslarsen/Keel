@@ -24,25 +24,36 @@ history, searchable, with channel blocking and hiding.
 
 This is the product. It is complete at Level 1 and must stay that way.
 
-## Level 2 — catalogue
+## Level 2 — mirror the public dataset
 
-**Earns: search that reaches past your own history, and correct labels.**
+**Earns: a warm cache. Instant suggestions instead of a fetch on every cold hop.**
 
-`peerGraph()` (`daemon/store/peers.go:155`) reads `peer_edges` only — nothing in
-the suggestion walk touches `peer_catalogue`. So Level 2 delivers exactly two
-things: more videos become findable, and "channel unknown" rows resolve.
+Per `DESIGN_BOOTSTRAP` §5d, Level 2 is not "publish your catalogue" — it is
+holding and serving blocks of the public aggregate. Nothing personal leaves. The
+node contributes storage and bandwidth, the way a seeder does.
 
-Honest framing matters here. Level 2 is a shared dictionary, and overselling it
-as better recommendations will be immediately falsified by the user's own panel.
+The incentive is unusually clean because **the cost and the benefit are the same
+object**. The disk-space slider sizes an LRU cache of neighbourhoods; that cache
+is what makes the user's own hops instant, and it is simultaneously what other
+people fetch from. Giving more storage directly buys a better local experience.
+
+No withholding is involved, which is why this rung needs no policy at all.
+
+Note that a Level 1 node still fetches blocks and still gets working suggestions
+(§5d: "out of the box for every user"). Level 2's benefit is latency and depth of
+cache, not access.
 
 ## Level 3 — cohort
 
-**Earns: suggestions that leave your own history, and comparison.**
+**Earns: comparison — the visualizer.**
 
-This is the first level where the walk genuinely changes, because aggregate edges
-land in `peer_edges` and the graph grows past where the user has personally been.
+An earlier draft claimed this was the first level where the walk leaves the
+user's own history. That is wrong: block fetch does that at any level, per §5d.
+What Level 3 adds is the user's own aggregated edges to the shared pool, which
+deepens the dataset everyone draws on rather than unlocking anything locally.
 
-It is also where a **visualizer** becomes possible and not before: "how does my
+The real reward here is that a **visualizer** becomes possible and not before:
+"how does my
 feed compare to everyone else's" requires a cohort to compare against. At Levels
 1–2 there is nothing on the other side of the comparison. This is intrinsic, not
 withheld — the feature cannot exist without the data.
@@ -58,15 +69,15 @@ where a feed leads. Attaching a perk would attract contributors who have not
 thought about permanence, which is the population this level should least
 attract.
 
-## The incentive nobody has to design
+## Why this ladder needs almost no policy
 
-Sketch-based peer routing (`WO-052` Part 2) ranks peers by estimated overlap with
-where the user currently is. A node holding nothing useful ranks low everywhere,
-so peers stop selecting it and it gets slower, thinner service.
+Only Level 3 requires a designed reward. Levels 1 and 2 are self-incentivising
+because the thing the user gives is the thing the user gets — the funnel
+inspector runs on their own recording, and the block cache is both contribution
+and local speed. Level 4 is chosen by people who already want the outcome.
 
-That is not a rule and not a punishment — it is what ranking by usefulness does.
-It is the one incentive that needs no policy, cannot be argued about, and does
-not require withholding anything from anyone.
+A previous draft proposed sketch-based peer ranking as an emergent incentive.
+Dropped: §5d addresses blocks by key, so there is no peer ranking to exploit.
 
 ## Open question for Lars
 
