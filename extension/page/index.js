@@ -288,7 +288,8 @@ const LEVELS = [
       "Would publish your full recommendation trails, attributed to you. " +
       "YouTube already knows what it showed you — what changes is that " +
       "everyone else would too, and that YouTube would know you are the one " +
-      "publishing it. Researchers doing this have had accounts terminated. " +
+      "publishing it. Researchers running similar projects on other platforms " +
+      "have been retaliated against. " +
       "Cannot be withdrawn once copied.",
   },
 ];
