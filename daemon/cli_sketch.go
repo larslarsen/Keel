@@ -6,15 +6,17 @@
 //	"Cross-user dedup factor — the gate before STAR. ... One machine cannot
 //	measure it ... Resolve this before committing STAR."
 //
-// Two installs can resolve it without either publishing an observation:
+// Sketches resolve it without any node publishing an observation.
 //
-//	node A$  keel-host sketch > a.json
-//	node B$  keel-host sketch > b.json
-//	         keel-host sketch compare a.json b.json
+// **Nodes exchange sketches over the peer transport, automatically. No user
+// ever moves a file.** Person-to-person transfer is rejected project-wide: it
+// requires the recipient to trust the sender, and it makes the user do work the
+// daemon should be doing. That applies here exactly as it applies everywhere
+// else, and this file is not an exception to it.
 //
-// The file that moves between them holds no video ids, no edges and no counts —
-// only 16 KB of small integers (see store/sketch.go). It is safe to paste into
-// an issue or a chat.
+// The subcommands below are a local diagnostic — for inspecting this node's own
+// sketch and for testing the comparison logic against a fixture. They are not
+// the transport and must not become a workflow anyone is told to follow.
 package main
 
 import (
@@ -26,14 +28,17 @@ import (
 )
 
 func sketchUsage() {
-	fmt.Println(`keel-host sketch [--tuple]            emit this node's sketch as JSON
-keel-host sketch compare A.json B.json  compare two sketches
+	fmt.Println(`keel-host sketch [--tuple]              show this node's sketch
+keel-host sketch compare A.json B.json  compare two sketches (testing)
 
   --tuple   sketch full measurement tuples (surface, slot, day, cohort)
             instead of plain (from, to) edges
 
 A sketch reports roughly how many distinct edges a node has seen. It cannot be
-searched, reversed, or tested for membership — it carries no video ids at all.`)
+searched, reversed, or tested for membership — it carries no video ids at all.
+
+These are diagnostics. In normal operation the daemon exchanges sketches with
+peers by itself; you are never expected to move a file to anyone.`)
 }
 
 func runSketch(args []string) int {

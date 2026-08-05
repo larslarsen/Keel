@@ -153,6 +153,16 @@ this before committing STAR."*
 They are the cheapest way to resolve it, because two nodes can exchange sketches
 and get `|A ∪ B|` without either publishing an edge.
 
+**The exchange is automatic, over the peer transport. No user ever moves a
+file.** Person-to-person transfer is rejected project-wide — it makes the
+recipient trust the sender, and it makes the user do the daemon's job. Sketches
+are not an exception. The `keel-host sketch` subcommands are a local diagnostic
+for inspecting this node and testing the comparison logic; they are not the
+mechanism and must not be written up as a procedure for anyone to follow.
+
+Acceptance for this part: two daemons on the same machine exchange sketches and
+report the overlap **with no user action beyond starting them**.
+
 ## Why not private set intersection
 
 PSI answers the same question exactly rather than approximately, and it was the
