@@ -286,8 +286,10 @@ const LEVELS = [
     name: "Transparency contributor",
     body:
       "Would publish your full recommendation trails, attributed to you. " +
-      "Anyone — including YouTube — could read them, and they could not be " +
-      "withdrawn once copied.",
+      "YouTube already knows what it showed you — what changes is that " +
+      "everyone else would too, and that YouTube would know you are the one " +
+      "publishing it. Researchers doing this have had accounts terminated. " +
+      "Cannot be withdrawn once copied.",
   },
 ];
 
