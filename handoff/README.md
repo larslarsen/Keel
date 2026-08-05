@@ -67,3 +67,4 @@ log has not been made — it will drift out from under whoever is implementing i
 | 049 | **In-extension consent screen** | Anyone | **Open — blocks store submission** |
 | 050 | **Recapture fixtures logged out** | Jr Dev | **Done — LIVE via Portland Andy splice (see ticket)** |
 | 051 | **Contribution level control** | Anyone | **Open — blocks store submission** |
+| 052 | **Level 2: catalogue sharing over the swarm** | Sr Dev | **Open — current** |
