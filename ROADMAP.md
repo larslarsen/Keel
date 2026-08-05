@@ -41,6 +41,26 @@ point it at a bigger corpus.
 persistent channel blocklist and a "why was this recommended" inspector work today, on the corpus
 that already exists.
 
+## Release sequencing — decided 2026-08-05
+
+**Build the full product before applying to the Chrome Web Store.** Lars: so the
+reviewers see how it works, and so we hopefully never have to apply again.
+
+This reverses an earlier reviewer suggestion to submit early. The deciding
+argument is the frozen extension: contribution levels (WO-051) are extension UI,
+so submitting before they exist guarantees a second submission. One application
+with the final extension is worth the delay.
+
+Consequence: WO-048 (privacy policy), WO-049 (consent screen) and WO-051
+(contribution levels) are still required, but they no longer gate anything
+today — they gate the submission, which now comes after the contribution
+pipeline. Development attention moves to stage 5.
+
+Caveat kept for honesty: reviewers will not run the daemon, so the extension is
+reviewed in its disconnected state regardless. That is accepted and specified
+(`BUILD_P0` §9). "They can see how it works" means the listing and the source,
+not a live demo.
+
 ## Near queue
 
 ### WO-014 — SidePanel: suggestions first *(done 2026-08-03)*
