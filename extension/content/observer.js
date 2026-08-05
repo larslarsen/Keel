@@ -16,6 +16,7 @@ import {
 } from "./extract.js";
 import { browser } from "../lib/browser.js";
 import { startHide } from "./hide.js";
+import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
 
 const THROTTLE_MS = 750;
 const MAX_ARM_ATTEMPTS = 10;
@@ -368,6 +369,21 @@ function listenSpa() {
   });
 }
 
+/**
+ * Observation requires explicit consent (WO-049).
+ *
+ * Read straight from storage rather than asking the SW: this runs before the
+ * first message and must fail closed if anything is unreadable.
+ */
+async function consented() {
+  try {
+    const bag = await browser.storage?.local?.get(CONSENT_KEY);
+    return consentGranted(bag?.[CONSENT_KEY]);
+  } catch {
+    return false;
+  }
+}
+
 async function start() {
   if (armed) return;
   armed = true;
@@ -375,7 +391,19 @@ async function start() {
   // Hide is independent of surface: CSS is scoped to watch #secondary +
   // home grid; off-surface pages are unaffected. Start before arming so
   // with-panel / always apply without waiting for the first scan.
+  // Hiding is a display preference and is allowed either way; recording is not.
   startHide().catch((e) => console.warn(LOG, "hide", e?.message || e));
+  if (!(await consented())) {
+    console.info(LOG, "no consent — not recording");
+    // Arm later if consent is given, without needing a page reload.
+    browser.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === "CONSENT_CHANGED" && consentGranted(msg.payload?.consent)) {
+        armed = false;
+        start().catch(() => {});
+      }
+    });
+    return;
+  }
   listenSpa();
   await onNavigate({ force: true });
   console.info(LOG, "observer armed");

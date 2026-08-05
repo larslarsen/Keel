@@ -10,6 +10,17 @@
 
 export const HIDE_MODE_KEY = "hide_recommendations";
 
+/** First-run consent (WO-049): "granted" | "declined" | absent = undecided. */
+export const CONSENT_KEY = "consent";
+
+/**
+ * Only an explicit "granted" permits observation. Absent, unreadable or
+ * anything unexpected means no — a corrupt value must never read as consent.
+ */
+export function consentGranted(v) {
+  return v === "granted";
+}
+
 /** @type {readonly HideMode[]} */
 export const HIDE_MODES = Object.freeze(["on", "off"]);
 

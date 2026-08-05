@@ -33,6 +33,7 @@ export const browser = {
     getURL: (...a) => raw.runtime.getURL(...a),
     sendMessage: p(raw.runtime.sendMessage, raw.runtime),
     connect: (...a) => raw.runtime.connect(...a),
+    onInstalled: raw.runtime.onInstalled,
     connectNative: (...a) => raw.runtime.connectNative(...a),
     onMessage: raw.runtime.onMessage,
     onConnect: raw.runtime.onConnect,

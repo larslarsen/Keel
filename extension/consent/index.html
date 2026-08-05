@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Keel — before you start</title>
+    <link rel="stylesheet" href="../page/style.css" />
+  </head>
+  <body>
+    <h1>Keel</h1>
+    <p class="lead">
+      Keel records which videos YouTube recommends to you, so you can see and
+      control your own recommendations. Nothing is recorded until you choose.
+    </p>
+
+    <h2>What it records</h2>
+    <p class="meta">
+      The videos YouTube offers you on watch pages and the homepage — their
+      title, channel, length, view count, and which position they appeared in.
+    </p>
+
+    <h2>What it does not record</h2>
+    <p class="meta">
+      Not what you watch. Not what you search for. Not who you are — there is no
+      account and no sign-in. Nothing outside <code>youtube.com</code>.
+    </p>
+
+    <h2>Where it goes</h2>
+    <p class="meta">
+      Into a file on this computer, written by the Keel desktop app you install
+      yourself. It is not sent to us — there is no server to send it to. You can
+      export everything as JSON, or delete all of it, at any time.
+    </p>
+
+    <div class="btn-row" id="choices">
+      <button type="button" class="btn" id="btn-accept">Start recording</button>
+      <button type="button" class="btn" id="btn-decline">Don't record</button>
+    </div>
+    <p class="meta" id="status" role="status"></p>
+
+    <p class="meta">
+      Declining leaves Keel fully working — it simply records nothing. You can
+      change your mind later on the Your data page.
+    </p>
+    <p class="meta">
+      <a href="https://github.com/larslarsen/Keel/blob/main/PRIVACY.md"
+        target="_blank" rel="noreferrer">Privacy policy</a>
+    </p>
+  </body>
+  <script type="module" src="index.js"></script>
+</html>

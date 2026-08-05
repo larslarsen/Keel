@@ -9,6 +9,7 @@ import { createNativeBridge } from "../lib/native.js";
 import {
   DEFAULT_HIDE_MODE,
   HIDE_MODE_KEY,
+  CONSENT_KEY,
   coerceHideMode,
   isChannelId,
   isHideMode,
@@ -401,6 +402,20 @@ async function handle(message, sender) {
     }
 
     case "THUMBNAIL":
+    case "GET_CONSENT": {
+      const bag = await browser.storage.local.get(CONSENT_KEY);
+      return { consent: bag?.[CONSENT_KEY] ?? null };
+    }
+
+    case "SET_CONSENT": {
+      const v = message.payload?.consent;
+      if (v !== "granted" && v !== "declined") throw new Error("bad consent value");
+      await browser.storage.local.set({ [CONSENT_KEY]: v });
+      // Content scripts gate on this; tell them without waiting for a reload.
+      await broadcastToYoutubeTabs({ type: "CONSENT_CHANGED", payload: { consent: v } });
+      return { consent: v };
+    }
+
     case "GET_CONTRIBUTION":
     case "SET_CONTRIBUTION":
     case "GET_DISK_BUDGET":
@@ -532,3 +547,18 @@ if (browser.alarms?.create && browser.alarms?.onAlarm) {
 
 bridge.connect();
 console.info(LOG, "ready");
+
+/**
+ * Show the consent screen once, on install (WO-049).
+ *
+ * Not on update: DESIGN_v2 requires re-notification when data handling changes,
+ * not on every version bump.
+ */
+if (browser.runtime.onInstalled?.addListener) {
+  browser.runtime.onInstalled.addListener((details) => {
+    if (details?.reason !== "install") return;
+    browser.tabs
+      ?.create?.({ url: browser.runtime.getURL("consent/index.html") })
+      .catch(() => {});
+  });
+}
