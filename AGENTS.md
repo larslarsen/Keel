@@ -54,3 +54,4 @@ the project, not just the code. If one seems wrong, say so and cite the section 
 - `v1_prototype/` is **not a reference** — ten documented defects in `DESIGN_v2.md` §5.1.
 - Decisions live in documents, not chat. New decisions get a work order in `handoff/`.
 - Don't widen scope. If something seems to need a later phase, that's a scope error — raise it.
+- `DESIGN_INCENTIVES.md` — what each contribution level earns, and why Level 4 earns nothing.
