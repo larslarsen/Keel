@@ -70,13 +70,29 @@ func alphaForEntropy(entropy int) float64 {
 // a video repeatedly at slot 0 is a stronger signal than one glimpsed once at
 // slot 18. Slot weight decays gently so a deep-but-frequent pair still counts.
 func (s *Store) loadGraph() (map[string][]edge, int, error) {
+	// Both surfaces, not only watch pages.
+	//
+	// This used to be WATCH_NEXT only, which silently excluded every homepage
+	// row from the graph — on a live corpus, 2,900 of them including 218
+	// livestreams. Those videos could never be suggested from anywhere, however
+	// often they were pushed at the user.
+	//
+	// The homepage is arguably the more revealing surface: a watch rail responds
+	// to the video in front of you, while the homepage is what YouTube chooses
+	// to put in front of you unprompted. Leaving it out of the walk threw away
+	// the better half of the signal.
+	//
+	// Homepage rows have no context video, so they hang off the HomeFrom
+	// sentinel. Nothing points *to* that sentinel, so it never appears in a walk
+	// seeded from a video — it matters when the walk restarts across the whole
+	// corpus.
 	rows, err := s.db.Query(`
-SELECT context_video_id, video_id, COUNT(*) AS n, AVG(slot_index) AS avg_slot
+SELECT COALESCE(NULLIF(context_video_id, ''), ?) AS from_id,
+       video_id, COUNT(*) AS n, AVG(slot_index) AS avg_slot
 FROM impressions
-WHERE surface = 'WATCH_NEXT'
-  AND context_video_id IS NOT NULL AND context_video_id != ''
-  AND context_video_id != video_id
-GROUP BY context_video_id, video_id`)
+WHERE surface IN ('WATCH_NEXT', 'HOME')
+  AND COALESCE(NULLIF(context_video_id, ''), ?) != video_id
+GROUP BY from_id, video_id`, HomeFrom, HomeFrom)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -193,7 +209,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 
 	var ranked []scored
 	for id, sc := range rank {
-		if id == seed || sc <= 0 || seen[id] {
+		if id == seed || id == HomeFrom || sc <= 0 || seen[id] {
 			continue
 		}
 		ranked = append(ranked, scored{id, sc})
@@ -218,7 +234,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 			corpusRank, corpusVia := walkFrom(g, roots, alpha)
 			via = corpusVia
 			for id, sc := range corpusRank {
-				if id == seed || sc <= 0 || seen[id] {
+				if id == seed || id == HomeFrom || sc <= 0 || seen[id] {
 					continue
 				}
 				ranked = append(ranked, scored{id, sc})
@@ -229,7 +245,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	if len(ranked) == 0 {
 		out.RailOnly = true
 		for id, sc := range rank {
-			if id == seed || sc <= 0 {
+			if id == seed || id == HomeFrom || sc <= 0 {
 				continue
 			}
 			ranked = append(ranked, scored{id, sc})
@@ -410,32 +426,52 @@ func walkFrom(g map[string][]edge, restart map[string]float64, alpha float64) (m
 	return rank, via
 }
 
-// watchedRoots is a uniform restart distribution over every video this user has
-// actually watched — the context videos of their own observations.
+// watchedRoots is the restart distribution for a corpus-wide walk: every place
+// this user's recommendations came from, weighted by how much came from it.
+//
+// Weighted rather than uniform, because the homepage is one root but a whole
+// surface. On a live corpus it held 2,900 observations against roughly 20 for a
+// typical watch page, so sharing mass equally gave each homepage video about
+// 1e-5 — reachable in principle and invisible in practice, which is why nothing
+// from the homepage ever appeared.
+//
+// Weighting by observation count says the obvious thing instead: suggestions
+// should lean where the user's recommendations actually came from.
 func (s *Store) watchedRoots() (map[string]float64, error) {
 	rows, err := s.db.Query(`
-SELECT DISTINCT context_video_id FROM impressions
-WHERE context_video_id IS NOT NULL AND context_video_id != ''`)
+SELECT COALESCE(NULLIF(context_video_id, ''), ?) AS root, COUNT(*) AS n
+FROM impressions
+WHERE surface IN ('WATCH_NEXT', 'HOME')
+GROUP BY root`, HomeFrom)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	ids := []string{}
+
+	counts := map[string]float64{}
+	var total float64
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var root string
+		var n float64
+		if err := rows.Scan(&root, &n); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		if root == "" || n <= 0 {
+			continue
+		}
+		counts[root] = n
+		total += n
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	out := make(map[string]float64, len(ids))
-	for _, id := range ids {
-		out[id] = 1.0 / float64(len(ids))
+	if total == 0 {
+		return nil, nil
 	}
-	return out, nil
+	for k, v := range counts {
+		counts[k] = v / total
+	}
+	return counts, nil
 }
 
 // railFor returns the videos this user was shown alongside one context video.
