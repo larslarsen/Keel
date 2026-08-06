@@ -3,6 +3,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,12 +11,24 @@ import (
 	"github.com/keel-app/keel/daemon/bridge"
 )
 
+// pageLoadSeq gives each seeded impression its own page load.
+//
+// impressions is keyed on (page_load_id, surface, video_id), so reusing one id
+// across calls silently collapses repeats into a single row — which quietly
+// breaks any test that depends on how often something was recommended.
+var pageLoadSeq int
+
+func nextPageLoad() string {
+	pageLoadSeq++
+	return fmt.Sprintf("%08d-0000-4000-8000-000000000000", pageLoadSeq)
+}
+
 // seedEdge records one impression of `to` recommended from `from`.
 func seedEdge(t *testing.T, st *Store, from, to string, slot int) {
 	t.Helper()
 	ctx := from
 	if _, err := st.PutImpressions([]bridge.Impression{{
-		PageLoadID: "22222222-2222-4222-8222-222222222222",
+		PageLoadID: nextPageLoad(),
 		ObservedAt: time.Now().UnixMilli(), Surface: "WATCH_NEXT",
 		ContextVideoID: &ctx, SlotIndex: slot, VideoID: to,
 		Title: "Title " + to,
@@ -220,21 +233,36 @@ func TestEmptyBlockIsServable(t *testing.T) {
 	}
 }
 
-// TestLocalBlockKeys lists what this node can serve, local and imported alike.
-func TestLocalBlockKeys(t *testing.T) {
+// TestLocalBlockKeysNeverAdvertisesWatchHistory is the disclosure this call can
+// cause if it is wrong: the context videos in `impressions` are the videos this
+// user watched, so a mirroring node announcing them would be publishing a
+// viewing history to every peer on the network.
+func TestLocalBlockKeysNeverAdvertisesWatchHistory(t *testing.T) {
 	st := openStore(t, "a.sqlite")
-	seedEdge(t, st, "seedaaaaaaa", "targetaaaa1", 0)
-	seedEdge(t, st, "seedbbbbbbb", "targetbbbb1", 0)
+	seedEdge(t, st, "watchedvid1", "targetaaaa1", 0)
+	seedEdge(t, st, "watchedvid2", "targetbbbb1", 0)
 
-	keys, err := st.LocalBlockKeys()
+	// Mirroring (Level 2): nothing this user watched may be announced.
+	mirror, err := st.LocalBlockKeys(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range mirror {
+		if k == "watchedvid1" || k == "watchedvid2" {
+			t.Fatalf("a mirroring node advertised a watched video: %v", mirror)
+		}
+	}
+
+	// Level 3 and above, where publishing one's own edges is the opt-in.
+	own, err := st.LocalBlockKeys(false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := map[string]bool{}
-	for _, k := range keys {
+	for _, k := range own {
 		found[k] = true
 	}
-	if !found["seedaaaaaaa"] || !found["seedbbbbbbb"] {
-		t.Errorf("keys = %v, want both seeds", keys)
+	if !found["watchedvid1"] || !found["watchedvid2"] {
+		t.Errorf("keys = %v, want both watched videos", own)
 	}
 }

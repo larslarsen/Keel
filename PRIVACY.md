@@ -66,10 +66,14 @@ can show you the videos it has recorded. Each is fetched once and stored
 locally. No observation data is sent — these are ordinary image loads for videos
 YouTube already showed you.
 
-**The peer network.** Keel joins a peer-to-peer network to fetch recommendation
-data other people have published, which is what lets it suggest videos you have
-never been shown. At the default setting it **only fetches** — it publishes
-nothing, serves nothing, and announces nothing.
+**The peer network.** Keel can join a peer-to-peer network to obtain
+recommendation data other people have published, which is what lets it suggest
+videos you have never been shown.
+
+**At the default setting it asks the network for nothing at all.** It works from
+a seed file that every user downloads identically, plus your own recording.
+Asking a peer for a specific video would tell that peer which video you asked
+about, so the default is to never ask.
 
 Keel does not use the YouTube API, and never contacts any Keel-operated server,
 because none exists. Peer discovery uses the public IPFS network, which nobody
@@ -80,10 +84,14 @@ in this project runs or controls.
 This is the honest cost of a peer-to-peer design and we would rather state it
 plainly than bury it.
 
-When Keel asks the network for data about a video, the peers it asks can see
-**your IP address and which video you asked about**. This is the same exposure
-any peer-to-peer system has — BitTorrent works the same way — and it is the one
-place where using Keel is visible to strangers rather than only to YouTube.
+**This does not apply at the default setting**, which asks for nothing.
+
+Above the default, when Keel asks the network about a video, the peers it asks
+can see **your IP address and which video you asked about**. This is the same
+exposure any peer-to-peer system has — BitTorrent works the same way — and it is
+the one place where using Keel is visible to strangers rather than only to
+YouTube. The seed file limits it to unusual videos, because common ones are
+already answered locally.
 
 What they cannot see: your history, anything you have recorded, what you
 actually watched, or any link between separate requests and a person. Keel's
@@ -98,12 +106,16 @@ and Keel keeps working on your own data alone.
 Contributing is **off by default** and every level above the default is a
 deliberate choice you make.
 
-**Level 1 — personal (the default).** Nothing you observe leaves your device.
-Keel still fetches from the network so suggestions work.
+**Level 1 — personal (the default).** Nothing leaves your device, including
+questions. Keel neither publishes nor asks; it works from the shared seed file
+and your own recording. Downloading that seed is identical for every user, so it
+says nothing about you.
 
 **Level 2 — mirror.** Your computer stores and passes on data *other people*
-published, using the disk space you allot. Nothing you observed is included.
-This donates bandwidth and storage, not information about you.
+published, using the disk space you allot, and may ask peers for videos the seed
+does not cover. Nothing you observed is published, and the list of videos your
+computer offers contains only what it is hosting for others — never what you
+watched. The trade you are accepting is the request exposure described above.
 
 **Levels 3 and 4** would publish aggregate or attributed records of what you
 were recommended. **These are not built and nothing is sent at these settings

@@ -66,7 +66,7 @@ type Store interface {
 	BuildBlock(videoID, cohort string) (*store.Block, error)
 	BuildMirrorBlock(videoID, cohort string) (*store.Block, error)
 	ImportBlock(raw []byte) (*store.Block, int64, error)
-	LocalBlockKeys() ([]string, error)
+	LocalBlockKeys(mirrorOnly bool) ([]string, error)
 	SwarmIdentity() ([]byte, error)
 	Cohort() string
 }
@@ -74,9 +74,16 @@ type Store interface {
 // Config controls what a node offers and consumes.
 type Config struct {
 	// Serve advertises this node's blocks and answers requests. False at
-	// contribution Level 1: the node still fetches, per §5d ("out of the box
-	// for every user"), but offers nothing.
+	// contribution Level 1, which offers nothing.
 	Serve bool
+	// Fetch allows on-demand block requests to peers.
+	//
+	// False at Level 1, and that is the whole of Level 1's promise: a request
+	// discloses to the peer answering it which video was asked about, so a node
+	// that never asks discloses nothing. Level 1 runs on the seed pack and its
+	// own recording, both of which involve no query. Turning this on is part of
+	// what a user accepts when moving to Level 2.
+	Fetch bool
 	// ServeOwnObservations includes this node's own edges in served blocks.
 	//
 	// False is Level 2 — mirror and re-serve what came from other people,
@@ -264,7 +271,7 @@ func (n *Node) Announce(ctx context.Context) error {
 	if !n.cfg.Serve {
 		return nil
 	}
-	keys, err := n.st.LocalBlockKeys()
+	keys, err := n.st.LocalBlockKeys(!n.cfg.ServeOwnObservations)
 	if err != nil {
 		return err
 	}
@@ -296,6 +303,12 @@ func (n *Node) Announce(ctx context.Context) error {
 // video simply means nobody holding it is online, which is the normal case for
 // the long tail.
 func (n *Node) Fetch(ctx context.Context, key string) (int64, error) {
+	if !n.cfg.Fetch {
+		// Level 1 asks nobody anything. Not a failure — the seed pack is
+		// expected to answer the common case, and a miss simply means this
+		// node works from what it already has.
+		return 0, nil
+	}
 	// Collapse duplicate concurrent requests — prewarm and a user-driven walk
 	// routinely want the same block at the same moment.
 	n.mu.Lock()

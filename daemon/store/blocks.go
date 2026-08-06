@@ -225,17 +225,26 @@ func (s *Store) buildBlock(videoID, cohort string, mirrorOnly bool) (*Block, err
 	return b, nil
 }
 
-// LocalBlockKeys lists the context videos this node can serve a block for.
+// LocalBlockKeys lists what this node advertises to the network.
 //
-// This is what a node advertises. It is not sensitive in the way an impression
-// log is — it is the set of videos the node holds edges for, which after peer
-// imports is largely other people's data — but it is not nothing either, so
-// publishing it is gated on contribution level by the caller, not here.
-func (s *Store) LocalBlockKeys() ([]string, error) {
-	rows, err := s.db.Query(`
-SELECT DISTINCT COALESCE(NULLIF(context_video_id, ''), ?) FROM impressions
+// mirrorOnly must follow the contribution level, and getting it wrong is a real
+// disclosure rather than a cosmetic one: the set of context videos drawn from
+// `impressions` is the list of videos this user watched. Advertising that is
+// equivalent to publishing a viewing history, which no level below 3 permits.
+//
+// So a mirroring node advertises only what it holds on behalf of other people.
+// It is genuinely donating storage and bandwidth, and a peer watching its
+// announcements learns what it is hosting, not what its user did.
+func (s *Store) LocalBlockKeys(mirrorOnly bool) ([]string, error) {
+	q := `SELECT DISTINCT from_id FROM peer_edges`
+	args := []any{}
+	if !mirrorOnly {
+		q = `SELECT DISTINCT COALESCE(NULLIF(context_video_id, ''), ?) FROM impressions
 UNION
-SELECT DISTINCT from_id FROM peer_edges`, HomeFrom)
+SELECT DISTINCT from_id FROM peer_edges`
+		args = append(args, HomeFrom)
+	}
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

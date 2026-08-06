@@ -40,6 +40,8 @@ func main() {
 			os.Exit(runBundle(os.Args[2:]))
 		case "sketch":
 			os.Exit(runSketch(os.Args[2:]))
+		case "seed":
+			os.Exit(runSeed(os.Args[2:]))
 		case "version":
 			fmt.Println("keel-host", version)
 			os.Exit(0)
@@ -330,7 +332,7 @@ func handleImpressions(env *bridge.Envelope, out io.Writer, st *store.Store) err
 	// neighbourhood — well before the panel asks for suggestions.
 	for _, imp := range p.Impressions {
 		if imp.ContextVideoID != nil {
-			prewarm(*imp.ContextVideoID)
+			prewarm(st, *imp.ContextVideoID)
 			break
 		}
 	}

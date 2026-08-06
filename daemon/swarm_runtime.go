@@ -46,14 +46,22 @@ var (
 
 // swarmConfigFor maps the stored contribution level onto what the node offers.
 //
-// Level 1 fetches and serves nothing. Level 2 mirrors: it re-serves blocks that
-// came from other people, donating storage and bandwidth while disclosing
-// nothing it observed. Level 3 and above additionally serve the user's own
-// edges, which is the step that publishes a funnel and is why it is a separate,
-// explicit choice.
+// Level 1 neither serves nor asks. That is a stronger promise than "we do not
+// upload anything": a block request tells the peer answering it which video was
+// asked about, so the only way nothing leaves is to never ask. Level 1 runs on
+// the seed pack plus its own recording, and neither involves a query.
+//
+// Level 2 opts into the query-based system. It mirrors — re-serving blocks other
+// people published, using the disk space the user allots — and fetches on demand
+// for anything the seed does not cover. The seed is what keeps that exposure to
+// the long tail rather than to everything watched.
+//
+// Level 3 and above additionally serve the user's own edges, which is the step
+// that publishes a funnel and is why it is a separate, explicit choice.
 func swarmConfigFor(level int) swarm.Config {
 	return swarm.Config{
 		Serve:                level >= store.LevelCatalogue,
+		Fetch:                level >= store.LevelCatalogue,
 		ServeOwnObservations: level >= store.LevelCohort,
 		Log:                  func(f string, a ...any) { log.Printf("swarm: "+f, a...) },
 	}
@@ -92,8 +100,16 @@ func startSwarm(ctx context.Context, st *store.Store) {
 // Called when an observation arrives naming the video being watched. Deduped
 // over a short window because a single watch page produces many observations
 // as the user scrolls, and every one of them names the same seed.
-func prewarm(videoID string) {
+//
+// A neighbourhood already held — from the seed pack, from an earlier fetch, or
+// from the user's own watching — produces no request at all. That is the point
+// of the seed: the head of the watch distribution generates no queries, so
+// there is nothing there for a peer to observe.
+func prewarm(st *store.Store, videoID string) {
 	if swarmNode == nil || videoID == "" || videoID == store.HomeFrom {
+		return
+	}
+	if have, err := st.HaveBlock(videoID); err == nil && have {
 		return
 	}
 	prewarmMu.Lock()

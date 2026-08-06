@@ -345,3 +345,61 @@ the whole publication story rests on it.
 Failing that, an estimate from YouTube's own structure (how concentrated
 recommendation graphs are) would bound it, but a real measurement from two nodes
 is far better and now costs nothing but a second install.
+
+---
+
+# Appendix — is a seed pack affordable? Measured 2026-08-05
+
+§5d left "whether a small shipped seed of popular neighbourhoods is needed" open.
+It is needed — it is the only mitigation for the query leak that survives
+scrutiny — and it is cheap.
+
+Measured by building a real pack from an 89-context corpus:
+
+| | Size | Per edge |
+|---|---|---|
+| Blocks as served (full §6.2 tuples) | 1,281 KB | 327 B |
+| Stripped to `(to, weight)` | 69 KB | 18 B |
+| Stripped + gzip | 19 KB | 5 B |
+| Titles, deduped + gzip | 45 KB | — |
+| **Total** | **63 KB** | **20× smaller** |
+
+Projected: **10k videos ≈ 10 MB, 100k ≈ 80 MB, 1M ≈ 760 MB.**
+
+A million-video seed fits on a phone. This is affordable at any scale the project
+will plausibly reach.
+
+**What stripping removes.** A walk needs `(to, weight)` and nothing else. Surface,
+slot bucket, day bucket and cohort exist for *research* on the published
+aggregate; they are dead weight in a seed whose only job is to answer hops. That
+one change is 18× of the 20×.
+
+**Titles dominate at scale** — 45 KB of the 63 KB here. They are what the panel
+renders, so they cannot simply be dropped, but they are a separate concern from
+the graph and should be a separate, optional download.
+
+## Why this is the mitigation that works
+
+The leak is that asking a peer for video V tells that peer you are interested in
+V. Three families of answer:
+
+- **Obscuring the query** — decoy requests, batched region fetches. Both fail to
+  intersection attacks: repeated sets from one address converge on the real
+  element. This is the flaw that sank the v1 k-anonymity buffer and it is not
+  fixed by making the sets bigger.
+- **Breaking the link** — relay routing, so the serving peer sees a relay rather
+  than the asker. Sound, and complementary.
+- **Removing the query** — the seed. Every node downloads the identical file, so
+  there is no per-user variation to attack, and afterwards the covered videos
+  generate no requests at all.
+
+The long tail still needs fetch-on-demand, and hiding *that* query needs private
+information retrieval — the technique Signal-class systems use for metadata. Real,
+much larger, and not required before the seed exists.
+
+## Consequence for the levels
+
+This makes Level 1 a clean promise rather than a mostly-true one: **a Level 1
+node asks the network for nothing**, so nothing leaves it, questions included. It
+runs on the seed plus its own recording. Level 2 is where a user opts into the
+query-based system, and the seed is what keeps that exposure to unusual videos.
