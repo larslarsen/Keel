@@ -215,12 +215,17 @@ async function handle(message, sender) {
 
   switch (message.type) {
     case "PAGE_CONTEXT": {
-      // Enable on observed surfaces, disable elsewhere on youtube.com so the
-      // panel does not linger on /feed, channel pages or search (WO-021).
-      const observed =
-        message.payload?.surface === "WATCH_NEXT" ||
-        message.payload?.surface === "HOME";
-      await setSidePanelForTab(sender?.tab?.id, observed);
+      // Enable on every YouTube tab, not only observed surfaces.
+      //
+      // WO-021's complaint was the panel lingering on *non-YouTube* tabs
+      // showing stale data, and defaulting to disabled fixes that. Restricting
+      // it further to WATCH_NEXT and HOME went beyond the problem and left the
+      // toolbar icon dead on /feed, /results, channel pages and /@handle — a
+      // click with no effect and no explanation, which reads as broken.
+      //
+      // A content script only runs on youtube.com, so receiving PAGE_CONTEXT at
+      // all is sufficient proof this is a tab where the panel belongs.
+      await setSidePanelForTab(sender?.tab?.id, true);
       if (message.payload?.pageLoadId) {
         lastPage = {
           pageLoadId: message.payload.pageLoadId,

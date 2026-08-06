@@ -395,6 +395,19 @@ async function start() {
   startHide().catch((e) => console.warn(LOG, "hide", e?.message || e));
   if (!(await consented())) {
     console.info(LOG, "no consent — not recording");
+    // Still tell the worker this is a YouTube tab, so the side panel can be
+    // opened from the toolbar.
+    //
+    // Without this the extension deadlocks: no consent means no PAGE_CONTEXT,
+    // which means the panel is never enabled for any tab, which means clicking
+    // the icon does nothing — and the consent control lives inside the panel.
+    // The only other route in is the tab opened once at install, so anyone who
+    // closed it without deciding had no way back.
+    //
+    // Enabling a surface is not recording. Nothing is observed here; this
+    // reports the page as off-surface, exactly as an unobserved YouTube page
+    // does when consent *has* been given.
+    await send("PAGE_CONTEXT", { surface: null, pageLoadId: null, href: location.href });
     // Arm later if consent is given, without needing a page reload.
     browser.runtime.onMessage.addListener((msg) => {
       if (msg?.type === "CONSENT_CHANGED" && consentGranted(msg.payload?.consent)) {
