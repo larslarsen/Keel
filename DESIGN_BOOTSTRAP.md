@@ -403,3 +403,50 @@ This makes Level 1 a clean promise rather than a mostly-true one: **a Level 1
 node asks the network for nothing**, so nothing leaves it, questions included. It
 runs on the seed plus its own recording. Level 2 is where a user opts into the
 query-based system, and the seed is what keeps that exposure to unusual videos.
+
+## Who the seed is built from — decided 2026-08-05
+
+Lars: the seed is built once several people's data exists, not from one corpus.
+
+Two independent reasons, and the second is the one that would be easy to miss:
+
+1. **Privacy.** A seed built from one person's observations *is* that person's
+   funnel, published permanently.
+2. **Bias.** It would ship one person's algorithmic bubble to every new user.
+   Whatever YouTube decided to show that one account becomes the starting
+   graph for everyone, and every downstream measurement inherits it. A corpus
+   of one is not a small sample — it is a systematically skewed one.
+
+So `keel-host seed build --own` stays a local tool for testing. Nothing built
+that way is published.
+
+### The gap this exposes
+
+**Level 2 contributes no data of its own.** It mirrors: it re-serves what other
+people published and publishes nothing it observed. That is what makes it safe,
+and it is also what means a network of Level 1 and Level 2 nodes contains zero
+original edges, however many people join.
+
+Edges enter the network only at Level 3 and above. So "wait until several people
+are at Level 2" cannot produce a seed — there would be nothing for them to
+mirror.
+
+### What that leaves
+
+The bootstrap route Lars already identified: a handful of early volunteers run at
+Level 3 or 4, knowingly and permanently, and the first seed is built from their
+combined corpora. Several people is enough to break the single-bubble problem;
+it does not need to be many.
+
+Once the seed exists, Level 1 and Level 2 become genuinely useful and the network
+can grow without anyone else having to publish anything. **The open contribution
+is only needed to start it, not to run it** — which is the argument to make to
+those first volunteers, and it happens to be true.
+
+### Open question for Lars
+
+Whether Level 2 should also publish something of its own — the catalogue is the
+obvious candidate, since video metadata is a public fact rather than an
+observation of a person. It would not help the seed (catalogue carries no edges,
+and the walk reads `peer_edges`), but it would mean Level 2 is contributing data
+rather than only capacity. Currently it is not.
