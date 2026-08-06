@@ -1102,6 +1102,36 @@ enumerated or tested for membership, so nodes settle the question without
 publishing an edge. **Exchange happens node-to-node over the transport; the
 subcommands are diagnostics and no user moves a file.**
 
+## 7.4a Known weakness: DHT censorship (GO-2024-3218)
+
+`govulncheck` reports one vulnerability our code reaches, and there is **no fix
+available**: [GO-2024-3218](https://pkg.go.dev/vuln/GO-2024-3218), content
+censorship in the IPFS Kademlia DHT, in `go-libp2p-kad-dht`. It is a property of
+the public DHT rather than a bug we can patch away, so it is recorded here as a
+standing limitation.
+
+**What it costs us.** An attacker who floods provider records for a key can stop
+others discovering who holds it. Against Keel that means blocking discovery of a
+prefix bucket — a chosen slice of the graph becomes unfindable through the DHT.
+
+**What it does not cost us.** Nothing about confidentiality or integrity. Blocks
+are digest-checked and signed, so a censored lookup yields *no* data rather than
+false data. The live index rides gossipsub, not the DHT, so it is unaffected —
+and Level 1 does not query the DHT at all.
+
+So the exposure is availability, on one path, above the default setting.
+
+**Mitigation, and why it is already half-built.** The DHT is a directory, not a
+transport (§5b). `FetchFrom` already retrieves a bucket from a known peer with no
+DHT lookup at all, which is the escape hatch: a node that has talked to a peer
+can go back to it directly. What is missing is remembering useful peers and
+preferring them, so discovery failure degrades instead of stopping. That is worth
+building before the network is large enough to be worth attacking.
+
+**Do not treat this as fixed by an upgrade.** There is no fixed version. Anyone
+re-running the scanner will see it, and the right response is to check whether
+this analysis still holds, not to bump a dependency.
+
 ## 7.5 Livestreams — an ephemeral index
 
 **Status: built 2026-08-06.** Daemon, gossip transport, cold-start backfill and

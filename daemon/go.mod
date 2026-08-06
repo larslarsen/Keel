@@ -2,6 +2,16 @@ module github.com/keel-app/keel/daemon
 
 go 1.25.7
 
+// Pin the toolchain rather than accepting whatever the machine has.
+//
+// GOTOOLCHAIN=auto satisfies "go 1.25.7" with any newer release and stops
+// there, which landed builds on go1.26.0 — 14 known vulnerabilities in the
+// standard library alone (crypto/tls, crypto/x509, net/http and others), all
+// patched across the 1.26.x line. Naming the patched release here means every
+// build gets it, including a tester who has never heard of Go and whose distro
+// ships something else entirely. Go downloads it automatically.
+toolchain go1.26.5
+
 require (
 	github.com/ipfs/go-cid v0.6.2
 	github.com/libp2p/go-libp2p v0.49.0

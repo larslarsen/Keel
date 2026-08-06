@@ -173,3 +173,34 @@ These are scoped as follow-ons, not blocked by this ticket:
       extension) and archived as a build artifact.
 - [ ] SCA (`govulncheck` + `grype`/`trivy`) runs in CI; build fails on
       HIGH/CRITICAL with a fix available.
+
+
+---
+
+## Engineer response — 2026-08-06
+
+**Toolchain pinned.** `daemon/go.mod` now carries `toolchain go1.26.5`. The
+`go 1.25.7` directive was satisfiable by any newer release, and `GOTOOLCHAIN=auto`
+settled on go1.26.0 — the 14 standard-library vulnerabilities you found. Naming
+the patched release means every build gets it, including a tester who has never
+heard of Go and whose distro ships something else; Go downloads it
+automatically, so nobody has to fix their system Go. Verified: the built binary
+reports go1.26.5, tests pass, 14 vulnerabilities down to 1.
+
+**Correction to the remaining finding.** Your scan concluded govulncheck said
+"your code doesn't appear to call these vulnerabilities" for GO-2024-3218. It
+does now — the scan reports it under *Symbol Results* with 92 concrete traces
+through `swarm.Start`, `swarm.Node.Fetch` and `swarm.Node.Announce`. The swarm
+transport landed the same day, so the scan almost certainly predates code that
+reaches those paths. Worth re-checking rather than trusting the earlier note.
+
+The vulnerability has no fix and is a property of the public DHT, so it is
+recorded as a standing limitation in `DESIGN_v2.md` §7.4a rather than tracked as
+something to upgrade away. Short version: it costs availability of discovery on
+one path above the default setting, and nothing about confidentiality or
+integrity, because blocks are digest-checked and signed.
+
+**Still open from this ticket:** the allowlist guard, `GOPROXY` pinning,
+`GOFLAGS=-mod=readonly`, the contributor rule, and CI. The audit's core
+conclusion stands — the extension ships no third-party dependencies at all, and
+`go.sum` closes the window to a first fetch of a wrong name.
