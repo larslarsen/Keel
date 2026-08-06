@@ -1193,6 +1193,42 @@ bucket-selection disclosure that gossip avoids entirely.
 
 Gossip first.
 
+### Keeping the swarm alive, and cold starts
+
+**Subscription is permanent, not tied to the user opening the feed.** Limiting
+gossip to nodes currently viewing the page was considered and rejected: the
+subscribers *are* the network, so with nobody viewing there would be no mesh, no
+relaying and nothing for the first person to arrive to. The feature would work
+only once it was already popular.
+
+**Publish suppression is what bounds the cost instead.** The index is small — a
+few hundred KB of distinct streams — but *message* volume is not, because it
+grows with publishers × sightings rather than with distinct streams. A thousand
+users seeing one popular stream would send a thousand messages carrying one fact,
+which at a million users is gigabytes a day. So a node announces a stream only
+while it is thinly corroborated, or once its record is ageing; otherwise it stays
+quiet. Traffic then scales with distinct streams again, which is the small
+number.
+
+Suppression happens to reduce disclosure too: an announcement says its publisher
+saw the stream, so not making a redundant one is better for the publisher as
+well as the network.
+
+**Cold start needs a snapshot.** Gossip carries only what is published after a
+node subscribes, so a freshly started daemon holds nothing — and suppression
+makes that worse by keeping redundant announcements off the wire. A joining node
+therefore asks a connected peer for the whole index over
+`/keel/live-snapshot/1.0.0`.
+
+Requesting it leaks nothing: there is no query, the whole index is asked for
+every time, and it is the same index every node holds — §7.3a tier 1, the same
+shape as the seed pack. Serving it is ungated for the same reason: the records
+are what gossip already broadcast to everyone.
+
+Backfilled records count as **one publisher, the peer that sent them**.
+Inheriting a snapshot's corroboration counts would let a single node manufacture
+apparent agreement.
+
 ### What dropping the freshness requirement buys
 
 **No heartbeat.** This is the real gain. Keeping a record alive would mean

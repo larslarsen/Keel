@@ -191,3 +191,94 @@ func TestLiveValidatorRejectsJunk(t *testing.T) {
 		t.Error("a valid record was rejected")
 	}
 }
+
+// TestPublishSuppressionScales covers what actually bounds this feature.
+//
+// The index is small, but message volume grows with publishers × sightings, not
+// with distinct streams: a thousand users seeing one popular stream would send a
+// thousand messages carrying one fact. A node stops announcing once a stream is
+// well corroborated and recently reported.
+func TestPublishSuppressionScales(t *testing.T) {
+	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
+
+	// Unknown stream: announce it.
+	if !li.shouldPublish("dQw4w9WgXcQ") {
+		t.Error("refused to announce a stream nobody has reported")
+	}
+
+	// Thinly reported: corroboration is still worth adding.
+	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"}, "peer-a")
+	if !li.shouldPublish("dQw4w9WgXcQ") {
+		t.Error("refused to corroborate a thinly reported stream")
+	}
+
+	// Well corroborated and fresh: stay quiet.
+	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"}, "peer-b")
+	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"}, "peer-c")
+	if li.shouldPublish("dQw4w9WgXcQ") {
+		t.Error("announced a stream that is already well corroborated and fresh")
+	}
+
+	// Ageing: announce again, so suppression cannot let a live stream expire.
+	li.mu.Lock()
+	li.entries["dQw4w9WgXcQ"].lastSeen = time.Now().Add(-liveRefreshAfter - time.Minute)
+	li.mu.Unlock()
+	if !li.shouldPublish("dQw4w9WgXcQ") {
+		t.Error("suppression would let an ageing record expire out of the index")
+	}
+}
+
+// TestLiveSnapshotBackfill is what makes the feed useful on a cold start.
+//
+// Gossip carries only what is published after a node subscribes, so a daemon
+// that just started holds nothing — and publish suppression makes that worse by
+// keeping redundant announcements off the wire. A joining node asks a peer for
+// the whole index.
+func TestLiveSnapshotBackfill(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	warm, err := Start(ctx, newStore(t, "warm.sqlite"), liveCfg(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer warm.Close()
+
+	// Give the warm node an index without any gossip involved.
+	for _, r := range []LiveRecord{
+		{VideoID: "dQw4w9WgXcQ", Title: "Existing stream one"},
+		{VideoID: "oHg5SJYRHA0", Title: "Existing stream two"},
+	} {
+		warm.Live().merge(r, "some-earlier-peer")
+	}
+
+	cold, err := Start(ctx, newStore(t, "cold.sqlite"), liveCfg(t, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cold.Close()
+	if cold.Live().Size() != 0 {
+		t.Fatal("a fresh node should start with an empty index")
+	}
+
+	connect(t, cold, warm)
+	if !cold.fetchLiveSnapshot(ctx, warm.ID()) {
+		t.Fatal("snapshot request failed")
+	}
+	if cold.Live().Size() != 2 {
+		t.Fatalf("index holds %d records after backfill, want 2", cold.Live().Size())
+	}
+	hits := cold.Live().Search("existing", 1, 10)
+	if len(hits) != 2 {
+		t.Errorf("backfilled records are not searchable: %d hits", len(hits))
+	}
+
+	// A snapshot is one peer's word for everything in it. Inheriting its
+	// publisher counts would let a single node manufacture apparent agreement,
+	// so every backfilled record counts as one publisher: the peer that sent it.
+	for _, h := range hits {
+		if h.Publishers != 1 {
+			t.Errorf("%s shows %d publishers after backfill, want 1", h.VideoID, h.Publishers)
+		}
+	}
+}

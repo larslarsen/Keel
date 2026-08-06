@@ -32,13 +32,16 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // LiveTopic is the gossipsub topic carrying the whole live index.
@@ -47,6 +50,21 @@ import (
 // selection disclosure that subscribing to everything avoids. Shard only if
 // volume ever forces it, and take that cost knowingly.
 const LiveTopic = "keel/live/1"
+
+// LiveSnapshotProtocol hands a joining node the whole current index.
+//
+// Gossip carries only what is published after a node subscribes, so a daemon
+// that has just started holds nothing and would take hours to fill — worse now
+// that publish suppression keeps redundant announcements off the wire. A
+// snapshot makes the feed useful the moment the process starts.
+//
+// Requesting it leaks nothing: there is no query, the whole index is asked for
+// every time, and it is the same index every node holds. This is §7.3a tier 1,
+// the same shape as the seed pack.
+const LiveSnapshotProtocol = protocol.ID("/keel/live-snapshot/1.0.0")
+
+// maxSnapshotBytes bounds a snapshot reply.
+const maxSnapshotBytes = 16 << 20
 
 const (
 	// liveTTL is how long a record survives without being seen again.
@@ -67,6 +85,24 @@ const (
 	maxLiveRecordBytes = 4096
 
 	liveSweepInterval = 10 * time.Minute
+
+	// liveEnoughPublishers is the point at which a node stops announcing a
+	// stream others have already announced.
+	//
+	// This is what makes the feature scale, and the reason is easy to miss: the
+	// index is small — a few hundred KB of distinct streams — but *message*
+	// volume is not, because it grows with publishers × sightings rather than
+	// with distinct streams. A thousand users seeing one popular stream would
+	// otherwise send a thousand messages carrying one fact, and at a million
+	// users that is gigabytes a day rather than kilobytes.
+	//
+	// Suppression collapses it back: the first few observers announce, everyone
+	// after them stays quiet, and traffic scales with distinct streams again.
+	liveEnoughPublishers = 3
+
+	// liveRefreshAfter lets a stream be re-announced once its record is ageing,
+	// so suppression cannot let a still-running stream expire out of the index.
+	liveRefreshAfter = liveTTL / 4
 )
 
 // LiveRecord is one announcement that a stream was seen live.
@@ -154,10 +190,97 @@ func (n *Node) startLive(ctx context.Context) error {
 		self:    n.host.ID(),
 		logf:    n.logf,
 	}
+	// Serve snapshots to other joining nodes. Ungated: the records are what
+	// gossip already broadcast to everyone, so passing them on discloses
+	// nothing this node did.
+	n.host.SetStreamHandler(LiveSnapshotProtocol, n.handleLiveSnapshot)
+
 	go n.live.consume(ctx)
 	go n.live.sweep(ctx)
+	go n.backfillLive(ctx)
 	n.logf("live index subscribed to %s", LiveTopic)
 	return nil
+}
+
+// handleLiveSnapshot returns every record this node holds.
+func (n *Node) handleLiveSnapshot(s network.Stream) {
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(requestTimeout))
+	if n.live == nil {
+		return
+	}
+	raw, err := json.Marshal(n.live.Snapshot())
+	if err != nil {
+		return
+	}
+	_, _ = s.Write(raw)
+}
+
+// Snapshot returns the live records this node holds.
+func (li *LiveIndex) Snapshot() []LiveRecord {
+	li.mu.RLock()
+	defer li.mu.RUnlock()
+	out := make([]LiveRecord, 0, len(li.entries))
+	for _, e := range li.entries {
+		out = append(out, e.rec)
+	}
+	return out
+}
+
+// backfillLive asks connected peers for their index once a mesh exists.
+//
+// Peers are asked in turn until one answers, and their records are merged as
+// though they had been gossiped. Corroboration counts are not carried over: a
+// snapshot is one peer's word for all of it, and inheriting its publisher counts
+// would let a single node manufacture apparent agreement.
+func (n *Node) backfillLive(ctx context.Context) {
+	for attempt := 0; attempt < 12; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+		if n.live == nil || n.live.Size() > 0 {
+			return // gossip already filled it, or we are shutting down
+		}
+		for _, p := range n.host.Network().Peers() {
+			if n.fetchLiveSnapshot(ctx, p) {
+				return
+			}
+		}
+	}
+}
+
+func (n *Node) fetchLiveSnapshot(ctx context.Context, p peer.ID) bool {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	s, err := n.host.NewStream(ctx, p, LiveSnapshotProtocol)
+	if err != nil {
+		return false
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(requestTimeout))
+	if err := s.CloseWrite(); err != nil {
+		return false
+	}
+	raw, err := io.ReadAll(io.LimitReader(s, maxSnapshotBytes))
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	var recs []LiveRecord
+	if err := json.Unmarshal(raw, &recs); err != nil {
+		return false
+	}
+	for _, r := range recs {
+		if len(r.VideoID) == 11 {
+			n.live.merge(r, p)
+		}
+	}
+	if len(recs) > 0 {
+		n.logf("live index backfilled with %d records from %s", len(recs), p)
+	}
+	return len(recs) > 0
 }
 
 // validateLiveMessage is the gossipsub validator. It runs before a message is
@@ -253,6 +376,27 @@ func (li *LiveIndex) sweep(ctx context.Context) {
 			li.mu.Unlock()
 		}
 	}
+}
+
+// shouldPublish reports whether this node's announcement would add anything.
+//
+// Staying quiet about a well-corroborated, freshly-reported stream costs the
+// network nothing and saves it a message. It also happens to reduce disclosure:
+// an announcement says its publisher saw the stream, so not making a redundant
+// one is strictly better for the publisher too.
+func (li *LiveIndex) shouldPublish(videoID string) bool {
+	li.mu.RLock()
+	defer li.mu.RUnlock()
+	e := li.entries[videoID]
+	if e == nil {
+		return true // nobody has reported it
+	}
+	if len(e.publishers) < liveEnoughPublishers {
+		return true // corroboration is still worth adding
+	}
+	// Well corroborated. Announce only if the record is ageing, so suppression
+	// cannot quietly let a still-running stream expire.
+	return time.Since(e.lastSeen) > liveRefreshAfter
 }
 
 // Publish announces one stream.
@@ -351,6 +495,9 @@ func (n *Node) Live() *LiveIndex { return n.live }
 // discloses that its publisher saw the stream.
 func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
 	if n.live == nil || !n.cfg.Serve {
+		return
+	}
+	if !n.live.shouldPublish(r.VideoID) {
 		return
 	}
 	if err := n.live.Publish(ctx, r); err != nil {
