@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,6 +55,17 @@ func main() {
 		log.Fatalf("store open: %v", err)
 	}
 	defer st.Close()
+
+	// The swarm runs for the lifetime of the connection. Cancelling on return
+	// stops the announce loop and any in-flight prewarm.
+	swarmCtx, stopSwarm := context.WithCancel(context.Background())
+	defer stopSwarm()
+	startSwarm(swarmCtx, st)
+	defer func() {
+		if swarmNode != nil {
+			_ = swarmNode.Close()
+		}
+	}()
 
 	run(os.Stdin, os.Stdout, st)
 }
@@ -312,6 +324,15 @@ func handleImpressions(env *bridge.Envelope, out io.Writer, st *store.Store) err
 	n, err := st.PutImpressions(p.Impressions)
 	if err != nil {
 		return replyErr(out, env.ID, err)
+	}
+	// §5d's prewarm: the observer has just told us which video is being
+	// watched, which is the earliest possible moment to start fetching its
+	// neighbourhood — well before the panel asks for suggestions.
+	for _, imp := range p.Impressions {
+		if imp.ContextVideoID != nil {
+			prewarm(*imp.ContextVideoID)
+			break
+		}
 	}
 	return reply(out, env.ID, "IMPRESSIONS_ACK", map[string]any{
 		"inserted": n,

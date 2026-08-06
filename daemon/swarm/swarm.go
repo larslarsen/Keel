@@ -64,6 +64,7 @@ const requestTimeout = 20 * time.Second
 // the concrete type so the transport can be tested without a database.
 type Store interface {
 	BuildBlock(videoID, cohort string) (*store.Block, error)
+	BuildMirrorBlock(videoID, cohort string) (*store.Block, error)
 	ImportBlock(raw []byte) (*store.Block, int64, error)
 	LocalBlockKeys() ([]string, error)
 	SwarmIdentity() ([]byte, error)
@@ -76,6 +77,14 @@ type Config struct {
 	// contribution Level 1: the node still fetches, per §5d ("out of the box
 	// for every user"), but offers nothing.
 	Serve bool
+	// ServeOwnObservations includes this node's own edges in served blocks.
+	//
+	// False is Level 2 — mirror and re-serve what came from other people,
+	// donating storage and bandwidth while disclosing nothing personal. True
+	// is Level 3 and above, where the user has opted into publishing what
+	// they were recommended. Getting this wrong publishes a funnel, so the
+	// choice is made once here and enforced by which builder runs.
+	ServeOwnObservations bool
 	// ListenAddrs overrides the default listen set. Empty means all
 	// interfaces on an OS-assigned port, over both TCP and QUIC.
 	ListenAddrs []string
@@ -224,7 +233,11 @@ func (n *Node) handleBlockRequest(s network.Stream) {
 		return
 	}
 
-	blk, err := n.st.BuildBlock(key, n.st.Cohort())
+	build := n.st.BuildMirrorBlock
+	if n.cfg.ServeOwnObservations {
+		build = n.st.BuildBlock
+	}
+	blk, err := build(key, n.st.Cohort())
 	if err != nil {
 		n.logf("block %s: %v", key, err)
 		return

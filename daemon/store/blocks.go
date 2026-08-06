@@ -103,6 +103,50 @@ WHERE COALESCE(NULLIF(context_video_id, ''), ?) = ?`, HomeFrom, videoID)
 	return out, nil
 }
 
+// mirrorEdges returns the edges for one video that came from *other people* —
+// rows this node imported, never its own observations.
+//
+// This is the difference between contribution Level 2 and Level 3, and it has
+// to be enforced in the query rather than by a caller remembering. Level 2 is
+// "mirror and serve the public aggregate": the node donates storage and
+// bandwidth, and nothing it personally observed leaves. Serving a block built
+// from `impressions` at Level 2 would publish the user's own funnel, which is
+// what Levels 3 and 4 exist to gate.
+func (s *Store) mirrorEdges(videoID string) ([]bridge.EdgeObservation, error) {
+	rows, err := s.db.Query(`
+SELECT to_id, surface, slot_bucket, day_bucket, cohort, SUM(count)
+FROM peer_edges
+WHERE from_id = ? AND to_id != from_id
+GROUP BY to_id, surface, slot_bucket, day_bucket, cohort`, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []bridge.EdgeObservation{}
+	for rows.Next() {
+		var e bridge.EdgeObservation
+		if err := rows.Scan(&e.To, &e.Surface, &e.SlotBucket, &e.DayBucket, &e.Cohort, &e.Count); err != nil {
+			return nil, err
+		}
+		e.From = videoID
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(a, b int) bool {
+		if out[a].To != out[b].To {
+			return out[a].To < out[b].To
+		}
+		if out[a].DayBucket != out[b].DayBucket {
+			return out[a].DayBucket < out[b].DayBucket
+		}
+		return out[a].SlotBucket < out[b].SlotBucket
+	})
+	return out, nil
+}
+
 // blockCatalogue returns metadata for a set of video ids, from either the local
 // catalogue or one already imported from a peer.
 func (s *Store) blockCatalogue(ids map[string]bool) ([]bridge.CatalogueEntry, error) {
@@ -120,14 +164,34 @@ func (s *Store) blockCatalogue(ids map[string]bool) ([]bridge.CatalogueEntry, er
 	return out, nil
 }
 
-// BuildBlock assembles the block for one context video, signed and ready to
-// serve. An empty block is returned rather than an error when the node has seen
+// BuildBlock assembles a block from this node's own observations. Serving one
+// publishes what this user was recommended, so it belongs to contribution
+// Level 3 and above.
+//
+// An empty block is returned rather than an error when the node has seen
 // nothing from that video — "I have no edges here" is a valid answer to serve.
 func (s *Store) BuildBlock(videoID, cohort string) (*Block, error) {
+	return s.buildBlock(videoID, cohort, false)
+}
+
+// BuildMirrorBlock assembles a block from imported edges only — the Level 2
+// answer. Nothing this node observed is included, so serving it donates
+// bandwidth and storage without disclosing anything personal.
+func (s *Store) BuildMirrorBlock(videoID, cohort string) (*Block, error) {
+	return s.buildBlock(videoID, cohort, true)
+}
+
+func (s *Store) buildBlock(videoID, cohort string, mirrorOnly bool) (*Block, error) {
 	if videoID == "" {
 		return nil, fmt.Errorf("block key required")
 	}
-	edges, err := s.blockEdges(videoID, cohort)
+	var edges []bridge.EdgeObservation
+	var err error
+	if mirrorOnly {
+		edges, err = s.mirrorEdges(videoID)
+	} else {
+		edges, err = s.blockEdges(videoID, cohort)
+	}
 	if err != nil {
 		return nil, err
 	}

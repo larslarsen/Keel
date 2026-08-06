@@ -59,25 +59,60 @@ database.
 
 **The extension makes no network requests.**
 
-The local program makes exactly one kind of request: fetching video thumbnail
-images from YouTube's image server (`i.ytimg.com`), so it can show you the
-videos it has recorded. Each image is fetched once and then stored locally. No
-observation data is sent with these requests — they are ordinary image loads for
-videos YouTube already showed you.
+The local program makes two kinds:
+
+**Thumbnails.** Video images from YouTube's image server (`i.ytimg.com`), so it
+can show you the videos it has recorded. Each is fetched once and stored
+locally. No observation data is sent — these are ordinary image loads for videos
+YouTube already showed you.
+
+**The peer network.** Keel joins a peer-to-peer network to fetch recommendation
+data other people have published, which is what lets it suggest videos you have
+never been shown. At the default setting it **only fetches** — it publishes
+nothing, serves nothing, and announces nothing.
 
 Keel does not use the YouTube API, and never contacts any Keel-operated server,
-because none exists.
+because none exists. Peer discovery uses the public IPFS network, which nobody
+in this project runs or controls.
 
-## Contributing — not available yet
+### What other people on the network can see
 
-Keel is designed to eventually let people **choose** to contribute aggregate
-counts toward research into how recommendation systems behave. That is not
-built, and **nothing is sent today at any setting.**
+This is the honest cost of a peer-to-peer design and we would rather state it
+plainly than bury it.
 
-When it exists, it will be off by default and opt-in. Contributions will be
-protected by threshold encryption: a report stays sealed unless enough other
-people report the same thing, so anything only you saw cannot be read. Nothing
-will be sent before that protection is in place.
+When Keel asks the network for data about a video, the peers it asks can see
+**your IP address and which video you asked about**. This is the same exposure
+any peer-to-peer system has — BitTorrent works the same way — and it is the one
+place where using Keel is visible to strangers rather than only to YouTube.
+
+What they cannot see: your history, anything you have recorded, what you
+actually watched, or any link between separate requests and a person. Keel's
+network identity is a separate key from the one used to sign anything published,
+so watching the network does not tell anyone what a node has contributed.
+
+If this trade is not one you want, the peer network can be turned off entirely
+and Keel keeps working on your own data alone.
+
+## Contributing
+
+Contributing is **off by default** and every level above the default is a
+deliberate choice you make.
+
+**Level 1 — personal (the default).** Nothing you observe leaves your device.
+Keel still fetches from the network so suggestions work.
+
+**Level 2 — mirror.** Your computer stores and passes on data *other people*
+published, using the disk space you allot. Nothing you observed is included.
+This donates bandwidth and storage, not information about you.
+
+**Levels 3 and 4** would publish aggregate or attributed records of what you
+were recommended. **These are not built and nothing is sent at these settings
+today.** Level 3 will be protected by threshold encryption — a report stays
+sealed unless enough other people report the same thing, so anything only you
+saw cannot be read — and nothing will be sent before that protection exists.
+
+Anything published to a peer-to-peer network should be treated as permanent:
+once another computer has a copy, it cannot be recalled.
 
 If data handling ever changes, you will be told before it takes effect — not
 through a quietly updated policy page.

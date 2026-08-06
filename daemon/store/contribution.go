@@ -52,7 +52,7 @@ const (
 // Raise this only when the corresponding pipeline exists. It is what the UI
 // reads to decide which options are selectable, so a stale value here would let
 // the interface promise something the daemon cannot do.
-const MaxImplementedLevel = LevelPersonal
+const MaxImplementedLevel = LevelCatalogue
 
 // ContributionLevel returns the stored level, defaulting to Personal.
 //

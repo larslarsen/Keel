@@ -15,12 +15,17 @@ import (
 
 // isolated keeps tests off the public DHT: an explicitly empty bootstrap set
 // means the node joins nothing and only talks to peers it is handed directly.
+//
+// A serving node here behaves as Level 3 — it serves its own observations —
+// because that is what most of these tests are exercising. The Level 2 mirror
+// boundary gets its own test, which sets ServeOwnObservations back to false.
 func isolated(serve bool, t *testing.T) Config {
 	return Config{
-		Serve:       serve,
-		Bootstrap:   []peer.AddrInfo{},
-		ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
-		Log:         func(f string, a ...any) { t.Logf(f, a...) },
+		Serve:                serve,
+		ServeOwnObservations: serve,
+		Bootstrap:            []peer.AddrInfo{},
+		ListenAddrs:          []string{"/ip4/127.0.0.1/tcp/0"},
+		Log:                  func(f string, a ...any) { t.Logf(f, a...) },
 	}
 }
 
@@ -186,5 +191,67 @@ func TestConcurrentFetchesCollapse(t *testing.T) {
 		case <-time.After(50 * time.Second):
 			t.Fatal("concurrent fetch hung")
 		}
+	}
+}
+
+// TestMirrorNodeDoesNotServeOwnObservations is the contribution-level boundary,
+// enforced end to end over the wire.
+//
+// A Level 2 node donates storage and bandwidth: it re-serves what other people
+// published. It must not serve what its own user was recommended — that is
+// Level 3, and the whole reason the levels are separate.
+func TestMirrorNodeDoesNotServeOwnObservations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// A mirror node that has watched things itself.
+	mirror := newStore(t, "mirror.sqlite")
+	seed(t, mirror, "privateseed", "privatevid1", 0)
+	seed(t, mirror, "privateseed", "privatevid2", 1)
+
+	cfg := isolated(true, t)
+	cfg.ServeOwnObservations = false // Level 2
+	mNode, err := Start(ctx, mirror, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mNode.Close()
+
+	client := newStore(t, "client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+
+	got, err := cNode.FetchFrom(ctx, mNode.AddrInfo(), "privateseed")
+	if err != nil {
+		t.Fatalf("fetch failed: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("a Level 2 node served %d of its own observed edges", got)
+	}
+
+	// It must still re-serve what it imported from someone else.
+	origin := newStore(t, "origin.sqlite")
+	seed(t, origin, "publicseed1", "publicvid01", 0)
+	blk, err := origin.BuildBlock("publicseed1", "GB-en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := blk.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := mirror.ImportBlock(raw); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err = cNode.FetchFrom(ctx, mNode.AddrInfo(), "publicseed1")
+	if err != nil {
+		t.Fatalf("fetch failed: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("mirror re-served %d edges of imported data, want 1", got)
 	}
 }
