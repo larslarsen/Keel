@@ -864,6 +864,62 @@ and OTF (§11) fund exactly this class of infrastructure.
 
 ---
 
+## 7.3a The query-privacy ladder — the rule that decides every dataset
+
+Every time this system fetches something, it risks disclosing what the user is
+interested in. There are only four families of answer, they are not equally
+good, and **which one is available depends on one variable: whether the dataset
+fits in what a node can hold.**
+
+State this once, because it predicts the right design for every dataset added
+later.
+
+**1. No query — the strongest, and free when it applies.**
+Every node takes the identical thing, so there is no per-user request to observe.
+The seed pack works this way: everyone downloads the same file. The live index
+works this way: everyone subscribes to the whole feed. Nothing distinguishes one
+node's interests from another's, so there is nothing to intersect, correlate or
+subpoena. **Available whenever the dataset is small enough to hold entirely.**
+
+**2. Bucketed query — good, and what large datasets get.**
+Ask for a bucket of thousands, take all of it, filter locally. Each request is
+k-anonymous. But *which* bucket still narrows interests, so a sequence of
+requests under one identity is a trajectory — which is why §7.4 pairs bucketing
+with ephemeral identity. Necessary for the graph and catalogue, which no node can
+hold in full.
+
+**3. Private information retrieval — correct, expensive, unbuilt.**
+Hides which item was requested even from the holder of a large dataset. The
+technique Signal-class systems use for metadata. The right answer for a long tail
+too big to hold and too sensitive to bucket. Not needed yet.
+
+**4. Obscuring the query — rejected.**
+Decoy requests and batched region fetches hide a real request among fake ones.
+Repeated observation separates them: the real target is the element that recurs.
+This is the flaw that sank the v1 k-anonymity buffer, and enlarging the sets does
+not fix it. **Do not adopt any variant of this, however clever the framing.**
+
+### The rule
+
+**If a node can hold the whole dataset, give it the whole dataset.** That buys
+tier 1 outright, and tier 1 cannot be improved on. Only reach for tier 2 when
+size forces it.
+
+This is why the datasets end up where they do:
+
+| Dataset | Size | Tier |
+|---|---|---|
+| Live index | ~hundreds of KB | 1 — gossip the whole feed |
+| Seed pack | ~760 MB for a million videos | 1 — identical download |
+| Search slice (popular terms) | ~50–200 GB compressed | 1 — deliberate bulk download |
+| Graph blocks | 2–35 TB | 2 — prefix buckets |
+| Catalogue | large, growing | 2 — prefix buckets |
+| Long-tail search terms | small each, unbounded set | 2, or 3 if it ever matters |
+
+The seed and the live index are the same idea at two scales, and the reason both
+give a stronger guarantee than the graph does is not cleverness — it is that they
+are small. Size is the privacy budget.
+
 ## 7.4 The swarm — how graph data actually moves
 
 **Status: built and tested against loopback, 2026-08-05. Not yet exercised
