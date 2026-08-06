@@ -1,5 +1,14 @@
 # Design note — catalogue vs funnel, and the bootstrap engine
 
+> **Current architecture lives in `DESIGN_v2.md` §7.4.** That section is the
+> single statement of how the swarm, prefix bucketing, the two datasets and the
+> contribution levels actually work as built.
+>
+> What follows is the working record — the reasoning, measurements and reversals
+> that produced it, in the order they happened. Several early passages were
+> superseded by later ones and are marked where that is so. Read §7.4 first.
+
+
 Status: **draft for review.** Not a work order. Written 2026-08-03 from a discussion with Lars.
 
 Answers one question: **what makes Keel useful to user number one, before any peer data exists?**

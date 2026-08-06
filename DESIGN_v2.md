@@ -864,6 +864,181 @@ and OTF (§11) fund exactly this class of infrastructure.
 
 ---
 
+## 7.4 The swarm — how graph data actually moves
+
+**Status: built and tested against loopback, 2026-08-05. Not yet exercised
+between two machines on the real DHT.**
+
+§7.3 chose zero-cost channels for the *published aggregate* — a periodic
+artifact people download. That is still right, and it is a different problem from
+the one solved here. Suggestions need a live graph that no user can hold: at full
+scale the deduped graph is 2–35 TB, while one user touches tens of MB of it. So
+the graph is served, not shipped.
+
+### The shape
+
+A Go daemon runs a libp2p host. Peer discovery rides the **public IPFS DHT**,
+used strictly as a directory: a node announces "I can serve bucket X" as a
+provider record and serves the bytes itself over its own stream protocol. No
+content enters the DHT. This satisfies §5b of `DESIGN_BOOTSTRAP` ("a DHT does not
+store anything") and keeps `PRIVACY.md`'s claim true — the daemon contacts no
+Keel-operated server, because none exists.
+
+NAT traversal is libp2p's: port mapping, circuit relay, hole punching, AutoNAT. A
+home machine is reachable without the user configuring anything.
+
+### Two datasets, two protocols
+
+`DESIGN_BOOTSTRAP` §1 splits the corpus into the graph and the catalogue. That
+split is now physical:
+
+| | `/keel/block/2.0.0` | `/keel/catalogue/1.0.0` |
+|---|---|---|
+| Carries | Stringless edges, keyed by context video | Titles, channel, duration, views, upload date |
+| Mutability | Churns forever | Written once per video |
+| Sync | On-demand, TTL-refreshed, whole-block replacement | Derived from fetched graph buckets, monotonic |
+| Storage | LRU, evictable | Durable, never evicted |
+
+**Blocks are stringless.** Measured: strings were 45 KB of a 63 KB pack, because
+the same title ships again in every block pointing at that video. Real packs from
+a live corpus fell from 1,311 KB to 582 KB on removing them.
+
+**No deltas for the graph.** A stripped block is about a kilobyte, so refetching
+beats versioning, ordering, idempotence, and the double-counting hazard of a
+repeated additive delta. Whole-block replacement keyed on `(source, from_id)` is
+already idempotent. Deltas may still make sense for a large *baseline snapshot*,
+which is a different object — do not conflate the two.
+
+### Prefix bucketing — the query leak and what actually fixes it
+
+Fetch-on-demand leaks the query: asking a peer for video V's neighbourhood tells
+that peer you are interested in V.
+
+Three families of answer, and only two survive:
+
+- **Obscuring the query** — decoy requests, batched region fetches. Both fail to
+  intersection attacks: repeated sets from one address converge on the common
+  element. This is the flaw that sank the v1 k-anonymity buffer, and enlarging
+  the sets does not fix it. **Rejected.**
+- **Breaking the link** — relay routing. Sound, and complementary.
+- **Removing or drowning the query** — what is built.
+
+A node never asks for one video. It asks for every neighbourhood whose **hashed**
+key falls in a prefix bucket and takes all of them. This is not decoy traffic,
+and the difference is why it holds: there is no real-versus-fake structure for
+repeated observation to separate, because the node genuinely takes the whole
+bucket. Every member is equally consistent with what the user did, and repeating
+the request returns the same complete bucket.
+
+Prefixes are over a hash, not the video id: YouTube ids are not uniformly
+distributed, so raw-id buckets would vary wildly in population and some would
+hold a single video — k-anonymity with k=1. Bucket occupancy is tested across
+4,096 buckets.
+
+**The cover traffic is the contribution.** Blocks fetched to hide the target are
+exactly the blocks that make a node a useful mirror. Level 2's privacy mechanism
+and its donation are the same act, and the disk budget is the anonymity
+parameter.
+
+### Ephemeral identity
+
+Prefix bucketing alone is not enough, and this is the part most likely to be
+dropped by a later change that does not understand it.
+
+Each request is k-anonymous on its own. But a serving peer sees the requester's
+libp2p peer id, and a *sequence* of bucket requests under one stable identity is
+a trajectory. Trajectories re-identify people even when every point is coarse —
+the same result that defeats "anonymised" mobility data. A relay hides the
+address; it does not hide the peer id.
+
+So every level below 4 generates a fresh network identity per daemon start.
+Level 4 keeps a stable one, because being attributable is what that level is for.
+The network key is separate from the signing key throughout, so observing the
+network never links a node to what it published.
+
+**Honest residual:** requests remain linkable *within* a session. Unlinking them
+fully means a new identity per request, which costs connection reuse and relay
+reservations. Not solved.
+
+### The whole-bucket catalogue rule
+
+A graph bucket holds many neighbourhoods whose targets span many catalogue
+buckets. If a node fetched catalogue only for the targets of the block it
+actually wanted, the catalogue request pattern would identify that block and undo
+the anonymity the graph fetch just bought.
+
+**Catalogue requests are derived from the entire graph bucket, never from the
+block of interest.** The request set stays a function of contents the node
+already disclosed by asking for that bucket. Any "resolve titles on demand for
+what I need" implementation breaks this and must be rejected however much cheaper
+it looks; the code takes a whole bucket reply rather than a video id so the wrong
+thing is awkward to write.
+
+Catalogue uses a **separate hash namespace** from graph buckets. Sharing one
+would land a node's two request streams on correlated buckets and hand an
+observer a join between the datasets.
+
+This is affordable only because the catalogue converges: titles never change, so
+a node that holds a row never asks again and steady-state catalogue traffic tends
+to zero. `view_count` drifts and is treated as expendable — it is a ranking
+signal, and staleness changes ordering slightly and nothing else.
+
+### What each level does, as implemented
+
+| Level | Asks the network | Serves | Publishes its own observations |
+|---|---|---|---|
+| 1 Personal | **Nothing** | Nothing | Nothing |
+| 2 Mirror | Prefix buckets | Mirrored rows only | Nothing |
+| 3 Cohort | Prefix buckets | Own edges too | Aggregate (STAR — not built) |
+| 4 Transparency | Prefix buckets | Own edges too | Attributed (not built) |
+
+**Level 1 asks for nothing at all**, and that is a stronger promise than "we do
+not upload anything": a request discloses which video was asked about, so the
+only node that leaks nothing is one that never asks. Level 1 runs on its own
+recording. Consumption above Level 1 is not gated on contributing — a Level 2
+node fetches and benefits while publishing nothing it observed. The privacy
+promise is not a toll booth.
+
+**Below Level 3, a node serves only what it holds for other people.** Serving
+blocks built from its own `impressions` would publish a funnel; serving catalogue
+derived from them discloses viewing at *video* granularity, since a requester
+sees exactly which bucket members the node holds. Both are enforced by which
+query runs, not by a caller remembering, and both are tested.
+
+### Consequences to keep in mind
+
+**Titles lag the graph.** A walk reaching new territory renders ids until the
+catalogue arrives. Suggestions are still surfaced unlabelled rather than dropped
+— discarding them would make fetched graph data useless — *except* when the user
+has blocked channels, since an unlabelled video's channel is unknown and cannot
+be checked. Fail closed on an explicit instruction, fail open where none was
+given.
+
+**The disk budget splits.** Catalogue is durable; graph blocks are LRU. A node
+that evicts catalogue re-fetches it forever, because the graph keeps pointing
+back at the same popular videos.
+
+### Not built
+
+- **Seed packs.** Designed and measured (a million-video seed projects to ~760 MB
+  stripped and gzipped). Deferred: they matter when the network is large, and a
+  seed built from one corpus would ship one person's algorithmic bubble to every
+  new user, so it waits for several corpora.
+- **STAR / Levels 3 and 4.** Gated on the cross-user dedup measurement.
+- **The global search slice and long-tail posting lists.** Tier 1 search — over
+  what a node holds — works now. Tiers 2 and 3 wait for a corpus worth indexing;
+  tier 3 reuses the prefix mechanism with a third namespace.
+
+### Measuring the gate before STAR
+
+`DESIGN_BOOTSTRAP` §5d names cross-user dedup as the question to resolve before
+committing to STAR, and notes one machine cannot answer it. `keel-host sketch`
+builds a HyperLogLog over a node's edge keys; merging two gives the union, and
+against the sum that is the overlap. Sketches are a few KB and cannot be
+enumerated or tested for membership, so nodes settle the question without
+publishing an edge. **Exchange happens node-to-node over the transport; the
+subcommands are diagnostics and no user moves a file.**
+
 ## 8. Native daemon (Go) — required
 
 The daemon is the product; the extension is its browser-side sensor and display (§2.1). It ships
