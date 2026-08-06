@@ -407,6 +407,29 @@ async function handle(message, sender) {
       return { bundle: env.payload };
     }
 
+    /**
+     * The full-page view asks for the panel to be hidden on its own tab.
+     *
+     * The panel is otherwise available everywhere, which is what makes the
+     * toolbar icon reliable. But the full page shows the same data with more
+     * room, so a panel beside it is redundant.
+     *
+     * Scoped to the sender's own tab and requested by the page itself, so this
+     * cannot strand a YouTube tab the way the old per-surface gating did — a
+     * page that never asks keeps its panel.
+     */
+    case "PANEL_NOT_HERE": {
+      const tabId = sender?.tab?.id;
+      if (tabId != null && browser.sidePanel?.setOptions) {
+        try {
+          await browser.sidePanel.setOptions({ tabId, enabled: false });
+        } catch (err) {
+          console.warn(LOG, "setOptions", err?.message || err);
+        }
+      }
+      return {};
+    }
+
     case "GET_CONSENT": {
       const bag = await browser.storage.local.get(CONSENT_KEY);
       return { consent: bag?.[CONSENT_KEY] ?? null };

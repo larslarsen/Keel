@@ -276,6 +276,13 @@ type SuggestResultPayload struct {
 	Suggestions []Suggestion `json:"suggestions"`
 	GraphNodes  int          `json:"graph_nodes"`
 	GraphEdges  int          `json:"graph_edges"`
+	// RailOnly reports that the corpus could not reach past the seed's own
+	// rail, so these suggestions are the videos YouTube already showed. The
+	// interface should say so rather than passing them off as its own.
+	RailOnly bool `json:"rail_only"`
+	// FromCorpus reports that the seed was a dead end, so these come from a
+	// walk over everything the user has watched rather than from this video.
+	FromCorpus bool `json:"from_corpus"`
 }
 
 // AnalysisRow is one ranked item in the analysis view (WO-024).

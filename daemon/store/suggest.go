@@ -150,45 +150,72 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	}
 
 	alpha := alphaForEntropy(entropy)
-	rank := map[string]float64{seed: 1.0}
-	// via tracks the strongest first hop reaching each node, so the UI can say
-	// which observed rail led there rather than asserting a reason.
-	via := map[string]string{}
-
-	for i := 0; i < walkIterations; i++ {
-		next := make(map[string]float64, len(rank))
-		next[seed] += alpha
-		for node, mass := range rank {
-			es := g[node]
-			if len(es) == 0 {
-				// Dangling node: return its mass to the seed rather than losing it.
-				next[seed] += (1 - alpha) * mass
-				continue
-			}
-			for _, e := range es {
-				add := (1 - alpha) * mass * e.weight
-				next[e.to] += add
-				if node == seed {
-					via[e.to] = seed
-				} else if _, ok := via[e.to]; !ok {
-					via[e.to] = node
-				}
-			}
-		}
-		rank = next
-	}
+	rank, via := walkFrom(g, map[string]float64{seed: 1.0}, alpha)
 
 	blocked, err := s.blocklistSet()
 	if err != nil {
 		return nil, err
 	}
 
+	// Videos YouTube already showed alongside this seed are excluded.
+	//
+	// This is the whole point of the panel (WO-046). The seed's out-edges are,
+	// by construction, exactly the rail this user was shown there — so a walk
+	// starting at the seed ranks those first at every entropy setting, and the
+	// panel becomes a reordering of the thing it replaced. Measured on a live
+	// corpus: 10 of 10 suggestions came from the rail at entropy 0 through 100.
+	//
+	// The rail is how the walk travels, not what it recommends. Excluding the
+	// destination while keeping the path forces suggestions at least two hops
+	// out, which is where anything the user has not just been offered lives.
+	seen, err := s.railFor(seed)
+	if err != nil {
+		return nil, err
+	}
+
 	var ranked []scored
 	for id, sc := range rank {
-		if id == seed || sc <= 0 {
+		if id == seed || sc <= 0 || seen[id] {
 			continue
 		}
 		ranked = append(ranked, scored{id, sc})
+	}
+	// A corpus too small to reach past one hop would otherwise show nothing at
+	// all. An empty panel is worse than a familiar one, so fall back — and the
+	// caller is told, so the interface can say why.
+	// A seed with no second hop is the common case on a young corpus: the user
+	// has watched the video but nothing it leads to, so its neighbourhood is
+	// only the rail. Rather than hand the rail back, walk the whole corpus —
+	// everything they have actually watched — and suggest from that.
+	//
+	// "Something from what you have collected" is a real answer. "What YouTube
+	// just showed you" is not.
+	if len(ranked) == 0 {
+		roots, err := s.watchedRoots()
+		if err != nil {
+			return nil, err
+		}
+		if len(roots) > 0 {
+			out.FromCorpus = true
+			corpusRank, corpusVia := walkFrom(g, roots, alpha)
+			via = corpusVia
+			for id, sc := range corpusRank {
+				if id == seed || sc <= 0 || seen[id] {
+					continue
+				}
+				ranked = append(ranked, scored{id, sc})
+			}
+		}
+	}
+	// Still nothing: the corpus cannot reach past this rail at all.
+	if len(ranked) == 0 {
+		out.RailOnly = true
+		for id, sc := range rank {
+			if id == seed || sc <= 0 {
+				continue
+			}
+			ranked = append(ranked, scored{id, sc})
+		}
 	}
 
 	meta, err := s.videoMeta(ids(ranked))
@@ -301,6 +328,101 @@ type vmeta struct {
 }
 
 // videoMeta fetches catalogue metadata for a set of ids in one pass.
+// walkFrom runs the restart walk from an arbitrary starting distribution.
+//
+// restart is where mass returns to on each step. A single seed gives "more like
+// this video"; spreading it across everything the user has watched gives "more
+// like your corpus", which is what the panel falls back to when a seed turns out
+// to be a dead end.
+//
+// via records the strongest first hop reaching each node, so the interface can
+// say which observed rail led there rather than asserting a reason.
+func walkFrom(g map[string][]edge, restart map[string]float64, alpha float64) (map[string]float64, map[string]string) {
+	rank := make(map[string]float64, len(restart))
+	for k, v := range restart {
+		rank[k] = v
+	}
+	via := map[string]string{}
+
+	for i := 0; i < walkIterations; i++ {
+		next := make(map[string]float64, len(rank))
+		for k, v := range restart {
+			next[k] += alpha * v
+		}
+		for node, mass := range rank {
+			es := g[node]
+			if len(es) == 0 {
+				// Dangling node: return its mass to the restart set rather than
+				// losing it.
+				for k, v := range restart {
+					next[k] += (1 - alpha) * mass * v
+				}
+				continue
+			}
+			for _, e := range es {
+				next[e.to] += (1 - alpha) * mass * e.weight
+				if _, seeded := restart[node]; seeded {
+					via[e.to] = node
+				} else if _, ok := via[e.to]; !ok {
+					via[e.to] = node
+				}
+			}
+		}
+		rank = next
+	}
+	return rank, via
+}
+
+// watchedRoots is a uniform restart distribution over every video this user has
+// actually watched — the context videos of their own observations.
+func (s *Store) watchedRoots() (map[string]float64, error) {
+	rows, err := s.db.Query(`
+SELECT DISTINCT context_video_id FROM impressions
+WHERE context_video_id IS NOT NULL AND context_video_id != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]float64, len(ids))
+	for _, id := range ids {
+		out[id] = 1.0 / float64(len(ids))
+	}
+	return out, nil
+}
+
+// railFor returns the videos this user was shown alongside one context video.
+//
+// These are the seed's own out-edges: what YouTube offered on that page. They
+// drive the walk and are excluded from its output — see Suggest.
+func (s *Store) railFor(seed string) (map[string]bool, error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT video_id FROM impressions WHERE context_video_id = ?`, seed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) videoMeta(idList []string) (map[string]*vmeta, error) {
 	out := map[string]*vmeta{}
 	if len(idList) == 0 {

@@ -674,3 +674,7 @@ browser.runtime.onMessage.addListener((msg) => {
 
 selectTab("search");
 refreshStats().catch(() => {});
+
+// The full page shows everything the side panel does, with more room, so a
+// panel open beside it is redundant. Ask for it to be hidden on this tab only.
+browser.runtime.sendMessage({ type: "PANEL_NOT_HERE" }).catch(() => {});
