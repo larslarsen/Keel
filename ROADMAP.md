@@ -21,6 +21,7 @@ That was wrong. It confused *not in this phase* with *not in this product*.
 | **4. Distribution** | `keel-host install` registers with every detected browser (WO-020) | **Started** — packaging and signing remain |
 | **5a. Published releases** | Aggregate bundle export and signed-release primitives (WO-028/034). Person-to-person exchange is rejected; see `DESIGN_SHARING.md` | **Built — release transport pending** |
 | **5b. The swarm** | libp2p transport, stringless graph blocks, catalogue sync, prefix bucketing, ephemeral identity (WO-052). See `DESIGN_v2.md` §7.4 | **Built — untested between two machines** |
+| **5b′. Live index** | Gossiped livestream feed, whole-index subscription, local search, cold-start backfill, Live tab (WO-052). See §7.5 | **Built — the one visible swarm feature** |
 | **5c. Shared index** | STAR aggregation, then Prio; delay buffer. Gated on the cross-user dedup measurement | Not started |
 | **6. Peer recommendations** | Semantic graphing over peer paths; entropy slider; serendipity | Not started |
 | **7. Audit** | Cross-peer suppression and shadowban detection | Not started |

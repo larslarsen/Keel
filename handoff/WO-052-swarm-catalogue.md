@@ -18,7 +18,8 @@ app. No file transfer, no user copying anything, no trusting a person.
 >
 > Shipped: libp2p transport, stringless graph blocks, catalogue on its own
 > protocol, prefix bucketing, ephemeral identity, cardinality sketches, seed
-> packs (dormant). Outstanding: a test between two machines on the real DHT.
+> packs (dormant), and the gossiped live index with its Live tab (§7.5).
+> Outstanding: a test between two machines on the real network.
 
 ## Scope — catalogue only
 

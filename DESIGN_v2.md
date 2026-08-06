@@ -1090,6 +1090,9 @@ back at the same popular videos.
   what a node holds — works now. Tiers 2 and 3 wait for a corpus worth indexing;
   tier 3 reuses the prefix mechanism with a third namespace.
 
+The live index (§7.5) *is* built, including its UI — it is the one part of the
+swarm a user can see working today.
+
 ### Measuring the gate before STAR
 
 `DESIGN_BOOTSTRAP` §5d names cross-user dedup as the question to resolve before
@@ -1100,7 +1103,12 @@ enumerated or tested for membership, so nodes settle the question without
 publishing an edge. **Exchange happens node-to-node over the transport; the
 subcommands are diagnostics and no user moves a file.**
 
-## 7.5 Livestreams — an ephemeral index *(designed, not built)*
+## 7.5 Livestreams — an ephemeral index
+
+**Status: built 2026-08-06.** Daemon, gossip transport, cold-start backfill and
+the Live tab in the full-page surface. Tested with real gossipsub between nodes;
+like the rest of §7, not yet exercised between two machines on the open
+internet.
 
 Livestreams are the case the block/catalogue split handles badly. A stream is
 interesting for hours and worthless afterwards, so persisting it into the
@@ -1200,6 +1208,26 @@ gossip to nodes currently viewing the page was considered and rejected: the
 subscribers *are* the network, so with nobody viewing there would be no mesh, no
 relaying and nothing for the first person to arrive to. The feature would work
 only once it was already popular.
+
+**No project-run node keeps it alive, and none is needed.** Running an always-on
+seeder was considered — it would fit beside the STAR server — and dropped
+(Lars, 2026-08-06). The two decisions are linked and the dependency runs one way:
+*not* running a node is viable **only because** subscription is permanent. Every
+running Keel daemon is a subscriber, so the mesh sustains itself. Had the page-
+gated design been adopted, a seeder would have been mandatory, and the network
+would have depended on infrastructure we operate.
+
+It also avoids a channel we would otherwise have created for ourselves. Under
+page-gated subscription, joining the topic announces "this person is looking at
+livestreams right now", and always-on nodes see every join. Permanent
+subscription reveals only that a node runs Keel. Declining to build the seeder
+keeps `PRIVACY.md`'s claim that no Keel-operated server exists literally true,
+which is worth more than the bandwidth it would have saved.
+
+**What is worth protecting here is *which* streams, not *that* someone looks at
+streams.** Somebody running a livestream discovery feature is looking at
+livestreams; that is the product, not a disclosure. Whole-index subscription plus
+local filtering protects the part that matters completely.
 
 **Publish suppression is what bounds the cost instead.** The index is small — a
 few hundred KB of distinct streams — but *message* volume is not, because it
