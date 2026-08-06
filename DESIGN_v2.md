@@ -1039,6 +1039,94 @@ enumerated or tested for membership, so nodes settle the question without
 publishing an edge. **Exchange happens node-to-node over the transport; the
 subcommands are diagnostics and no user moves a file.**
 
+## 7.5 Livestreams — an ephemeral index *(designed, not built)*
+
+Livestreams are the case the block/catalogue split handles badly. A stream is
+interesting for hours and worthless afterwards, so persisting it into the
+catalogue — which is durable and never evicted — accumulates dead rows forever.
+They need a third dataset with the opposite lifetime policy: **memory, not disk;
+TTL, not permanence.**
+
+Measured against a live corpus 2026-08-05: **3.78% of distinct videos carried a
+LIVE badge** (67 of 1,774). Live content is a real share of what gets
+recommended, not a curiosity.
+
+### Shape
+
+Same prefix bucketing as everything else, a third hash namespace. A node that
+observes an active stream holds a lightweight record — video id, title, first
+seen — bucketed by prefix. Records carry a TTL and are refreshed while still
+being observed; when nothing refreshes one it expires and the index stays lean.
+
+Search works exactly as catalogue search does: **fetch the whole bucket, filter
+locally.** The daemon never sends a keyword anywhere. It pulls every active
+record in a prefix bucket, unpacks it in memory, and runs the text match, sort
+and filter on the user's own machine. A serving node cannot tell which stream the
+user was after, because the user took all of them.
+
+### Sizing
+
+The concurrent global set is what matters, not the share of the catalogue. At
+~100 bytes a record and 4,096 buckets:
+
+| Concurrent streams worldwide | Per bucket |
+|---|---|
+| 100,000 | ~2.5 KB |
+| 1,000,000 | ~24 KB |
+| 10,000,000 | ~240 KB |
+
+This is comfortable across the whole plausible range, which is the point: the
+design does not depend on getting the estimate right.
+
+### Correction — the DHT cannot hold these records
+
+The obvious formulation, "publish the record into the DHT to the nodes
+responsible for that bucket", does not work on the network we use. The public
+IPFS DHT accepts provider records and a small set of validated namespaces; it
+will not store arbitrary application values for us. Storing them would mean
+running a separate DHT with our own protocol prefix, which forfeits the free,
+already-populated network that §7.4 depends on.
+
+**Keep the DHT as a directory, exactly as blocks do.** A node holding live
+records for a bucket announces itself as a *provider* of that bucket; requesters
+find providers and fetch the records over a Keel protocol stream.
+
+This also removes custodial assignment, which is a gain rather than a
+compromise: no node is *responsible* for a bucket, so there is nobody to coerce,
+nobody to DoS off the network, and no placement metadata. A requester assembles a
+bucket by merging replies from several providers, which is more robust than
+trusting one custodian and costs a few extra streams.
+
+### Three honest problems
+
+**1. Publishing discloses the publisher's viewing.** A record says "someone saw
+this stream". For a popular stream that is meaningless; for a rare one the
+publisher set approximates the viewer set, and ephemeral identity plus a relay
+reduce but do not remove it. Publishing must therefore be **opt-in at Level 2 and
+above, never at Level 1**, and described as what it is. This is weaker than the
+fetch-side guarantee, which is unconditional — the asymmetry should be stated
+rather than smoothed over.
+
+**2. Records are unverifiable claims.** Nothing signs YouTube state (§6.4), so a
+node can announce a stream that is not live, or attach a misleading title. The
+cheap mitigation is to display only records corroborated by *k* distinct
+publishers, which raises the cost of poisoning without pretending to solve it —
+sybil resistance is an open problem project-wide, not one this feature can fix.
+
+**3. Liveness means "a Keel user is watching", not "the stream is live".** A
+record survives only while someone with Keel keeps observing it. A stream nobody
+here is watching expires from the index while still broadcasting. That is a
+different quantity from YouTube's own liveness and the interface must not claim
+otherwise — though it may be the more interesting one, since it measures
+attention rather than availability.
+
+### Why this is worth building
+
+It yields a global, real-time livestream search with no central index, no server,
+and the same query privacy as the rest of the system. Nothing else in the design
+produces a live view of the network, and it costs a third namespace on machinery
+that already exists.
+
 ## 8. Native daemon (Go) — required
 
 The daemon is the product; the extension is its browser-side sensor and display (§2.1). It ships
