@@ -227,12 +227,46 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		return handleBlockChannel(env, out, st, false)
 	case "EXPLAIN_VIDEO":
 		return handleExplainVideo(env, out, st)
+	case "LIVE_SEARCH":
+		return handleLiveSearch(env, out)
 	default:
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
 			Message: fmt.Sprintf("unknown type %q", env.Type),
 			Code:    "unknown_type",
 		})
 	}
+}
+
+// handleLiveSearch answers from the in-memory live index.
+//
+// The query is matched against records this node already holds, so nothing is
+// sent anywhere — the whole point of gossiping an index small enough to hold in
+// full (DESIGN_v2 §7.5).
+func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
+	var p struct {
+		Query         string `json:"query"`
+		MinPublishers int    `json:"min_publishers"`
+		Limit         int    `json:"limit"`
+	}
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	if swarmNode == nil || swarmNode.Live() == nil {
+		// Level 1 holds no index. Not an error — an empty feed with a reason.
+		return reply(out, env.ID, "LIVE_RESULT", map[string]any{
+			"query": p.Query, "streams": []any{}, "indexed": 0,
+			"available": false,
+			"reason":    "the live index needs contribution level 2 or above",
+		})
+	}
+	li := swarmNode.Live()
+	if p.MinPublishers <= 0 {
+		p.MinPublishers = 1
+	}
+	hits := li.Search(p.Query, p.MinPublishers, p.Limit)
+	return reply(out, env.ID, "LIVE_RESULT", map[string]any{
+		"query": p.Query, "streams": hits, "indexed": li.Size(), "available": true,
+	})
 }
 
 func handleExplainVideo(env *bridge.Envelope, out io.Writer, st *store.Store) error {
@@ -327,6 +361,7 @@ func handleImpressions(env *bridge.Envelope, out io.Writer, st *store.Store) err
 	if err != nil {
 		return replyErr(out, env.ID, err)
 	}
+	announceLive(p.Impressions)
 	// §5d's prewarm: the observer has just told us which video is being
 	// watched, which is the earliest possible moment to start fetching its
 	// neighbourhood — well before the panel asks for suggestions.

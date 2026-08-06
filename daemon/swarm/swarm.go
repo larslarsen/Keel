@@ -138,6 +138,8 @@ type Node struct {
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{} // dedupes concurrent fetches of one key
+
+	live *LiveIndex
 }
 
 func (n *Node) logf(format string, args ...any) {
@@ -223,6 +225,11 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		if _, err := relay.New(h); err != nil {
 			n.logf("relay service unavailable: %v", err)
 		}
+	}
+
+	if err := n.startLive(ctx); err != nil {
+		// The live index is additive: without it the rest of the node works.
+		n.logf("live index unavailable: %v", err)
 	}
 
 	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Serve)

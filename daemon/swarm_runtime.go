@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/keel-app/keel/daemon/bridge"
+
 	"github.com/keel-app/keel/daemon/store"
 	"github.com/keel-app/keel/daemon/swarm"
 )
@@ -97,6 +99,41 @@ func startSwarm(ctx context.Context, st *store.Store) {
 				}
 			}
 		}()
+	}
+}
+
+// announceLive publishes any livestream in a batch of observations.
+//
+// The extractor already tags live cards with a LIVE badge, so detection costs
+// nothing. Publishing is gated inside PublishLive on contribution level: a
+// Level 1 node announces nothing, because a record discloses that its publisher
+// saw the stream.
+func announceLive(imps []bridge.Impression) {
+	if swarmNode == nil || swarmNode.Live() == nil {
+		return
+	}
+	for _, imp := range imps {
+		live := false
+		for _, b := range imp.Badges {
+			if b == "LIVE" {
+				live = true
+				break
+			}
+		}
+		if !live || imp.VideoID == "" {
+			continue
+		}
+		rec := swarm.LiveRecord{
+			VideoID: imp.VideoID,
+			Title:   imp.Title,
+			SeenAt:  imp.ObservedAt,
+		}
+		if imp.ChannelID != nil {
+			rec.ChannelID = *imp.ChannelID
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		swarmNode.PublishLive(ctx, rec)
+		cancel()
 	}
 }
 
