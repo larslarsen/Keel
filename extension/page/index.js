@@ -362,8 +362,9 @@ const LEVELS = [
     n: 1,
     name: "Strictly personal",
     body:
-      "Nothing leaves this device. You get the whole product — search, " +
-      "suggestions, blocking, analysis — and contribute nothing.",
+      "Your recordings stay here. You get the whole product — search, " +
+      "suggestions, blocking, analysis. Keel still announces livestreams it " +
+      "sees, with no sender attached, so the Live tab works for everyone.",
   },
   {
     n: 2,
@@ -609,7 +610,7 @@ async function loadAnalysis() {
 function setDaemonUi(ok, detail = "") {
   el.banner.className = ok ? "banner ok" : "banner warn";
   el.banner.textContent = ok
-    ? "Desktop app connected. Everything stays on this device."
+    ? "Desktop app connected. Your recordings stay on this device."
     : "Keel's desktop app isn't running." + (detail ? ` (${detail})` : "");
 }
 

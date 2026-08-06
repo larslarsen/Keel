@@ -13,9 +13,15 @@ behave. The source is public and each one can be checked.
 
 ## The short version
 
-**Nothing Keel observes leaves your device.** There is no account, no server
-receiving your data, and no analytics. Keel cannot send your observations
-anywhere, because no code exists that would.
+**Your recording stays on your device.** There is no account, no server
+receiving your data, and no analytics. The record of what you were shown — every
+video, position and time — is never sent anywhere, at any setting.
+
+**One thing does leave, at every setting: when Keel sees a livestream it tells
+other Keel users that the stream exists.** That notice is a video id and title
+with no sender attached, so it says a stream is on, not who saw it. It is what
+puts anything in the Live tab. Everything else on this page describes data that
+stays put.
 
 ---
 
@@ -66,14 +72,21 @@ can show you the videos it has recorded. Each is fetched once and stored
 locally. No observation data is sent — these are ordinary image loads for videos
 YouTube already showed you.
 
-**The peer network.** Keel can join a peer-to-peer network to obtain
-recommendation data other people have published, which is what lets it suggest
-videos you have never been shown.
+**The peer network.** Keel joins a peer-to-peer network. What it does there
+depends on your setting, and one part happens at every setting including the
+default.
 
-**At the default setting it asks the network for nothing at all.** It works from
-a seed file that every user downloads identically, plus your own recording.
-Asking a peer for a specific video would tell that peer which video you asked
-about, so the default is to never ask.
+**At the default setting, Keel asks the network for nothing.** Asking a peer for
+a particular video would tell that peer which video you asked about, so it does
+not ask.
+
+**At every setting, Keel announces livestreams it sees.** When a stream appears
+in your recommendations, Keel tells other Keel users that the stream exists — a
+video id and title. The notice carries **no sender**: not your name, not your
+address, not even an identifier for your copy of Keel. Because of how the
+network passes messages along, a computer receiving one cannot tell whether you
+saw the stream or were simply relaying somebody else's notice. This is what
+fills the Live tab, for you and for everyone.
 
 Keel does not use the YouTube API, and never contacts any Keel-operated server,
 because none exists. Peer discovery uses the public IPFS network, which nobody
@@ -87,11 +100,10 @@ plainly than bury it.
 **This does not apply at the default setting**, which asks for nothing.
 
 Above the default, when Keel asks the network about a video, the peers it asks
-can see **your IP address and which video you asked about**. This is the same
-exposure any peer-to-peer system has — BitTorrent works the same way — and it is
-the one place where using Keel is visible to strangers rather than only to
-YouTube. The seed file limits it to unusual videos, because common ones are
-already answered locally.
+can see **your IP address and which video you asked about** — though it asks in
+batches of thousands, so which one of them you wanted is not visible. This is
+the same kind of exposure any peer-to-peer system has, and it is the one place
+where using Keel is visible to strangers rather than only to YouTube.
 
 What they cannot see: your history, anything you have recorded, what you
 actually watched, or any link between separate requests and a person. Keel's
@@ -106,14 +118,14 @@ and Keel keeps working on your own data alone.
 Contributing is **off by default** and every level above the default is a
 deliberate choice you make.
 
-**Level 1 — personal (the default).** Nothing leaves your device, including
-questions. Keel neither publishes nor asks; it works from the shared seed file
-and your own recording. Downloading that seed is identical for every user, so it
-says nothing about you.
+**Level 1 — personal (the default).** Nothing you record leaves your device, and
+Keel asks the network for nothing. It works from what it has recorded here. The
+one exception is the livestream notice described above, which carries nothing
+about you and happens at every setting.
 
 **Level 2 — mirror.** Your computer stores and passes on data *other people*
-published, using the disk space you allot, and may ask peers for videos the seed
-does not cover. Nothing you observed is published, and the list of videos your
+published, using the disk space you allot, and asks peers for recommendation
+data in batches. Nothing you observed is published, and the list of data your
 computer offers contains only what it is hosting for others — never what you
 watched. The trade you are accepting is the request exposure described above.
 
