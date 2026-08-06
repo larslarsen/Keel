@@ -2,6 +2,8 @@
 /** SidePanel: daemon status + counts. No local observation storage. */
 import { browser } from "../lib/browser.js";
 import {
+  CONSENT_KEY,
+  consentGranted,
   DEFAULT_HIDE_MODE,
   coerceHideMode,
   isChannelId,
@@ -13,8 +15,19 @@ const STATS_MIN_INTERVAL_MS = 5000;
 /** Long-lived port so the SW knows the panel is open (WO-009 with-panel). */
 const SIDEPANEL_PORT = "keel-sidepanel";
 
+/**
+ * Whether consent is outstanding.
+ *
+ * Without it the observer never arms, so the panel would sit on "Open a watch
+ * page to begin" forever while the user was already on one — blaming the page
+ * for a permission that was never granted. The consent screen is otherwise
+ * shown once at install, so anyone who closed it had no route back.
+ */
+let consentMissing = false;
+
 const el = {
   banner: document.getElementById("daemon-banner"),
+  consentBanner: document.getElementById("consent-banner"),
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
@@ -375,12 +388,19 @@ function renderPage(lastPage) {
   }
 
   if (!rows.length) {
+    // No page id has two very different causes and they need different words.
+    // Recording may simply not have started on this tab, or consent was never
+    // given — in which case nothing will ever appear and telling the user to
+    // open a watch page sends them in circles. checkConsent() surfaces the
+    // second case in a banner; the text here covers the first.
     el.meta.textContent = pageId
       ? `page ${String(pageId).slice(0, 8)}… · no cards yet` +
         (all.length && !rows.length
           ? ` (${all.length} hidden by blocklist)`
           : "")
-      : "Open a watch page to begin.";
+      : consentMissing
+        ? "Nothing is being recorded yet."
+        : "Open a watch page to begin.";
     if (renderedKeys.size) {
       el.list.replaceChildren();
       renderedKeys.clear();
@@ -700,3 +720,18 @@ connectPanelPort();
 loadHideMode();
 loadBlocklist();
 refresh();
+
+async function checkConsent() {
+  try {
+    const bag = await browser.storage?.local?.get(CONSENT_KEY);
+    consentMissing = !consentGranted(bag?.[CONSENT_KEY]);
+  } catch {
+    consentMissing = false; // never nag on a storage error
+  }
+  if (el.consentBanner) el.consentBanner.hidden = !consentMissing;
+}
+
+checkConsent().catch(() => {});
+browser.storage?.onChanged?.addListener?.((changes, area) => {
+  if (area === "local" && CONSENT_KEY in changes) checkConsent().catch(() => {});
+});

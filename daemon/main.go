@@ -60,9 +60,19 @@ func main() {
 
 	// The swarm runs for the lifetime of the connection. Cancelling on return
 	// stops the announce loop and any in-flight prewarm.
+	//
+	// **Started in the background, and that is not an optimisation.** Bringing
+	// up libp2p bootstraps against the public DHT, which can be slow, blocked by
+	// a firewall, or simply unreachable. Doing that before the message loop
+	// meant the daemon did not answer HELLO until the network cooperated — so a
+	// machine with no route to the DHT recorded nothing at all, silently, and
+	// the panel reported an empty page.
+	//
+	// Everything local works with no network whatsoever (§2). Startup must
+	// never wait on a peer.
 	swarmCtx, stopSwarm := context.WithCancel(context.Background())
 	defer stopSwarm()
-	startSwarm(swarmCtx, st)
+	go startSwarm(swarmCtx, st)
 	defer func() {
 		if swarmNode != nil {
 			_ = swarmNode.Close()

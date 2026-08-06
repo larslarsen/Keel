@@ -210,9 +210,19 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		_ = h.Close()
 		return nil, fmt.Errorf("dht: %w", err)
 	}
-	if err := kdht.Bootstrap(ctx); err != nil {
-		_ = h.Close()
-		return nil, fmt.Errorf("dht bootstrap: %w", err)
+	// Bound the bootstrap specifically, not the node's lifetime. Reaching the
+	// public DHT can be slow, firewalled or impossible, and a node that cannot
+	// bootstrap is still useful — it serves and answers on direct connections,
+	// and the DHT may become reachable later.
+	//
+	// The deadline must not come from the caller's long-lived context: gossipsub
+	// and the index sweeper run on that one, so a timeout there would quietly
+	// kill the live feed a minute after startup.
+	bootCtx, cancelBoot := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelBoot()
+	if err := kdht.Bootstrap(bootCtx); err != nil {
+		n := &Node{host: h, dht: kdht, st: st, cfg: cfg, inflight: map[string]chan struct{}{}}
+		n.logf("dht bootstrap failed, continuing without discovery: %v", err)
 	}
 
 	n := &Node{host: h, dht: kdht, st: st, cfg: cfg, inflight: map[string]chan struct{}{}}
