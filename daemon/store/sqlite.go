@@ -68,7 +68,7 @@ func (s *Store) currentlyLive() (map[string]bool, error) {
 	}
 	s.liveMu.RUnlock()
 
-	cutoff := time.Now().Add(-liveRecency).UnixMilli()
+	cutoff := time.Now().Add(-LiveRecency).UnixMilli()
 	rows, err := s.db.Query(`
 SELECT DISTINCT video_id FROM impressions
 WHERE observed_at >= ? AND badges_json LIKE '%LIVE%'`, cutoff)

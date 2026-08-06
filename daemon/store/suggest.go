@@ -24,11 +24,18 @@ const (
 	// ranking stops changing well before this on graphs of this size.
 	walkIterations = 24
 
-	// liveRecency is how recently a LIVE badge must have been seen for this
-	// node to treat a stream as still running. Long enough to survive a
-	// browsing session, short enough that yesterday's stream does not lead the
-	// panel.
-	liveRecency = 3 * time.Hour
+	// LiveRecency is how recently a stream must have been seen live for the
+	// panel to treat it as still running.
+	//
+	// One hour, because the claim being made is "this is on right now" and the
+	// panel puts it first. A looser window fills the top of the list with
+	// streams that have ended, which is worse than not boosting at all: the
+	// user clicks expecting live and gets a recording.
+	//
+	// Exported because the swarm's live index keeps records far longer — its
+	// TTL is about what is worth indexing, not about what is worth promoting —
+	// so the caller must apply the same window before handing them over.
+	LiveRecency = time.Hour
 
 	// liveBoost lifts running streams above everything else. Large enough to be
 	// decisive, since a stream ranked fourth has already lost its advantage.

@@ -467,9 +467,15 @@ func handleSuggest(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	// on their own; this adds streams other people are seeing.
 	if swarmNode != nil && swarmNode.Live() != nil {
 		entries := swarmNode.Live().Search("", 5000)
+		// The index deliberately keeps records for hours, so a stream can still
+		// be found after it ends. Promoting one to the top of the panel is a
+		// stronger claim than listing it, so only recent sightings qualify.
+		cutoff := time.Now().Add(-store.LiveRecency).UnixMilli()
 		ids := make([]string, 0, len(entries))
 		for _, e := range entries {
-			ids = append(ids, e.VideoID)
+			if e.LastSeen >= cutoff {
+				ids = append(ids, e.VideoID)
+			}
 		}
 		st.SetLiveVideos(ids)
 	}
