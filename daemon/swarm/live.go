@@ -216,11 +216,40 @@ func (n *Node) startLive(ctx context.Context) error {
 	// nothing this node did.
 	n.host.SetStreamHandler(LiveSnapshotProtocol, n.handleLiveSnapshot)
 
+	n.seedLiveFromLocal()
 	go n.live.consume(ctx)
 	go n.live.sweep(ctx)
 	go n.backfillLive(ctx)
 	n.logf("live index subscribed to %s", LiveTopic)
 	return nil
+}
+
+// seedLiveFromLocal replays this node's own recent sightings into the index.
+//
+// The index is in-memory by design, so a restart empties it, and with no peers
+// it refills only from what this node happens to see next. That made the Live
+// tab look emptier and staler after every rebuild. The sightings are already on
+// disk in `impressions`, so replaying them costs nothing and persists nothing
+// new.
+//
+// Seeded records keep their true observation time rather than being stamped
+// with now — the whole point of this pass is that observation time is what the
+// feed ranks and filters on.
+func (n *Node) seedLiveFromLocal() {
+	if n.live == nil {
+		return
+	}
+	cutoff := time.Now().Add(-liveTTL).UnixMilli()
+	seen, err := n.st.RecentLiveSightings(cutoff)
+	if err != nil || len(seen) == 0 {
+		return
+	}
+	for _, v := range seen {
+		n.live.merge(LiveRecord{
+			VideoID: v.VideoID, Title: v.Title, ChannelID: v.ChannelID, SeenAt: v.SeenAt,
+		})
+	}
+	n.logf("live index seeded with %d local sightings", len(seen))
 }
 
 // handleLiveSnapshot returns every record this node holds.
@@ -315,6 +344,13 @@ func validateLiveMessage(_ context.Context, _ peer.ID, msg *pubsub.Message) bool
 	if len(r.VideoID) != 11 || len(r.Title) > 300 {
 		return false
 	}
+	// A record with no observation time cannot be ranked or filtered honestly —
+	// the feed sorts on when a stream was seen, and promotion depends on it
+	// being recent. Forwarding one would put an unplaceable entry into every
+	// node's index.
+	if r.SeenAt <= 0 {
+		return false
+	}
 	// A record claiming to have been seen far in the future is either a broken
 	// clock or an attempt to outlive the TTL. Neither is worth forwarding.
 	if r.SeenAt > time.Now().Add(time.Hour).UnixMilli() {
@@ -342,8 +378,8 @@ func (li *LiveIndex) consume(ctx context.Context) {
 // There is no publisher to record: messages are authorless by design, and the
 // index is a set of streams rather than a tally of who saw what.
 func (li *LiveIndex) merge(r LiveRecord) {
-	if r.VideoID == "" {
-		return
+	if r.VideoID == "" || r.SeenAt <= 0 {
+		return // unplaceable: see validateLiveMessage
 	}
 	now := time.Now()
 	li.mu.Lock()
@@ -440,14 +476,18 @@ func (li *LiveIndex) Search(query string, limit int) []LiveEntry {
 		limit = 100
 	}
 	terms := strings.Fields(strings.ToLower(query))
-	cutoff := time.Now().Add(-liveTTL)
+	// Cut on when the stream was *observed*, not on when this node last heard
+	// gossip about it. Records are re-announced while they age, so lastSeen
+	// stays warm for a stream that finished hours ago — filtering on it lets
+	// dead streams sit at the top of the feed forever.
+	cutoff := time.Now().Add(-liveTTL).UnixMilli()
 
 	li.mu.RLock()
 	defer li.mu.RUnlock()
 
 	out := make([]LiveEntry, 0, 64)
 	for _, e := range li.entries {
-		if e.lastSeen.Before(cutoff) {
+		if e.rec.SeenAt < cutoff {
 			continue
 		}
 		if len(terms) > 0 {
@@ -470,10 +510,14 @@ func (li *LiveIndex) Search(query string, limit int) []LiveEntry {
 		})
 	}
 
-	// Most recently reported first. There is no popularity signal here and that
-	// is deliberate: this feed exists for the streams nobody else surfaces, so
-	// ranking by any measure of attention would rebuild what it replaces.
+	// Most recently *seen live* first — again the observation time, not gossip
+	// freshness. There is no popularity signal here and that is deliberate: this
+	// feed exists for the streams nobody else surfaces, so ranking by any
+	// measure of attention would rebuild what it replaces.
 	sort.Slice(out, func(a, b int) bool {
+		if out[a].SeenAt != out[b].SeenAt {
+			return out[a].SeenAt > out[b].SeenAt
+		}
 		if out[a].LastSeen != out[b].LastSeen {
 			return out[a].LastSeen > out[b].LastSeen
 		}

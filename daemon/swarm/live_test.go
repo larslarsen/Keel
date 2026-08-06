@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/keel-app/keel/daemon/store"
+
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 )
@@ -185,7 +187,7 @@ func TestLiveValidatorRejectsJunk(t *testing.T) {
 			t.Errorf("%s was accepted", name)
 		}
 	}
-	ok := []byte(`{"v":"dQw4w9WgXcQ","t":"Fine","s":1}`)
+	ok := []byte(`{"v":"dQw4w9WgXcQ","t":"Fine","s":1}`) // s: any positive time
 	if !validateLiveMessage(context.Background(), "", newMsg(ok)) {
 		t.Error("a valid record was rejected")
 	}
@@ -206,7 +208,7 @@ func TestPublishSuppressionScales(t *testing.T) {
 	}
 
 	// Already known and fresh: stay quiet.
-	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"})
+	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ", SeenAt: time.Now().UnixMilli()})
 	if li.shouldPublish("dQw4w9WgXcQ") {
 		t.Error("re-announced a stream already in the index")
 	}
@@ -237,9 +239,10 @@ func TestLiveSnapshotBackfill(t *testing.T) {
 	defer warm.Close()
 
 	// Give the warm node an index without any gossip involved.
+	now := time.Now().UnixMilli()
 	for _, r := range []LiveRecord{
-		{VideoID: "dQw4w9WgXcQ", Title: "Existing stream one"},
-		{VideoID: "oHg5SJYRHA0", Title: "Existing stream two"},
+		{VideoID: "dQw4w9WgXcQ", Title: "Existing stream one", SeenAt: now},
+		{VideoID: "oHg5SJYRHA0", Title: "Existing stream two", SeenAt: now},
 	} {
 		warm.Live().merge(r)
 	}
@@ -263,5 +266,64 @@ func TestLiveSnapshotBackfill(t *testing.T) {
 	hits := cold.Live().Search("existing", 10)
 	if len(hits) != 2 {
 		t.Errorf("backfilled records are not searchable: %d hits", len(hits))
+	}
+}
+
+// TestStaleStreamIsNotPromoted is WO-054's regression.
+//
+// A record's lastSeen is refreshed on every gossip receive, and nodes
+// re-announce records as they age so suppression cannot let a running stream
+// expire. So a stream that finished six hours ago keeps a warm lastSeen for as
+// long as anyone is still passing it around. Ranking or promoting on that put
+// six-hour-old streams at the top of the panel while the stated rule was one
+// hour.
+//
+// Observation time is the only field that means what the rule says.
+func TestStaleStreamIsNotPromoted(t *testing.T) {
+	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
+	now := time.Now()
+
+	// Ended six hours ago, still being gossiped: lastSeen is now.
+	li.merge(LiveRecord{
+		VideoID: "staleaaaaaa", Title: "Finished six hours ago",
+		SeenAt: now.Add(-6 * time.Hour).UnixMilli(),
+	})
+	// Seen live ten minutes ago.
+	li.merge(LiveRecord{
+		VideoID: "freshbbbbbb", Title: "Actually running",
+		SeenAt: now.Add(-10 * time.Minute).UnixMilli(),
+	})
+
+	for _, id := range []string{"staleaaaaaa", "freshbbbbbb"} {
+		if li.entries[id].lastSeen.Before(now.Add(-time.Minute)) {
+			t.Fatalf("%s: fixture does not reproduce a warm lastSeen", id)
+		}
+	}
+
+	// The feed shows both — it is a record of what has been live recently — but
+	// the recent one must rank first.
+	hits := li.Search("", 10)
+	if len(hits) != 2 {
+		t.Fatalf("feed returned %d entries, want 2", len(hits))
+	}
+	if hits[0].VideoID != "freshbbbbbb" {
+		t.Errorf("feed ranked %q first; a six-hour-old stream outranked a live one",
+			hits[0].VideoID)
+	}
+
+	// Promotion applies the one-hour rule to observation time, which is what
+	// handleSuggest does with these entries.
+	cutoff := now.Add(-store.LiveRecency).UnixMilli()
+	promoted := map[string]bool{}
+	for _, e := range hits {
+		if e.SeenAt >= cutoff {
+			promoted[e.VideoID] = true
+		}
+	}
+	if promoted["staleaaaaaa"] {
+		t.Error("a stream last seen six hours ago was promoted under a one-hour rule")
+	}
+	if !promoted["freshbbbbbb"] {
+		t.Error("a stream seen ten minutes ago was not promoted")
 	}
 }

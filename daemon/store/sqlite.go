@@ -37,6 +37,44 @@ type Store struct {
 	liveNow map[string]bool
 }
 
+// LiveSighting is one local observation of a stream running.
+type LiveSighting struct {
+	VideoID   string
+	Title     string
+	ChannelID string
+	SeenAt    int64
+}
+
+// RecentLiveSightings returns streams this node saw live since cutoff.
+//
+// The live index is deliberately in-memory, so a restart empties it and it
+// refills only as gossip trickles in — which on a network with no peers means
+// never. But this node's own sightings are already on disk in `impressions`,
+// so they can be replayed at startup at no cost and with nothing persisted that
+// was not already kept.
+func (s *Store) RecentLiveSightings(cutoff int64) ([]LiveSighting, error) {
+	rows, err := s.db.Query(`
+SELECT video_id, MAX(title), MAX(channel_id), MAX(observed_at)
+FROM impressions
+WHERE observed_at >= ? AND badges_json LIKE '%LIVE%'
+GROUP BY video_id`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LiveSighting{}
+	for rows.Next() {
+		var v LiveSighting
+		var title, ch sql.NullString
+		if err := rows.Scan(&v.VideoID, &title, &ch, &v.SeenAt); err != nil {
+			return nil, err
+		}
+		v.Title, v.ChannelID = title.String, ch.String
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // SetLiveVideos records which videos the swarm reports as live right now.
 //
 // Suggestions rank these above everything else: a stream that is running is the

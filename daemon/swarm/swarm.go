@@ -84,6 +84,7 @@ type Store interface {
 	LocalCataloguePrefixes(bits int, mirrorOnly bool) ([]string, error)
 	MissingCataloguePrefixes(videoIDs []string, bits int) ([]string, error)
 	ImportBlock(raw []byte) (*store.Block, int64, error)
+	RecentLiveSightings(cutoff int64) ([]store.LiveSighting, error)
 	SwarmIdentity() ([]byte, error)
 	EphemeralSwarmIdentity() ([]byte, error)
 	Cohort() string

@@ -473,7 +473,13 @@ func handleSuggest(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 		cutoff := time.Now().Add(-store.LiveRecency).UnixMilli()
 		ids := make([]string, 0, len(entries))
 		for _, e := range entries {
-			if e.LastSeen >= cutoff {
+			// SeenAt, not LastSeen. LastSeen is when gossip about this stream
+			// last arrived, and records are re-announced as they age, so a
+			// stream that ended hours ago keeps a warm LastSeen for as long as
+			// anyone is still passing it around. Promoting on that put
+			// six-hour-old streams at the top of the panel while the stated
+			// rule was one hour.
+			if e.SeenAt >= cutoff {
 				ids = append(ids, e.VideoID)
 			}
 		}
