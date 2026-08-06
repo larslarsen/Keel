@@ -450,3 +450,47 @@ obvious candidate, since video metadata is a public fact rather than an
 observation of a person. It would not help the seed (catalogue carries no edges,
 and the walk reads `peer_edges`), but it would mean Level 2 is contributing data
 rather than only capacity. Currently it is not.
+
+## Searchable data and the same query leak — 2026-08-05
+
+Asking the network for a term's posting list discloses the term. That is worse
+than disclosing a watched video: a search is a direct statement of intent, and
+`DESIGN_v2` §4.2 already requires queries be hashed for this reason.
+
+§5d's two-tier design turns out to make this cheaper to solve than the block
+case, not harder. Three tiers, and only one of them has the problem:
+
+**1. Search over what the node already holds — no query, works today.**
+`SearchVideos` unions `peer_catalogue`, and `ImportBlock` populates that table
+because every block carries titles for the videos it points at. So search
+improves as a side effect of block fetching, with no separate request and no
+additional exposure. Nothing needs building.
+
+**2. The global slice index — no query.** A bulk download, identical for every
+node, exactly like the seed pack. Downloading it says only "this address runs
+Keel". Popular terms live here.
+
+**3. Long-tail posting lists — the only tier with the leak.** Fixed the same way
+as blocks: bucket by a prefix of the *hashed* term, fetch the whole bucket, take
+all of it. The mechanism in `store/prefix.go` applies unchanged; only the
+namespace differs.
+
+### Why this is cheaper for search than for blocks
+
+The obvious objection to prefix-fetching posting lists is size: a bucket
+containing one common term would drag megabytes along with every request, where
+a block bucket costs a few hundred KB.
+
+That case does not arise. **Common terms are in tier 2 and are never fetched.**
+By construction, anything reaching tier 3 is rare, and rare terms have short
+posting lists. The two-tier split is what keeps the anonymity set affordable —
+the tier that would be expensive to hide is the tier that needs no hiding.
+
+### Not built
+
+None of tier 2 or 3 exists. Tier 1 works now and covers search across everything
+a node holds, which for a node fetching blocks normally is most of what its user
+would look for. Tiers 2 and 3 wait for a network with a corpus worth indexing.
+
+The design note is here so the mechanism is settled before anyone builds it, not
+because it needs building now.
