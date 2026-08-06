@@ -462,6 +462,18 @@ func handleSuggest(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 			Code:    "bad_payload",
 		})
 	}
+	// Hand the store whatever the swarm currently believes is live, so the walk
+	// can rank running streams first. Local LIVE badges cover the no-peers case
+	// on their own; this adds streams other people are seeing.
+	if swarmNode != nil && swarmNode.Live() != nil {
+		entries := swarmNode.Live().Search("", 5000)
+		ids := make([]string, 0, len(entries))
+		for _, e := range entries {
+			ids = append(ids, e.VideoID)
+		}
+		st.SetLiveVideos(ids)
+	}
+
 	res, err := st.Suggest(p.SeedVideoID, p.Entropy, p.Limit)
 	if err != nil {
 		return replyErr(out, env.ID, err)

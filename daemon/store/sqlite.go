@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
@@ -27,6 +29,60 @@ const ExportSchemaVersion = 2
 // No time-based deletion — retention is a P1 user setting (default off).
 type Store struct {
 	db *sql.DB
+
+	// liveMu guards liveNow, the set of videos the swarm currently believes are
+	// live. It is pushed in from outside because the live index lives in the
+	// swarm package, which imports this one.
+	liveMu  sync.RWMutex
+	liveNow map[string]bool
+}
+
+// SetLiveVideos records which videos the swarm reports as live right now.
+//
+// Suggestions rank these above everything else: a stream that is running is the
+// one thing on YouTube's rail worth preserving, because it is the one thing
+// whose value expires. Everything else can be watched later.
+func (s *Store) SetLiveVideos(ids []string) {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			set[id] = true
+		}
+	}
+	s.liveMu.Lock()
+	s.liveNow = set
+	s.liveMu.Unlock()
+}
+
+// currentlyLive unions what the swarm reports with what this node has seen
+// carrying a LIVE badge recently.
+//
+// The local half matters most today, because it works with no peers at all: a
+// stream this user was shown in the last few hours is very likely still running,
+// and that is the only evidence available before the network has any.
+func (s *Store) currentlyLive() (map[string]bool, error) {
+	out := map[string]bool{}
+	s.liveMu.RLock()
+	for id := range s.liveNow {
+		out[id] = true
+	}
+	s.liveMu.RUnlock()
+
+	cutoff := time.Now().Add(-liveRecency).UnixMilli()
+	rows, err := s.db.Query(`
+SELECT DISTINCT video_id FROM impressions
+WHERE observed_at >= ? AND badges_json LIKE '%LIVE%'`, cutoff)
+	if err != nil {
+		return out, nil // a failure here must not break suggestions
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			out[id] = true
+		}
+	}
+	return out, nil
 }
 
 // Open creates/opens the database at path (or default user config dir).
@@ -50,6 +106,10 @@ func Open(path string) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	// Best-effort: a repair failure must not stop the daemon starting.
+	if err := s.repairPublishedAt(); err != nil {
+		log.Printf("published_at repair skipped: %v", err)
 	}
 	return s, nil
 }

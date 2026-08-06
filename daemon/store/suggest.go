@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
 )
@@ -22,6 +23,16 @@ const (
 	// walkIterations is enough for the mass to settle at these alphas; the
 	// ranking stops changing well before this on graphs of this size.
 	walkIterations = 24
+
+	// liveRecency is how recently a LIVE badge must have been seen for this
+	// node to treat a stream as still running. Long enough to survive a
+	// browsing session, short enough that yesterday's stream does not lead the
+	// panel.
+	liveRecency = 3 * time.Hour
+
+	// liveBoost lifts running streams above everything else. Large enough to be
+	// decisive, since a stream ranked fourth has already lost its advantage.
+	liveBoost = 6.0
 	// maxSuggestions caps the response.
 	maxSuggestions = 50
 )
@@ -226,6 +237,15 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// Serendipity: at high entropy, damp by popularity so the walk surfaces
 	// niche material instead of falling into gravity wells. This — not the
 	// crypto — is what delivers the anti-popularity promise (§3).
+	// A running livestream is the one thing worth keeping from YouTube's rail,
+	// because it is the only recommendation whose value expires — everything
+	// else can be watched later. Applied after popularity damping so a niche
+	// stream is not pushed back down by it.
+	live, err := s.currentlyLive()
+	if err != nil {
+		return nil, err
+	}
+
 	pop := float64(entropy) / 100.0
 	for i := range ranked {
 		m := meta[ranked[i].id]
@@ -237,6 +257,11 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 		}
 	}
 
+	for i := range ranked {
+		if live[ranked[i].id] {
+			ranked[i].score *= liveBoost
+		}
+	}
 	sort.Slice(ranked, func(a, b int) bool {
 		if ranked[a].score != ranked[b].score {
 			return ranked[a].score > ranked[b].score

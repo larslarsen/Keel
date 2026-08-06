@@ -116,6 +116,27 @@ export function surfaceFromUrl(href) {
   return { surface: null, context_video_id: null };
 }
 
+/**
+ * Pull just the age out of a metadata line.
+ *
+ * YouTube packs several facts into one row, and which ones vary by surface, so
+ * taking the whole string stored things like "Liberal Hivemind 22K 1h ago" and
+ * "Streamed 2h ago" as if they were dates — 27% of rows on a live corpus. That
+ * was invisible while the field was not displayed and obviously wrong once it
+ * was.
+ *
+ * Anchoring to the end takes the age and nothing else. The "Streamed" marker is
+ * dropped: a past livestream is already identifiable from its badges, and the
+ * value here should be one comparable thing.
+ *
+ * @param {string} text
+ * @returns {string | null} e.g. "2w ago", "15 min ago"
+ */
+export function parseAge(text) {
+  const m = String(text || "").match(/(\d+\s*[a-z]{1,6}\s+ago)\s*$/i);
+  return m ? m[1].replace(/\s+/g, " ").trim() : null;
+}
+
 /** @param {Element} el */
 export function extractBadges(el) {
   const out = new Set();
@@ -182,7 +203,7 @@ function readCompactFields(el) {
   )) {
     const t = (span.textContent || "").trim();
     if (/view|watching/i.test(t)) view_count = parseViewCount(t);
-    else if (/ago|streamed|premier/i.test(t)) published_at = t;
+    else if (published_at == null) published_at = parseAge(t);
   }
 
   return {
@@ -287,12 +308,7 @@ function readLockupFields(el) {
       const num = t.match(/^([\d.,]+\s*[kmb]?)\b/i);
       if (num) view_count = parseViewCount(num[1]);
     }
-    if (published_at == null) {
-      const rest = t
-        .replace(/^[\d.,]+\s*[kmb]?\s*(views?|watching)?\s*[•·|]?\s*/i, "")
-        .trim();
-      if (rest && /ago|streamed|premier/i.test(rest)) published_at = rest;
-    }
+    if (published_at == null) published_at = parseAge(t);
   }
 
   return {
