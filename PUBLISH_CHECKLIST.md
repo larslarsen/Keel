@@ -109,3 +109,27 @@ Publishing with open defects is fine; publishing while implying they don't exist
   They cover `ytd-compact-video-renderer`, extinct on watch-next, so they cannot be recaptured.
 - **Firefox is untested beyond a headless load.** The sidebar has never been opened by a human
   (WO-011).
+
+## Chrome Web Store — data policy (added 2026-08-06)
+
+Chrome's updated policy is enforced from **1 August 2026**. Two hard
+requirements, both verified against the policy text rather than assumed:
+
+- [ ] **In-product consent before any collection.** All data collection must be
+      prominently disclosed and affirmatively consented to *inside the
+      extension's own interface*, not only in a privacy policy. There is no
+      carve-out for data that never leaves the device — "user data" is defined
+      as information collected about a user or a user's use of the product.
+      *Done: `extension/consent/index.html`, gating the observer.*
+- [ ] **A hosted privacy policy URL.** A file in the repository does not
+      satisfy this; the listing needs a page. Enable GitHub Pages on this
+      repository — Settings → Pages → deploy from `main`, folder `/ (root)` —
+      which serves `PRIVACY.md` at
+      <https://larslarsen.github.io/Keel/PRIVACY>. Serving from this repo keeps
+      one source of truth; a copy elsewhere would drift, and a privacy policy
+      that disagrees with itself is worse than none.
+- [ ] Listing privacy declarations match `PRIVACY.md` exactly.
+- [ ] Single-purpose description, and a justification for every permission.
+
+Sources: [policy updates](https://developer.chrome.com/blog/cws-policy-updates-2026),
+[disclosure requirements](https://developer.chrome.com/docs/webstore/program-policies/disclosure-requirements).

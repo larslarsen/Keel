@@ -1,0 +1,43 @@
+# GitHub Pages configuration.
+#
+# This exists so the privacy policy can be served from a URL. The Chrome Web
+# Store listing requires a link to a hosted privacy policy, and a file inside a
+# repository does not satisfy that — the reviewer needs a page.
+#
+# Serving from this repository rather than a second one keeps PRIVACY.md as the
+# single source of truth. A copy in another repo would drift, and a privacy
+# policy that disagrees with itself is worse than none.
+#
+# Enable at: Settings → Pages → Source: "Deploy from a branch", branch "main",
+# folder "/ (root)". The policy is then at:
+#   https://larslarsen.github.io/Keel/PRIVACY
+title: Keel
+description: See and control the video recommendations you are shown.
+theme: jekyll-theme-primer
+
+# Only documents are published. Everything else is source code, and Jekyll
+# would either waste time on it or fail on filenames it does not expect.
+include:
+  - PRIVACY.md
+  - INSTALL.md
+  - README.md
+
+exclude:
+  - daemon/
+  - extension/
+  - handoff/
+  - test/
+  - graphify-out/
+  - node_modules/
+  - package.json
+  - package-lock.json
+  - AGENTS.md
+  - CLAUDE.md
+  - BUILD_P0.md
+  - DESIGN_v2.md
+  - DESIGN_BOOTSTRAP.md
+  - DESIGN_SHARING.md
+  - DESIGN_INCENTIVES.md
+  - PUBLISH_CHECKLIST.md
+  - HANDOFF.md
+  - RENAME_NOTE.md
