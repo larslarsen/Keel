@@ -13,7 +13,6 @@ import { browser } from "../lib/browser.js";
 
 const el = {
   accept: document.getElementById("btn-accept"),
-  decline: document.getElementById("btn-decline"),
   choices: document.getElementById("choices"),
   status: document.getElementById("status"),
 };
@@ -35,4 +34,3 @@ async function choose(value) {
 }
 
 el.accept.addEventListener("click", () => choose("granted"));
-el.decline.addEventListener("click", () => choose("declined"));

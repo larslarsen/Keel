@@ -165,7 +165,6 @@ function selectTab(name) {
     wireDiskSlider();
     refreshDisk().catch(() => {});
     refreshContribution().catch(() => {});
-    refreshConsent().catch(() => {});
   }
   if (name === "search") el.q.focus();
   if (name === "suggest" && !el.suggestions.children.length) {
@@ -393,27 +392,6 @@ const LEVELS = [
       "have been retaliated against. Cannot be withdrawn once copied.",
   },
 ];
-
-async function refreshConsent() {
-  const row = document.getElementById("consent-row");
-  const btn = document.getElementById("btn-consent");
-  if (!row || !btn) return;
-  let v = null;
-  try {
-    v = (await rpc("GET_CONSENT")).consent;
-  } catch {
-    return;
-  }
-  const on = v === "granted";
-  row.textContent = on
-    ? "Keel is recording the recommendations YouTube shows you, to this device only."
-    : "Keel is not recording, so it has nothing to search, suggest or analyse.";
-  btn.textContent = on ? "Stop recording" : "Start recording";
-  btn.onclick = async () => {
-    await rpc("SET_CONSENT", { consent: on ? "declined" : "granted" });
-    await refreshConsent();
-  };
-}
 
 async function refreshContribution() {
   const wrap = document.getElementById("contrib-levels");

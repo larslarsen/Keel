@@ -16,7 +16,6 @@ import {
 } from "./extract.js";
 import { browser } from "../lib/browser.js";
 import { startHide } from "./hide.js";
-import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
 
 const THROTTLE_MS = 750;
 const MAX_ARM_ATTEMPTS = 10;
@@ -418,54 +417,15 @@ function listenSpa() {
   });
 }
 
-/**
- * Observation requires explicit consent (WO-049).
- *
- * Read straight from storage rather than asking the SW: this runs before the
- * first message and must fail closed if anything is unreadable.
- */
-async function consented() {
-  try {
-    const bag = await browser.storage?.local?.get(CONSENT_KEY);
-    return consentGranted(bag?.[CONSENT_KEY]);
-  } catch {
-    return false;
-  }
-}
 
 async function start() {
   if (armed) return;
   armed = true;
   lastHref = "";
   // Hide is independent of surface: CSS is scoped to watch #secondary +
-  // home grid; off-surface pages are unaffected. Start before arming so
-  // with-panel / always apply without waiting for the first scan.
-  // Hiding is a display preference and is allowed either way; recording is not.
+  // home grid; off-surface pages are unaffected. Start before arming so it
+  // applies without waiting for the first scan.
   startHide().catch((e) => console.warn(LOG, "hide", e?.message || e));
-  if (!(await consented())) {
-    console.info(LOG, "no consent — not recording");
-    // Still tell the worker this is a YouTube tab, so the side panel can be
-    // opened from the toolbar.
-    //
-    // Without this the extension deadlocks: no consent means no PAGE_CONTEXT,
-    // which means the panel is never enabled for any tab, which means clicking
-    // the icon does nothing — and the consent control lives inside the panel.
-    // The only other route in is the tab opened once at install, so anyone who
-    // closed it without deciding had no way back.
-    //
-    // Enabling a surface is not recording. Nothing is observed here; this
-    // reports the page as off-surface, exactly as an unobserved YouTube page
-    // does when consent *has* been given.
-    await send("PAGE_CONTEXT", { surface: null, pageLoadId: null, href: location.href });
-    // Arm later if consent is given, without needing a page reload.
-    browser.runtime.onMessage.addListener((msg) => {
-      if (msg?.type === "CONSENT_CHANGED" && consentGranted(msg.payload?.consent)) {
-        armed = false;
-        start().catch(() => {});
-      }
-    });
-    return;
-  }
   listenSpa();
   await onNavigate({ force: true });
   console.info(LOG, "observer armed");
