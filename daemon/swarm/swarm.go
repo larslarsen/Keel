@@ -49,12 +49,17 @@ import (
 // BlockProtocol is the stream protocol for block requests. Versioned in the
 // name so a future incompatible shape can run alongside this one — the
 // extension is frozen, but the daemon is not, and peers will run old builds.
-const BlockProtocol = protocol.ID("/keel/block/1.0.0")
+const BlockProtocol = protocol.ID("/keel/block/2.0.0")
 
 // maxBlockBytes bounds what a peer can make this node allocate. A block is one
 // video's neighbourhood — a few hundred edges — so anything approaching this is
 // already pathological.
-const maxBlockBytes = 4 << 20 // 4 MiB
+const maxBlockBytes = 64 << 20 // 64 MiB
+
+// maxBlocksPerReply bounds one bucket reply. A bucket on a large mirror can
+// hold many neighbourhoods, and an unbounded reply is both a memory hazard and
+// a way for a single request to consume a node's upstream.
+const maxBlocksPerReply = 256
 
 // requestTimeout bounds a single block fetch. Prewarm runs ahead of the user,
 // so a slow peer must not hold a slot indefinitely.
@@ -63,11 +68,11 @@ const requestTimeout = 20 * time.Second
 // Store is the slice of the store this package needs. An interface rather than
 // the concrete type so the transport can be tested without a database.
 type Store interface {
-	BuildBlock(videoID, cohort string) (*store.Block, error)
-	BuildMirrorBlock(videoID, cohort string) (*store.Block, error)
+	BlocksInPrefix(prefix, cohort string, mirrorOnly bool, limit int) ([]store.Block, error)
+	LocalPrefixes(bits int, mirrorOnly bool) ([]string, error)
 	ImportBlock(raw []byte) (*store.Block, int64, error)
-	LocalBlockKeys(mirrorOnly bool) ([]string, error)
 	SwarmIdentity() ([]byte, error)
+	EphemeralSwarmIdentity() ([]byte, error)
 	Cohort() string
 }
 
@@ -98,6 +103,18 @@ type Config struct {
 	// Bootstrap overrides the DHT bootstrap peers. Empty means the public
 	// IPFS bootstrap nodes.
 	Bootstrap []peer.AddrInfo
+	// PrefixBits sets the bucket size for requests. Zero means the default.
+	//
+	// Smaller means larger buckets, so a larger anonymity set and a larger
+	// transfer per request. This is the knob the disk budget drives.
+	PrefixBits int
+	// EphemeralIdentity generates a new network identity each start instead of
+	// reusing the stored one.
+	//
+	// Required for prefix caching to mean anything against a peer that keeps
+	// records: each prefix is k-anonymous alone, but a sequence of them under
+	// one stable peer id is a trajectory, and trajectories re-identify.
+	EphemeralIdentity bool
 	// Log receives one-line progress messages. Nil discards them.
 	Log func(string, ...any)
 }
@@ -121,7 +138,11 @@ func (n *Node) logf(format string, args ...any) {
 
 // Start brings up the host, joins the DHT and registers the block handler.
 func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
-	raw, err := st.SwarmIdentity()
+	identity := st.SwarmIdentity
+	if cfg.EphemeralIdentity {
+		identity = st.EphemeralSwarmIdentity
+	}
+	raw, err := identity()
 	if err != nil {
 		return nil, fmt.Errorf("swarm identity: %w", err)
 	}
@@ -214,19 +235,34 @@ func (n *Node) Close() error {
 	return n.host.Close()
 }
 
-// blockCID maps a video id to the DHT key its providers are announced under.
+// prefixCID maps a prefix bucket to the DHT key its holders announce under.
 //
-// Namespaced so Keel's provider records cannot collide with any other content
-// addressed on the same public DHT.
-func blockCID(key string) (cid.Cid, error) {
-	sum, err := mh.Sum([]byte("keel/block/1/"+key), mh.SHA2_256, -1)
+// Buckets rather than individual videos is the whole point: a provider record
+// says "this node holds something in bucket a3f", which thousands of videos
+// share, instead of naming a neighbourhood the node's user watched.
+func prefixCID(prefix string) (cid.Cid, error) {
+	sum, err := mh.Sum([]byte("keel/prefix/1/"+prefix), mh.SHA2_256, -1)
 	if err != nil {
 		return cid.Undef, err
 	}
 	return cid.NewCidV1(cid.Raw, sum), nil
 }
 
-// handleBlockRequest answers one stream: a key in, a block out.
+func (n *Node) prefixBits() int {
+	if n.cfg.PrefixBits > 0 {
+		return n.cfg.PrefixBits
+	}
+	return store.DefaultPrefixBits
+}
+
+// handleBlockRequest answers one stream: a prefix in, every block held in that
+// bucket out.
+//
+// The server never learns which neighbourhood the requester actually wanted,
+// because the requester asks for the whole bucket and takes the whole bucket.
+// There is no real-versus-decoy structure here for repeated observation to
+// separate, which is why this survives the intersection attack that defeats
+// decoy traffic.
 func (n *Node) handleBlockRequest(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
@@ -235,21 +271,17 @@ func (n *Node) handleBlockRequest(s network.Stream) {
 	if err != nil && err != io.EOF {
 		return
 	}
-	key := trimLine(line)
-	if key == "" {
+	prefix := trimLine(line)
+	if prefix == "" {
 		return
 	}
 
-	build := n.st.BuildMirrorBlock
-	if n.cfg.ServeOwnObservations {
-		build = n.st.BuildBlock
-	}
-	blk, err := build(key, n.st.Cohort())
+	blocks, err := n.st.BlocksInPrefix(prefix, n.st.Cohort(), !n.cfg.ServeOwnObservations, maxBlocksPerReply)
 	if err != nil {
-		n.logf("block %s: %v", key, err)
+		n.logf("prefix %s: %v", prefix, err)
 		return
 	}
-	raw, err := blk.Encode()
+	raw, err := json.Marshal(blocks)
 	if err != nil {
 		return
 	}
@@ -271,13 +303,13 @@ func (n *Node) Announce(ctx context.Context) error {
 	if !n.cfg.Serve {
 		return nil
 	}
-	keys, err := n.st.LocalBlockKeys(!n.cfg.ServeOwnObservations)
+	keys, err := n.st.LocalPrefixes(n.prefixBits(), !n.cfg.ServeOwnObservations)
 	if err != nil {
 		return err
 	}
 	var announced int
 	for _, k := range keys {
-		c, err := blockCID(k)
+		c, err := prefixCID(k)
 		if err != nil {
 			continue
 		}
@@ -293,7 +325,7 @@ func (n *Node) Announce(ctx context.Context) error {
 		default:
 		}
 	}
-	n.logf("announced %d/%d blocks", announced, len(keys))
+	n.logf("announced %d/%d prefix buckets", announced, len(keys))
 	return nil
 }
 
@@ -331,7 +363,8 @@ func (n *Node) Fetch(ctx context.Context, key string) (int64, error) {
 		close(done)
 	}()
 
-	c, err := blockCID(key)
+	prefix := store.BlockPrefix(key, n.prefixBits())
+	c, err := prefixCID(prefix)
 	if err != nil {
 		return 0, err
 	}
@@ -342,23 +375,43 @@ func (n *Node) Fetch(ctx context.Context, key string) (int64, error) {
 		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
 			continue
 		}
-		raw, err := n.request(ctx, p, key)
+		raw, err := n.request(ctx, p, prefix)
 		if err != nil {
-			n.logf("block %s from %s: %v", key, p.ID, err)
+			n.logf("prefix %s from %s: %v", prefix, p.ID, err)
 			continue
 		}
-		blk, edges, err := n.st.ImportBlock(raw)
-		if err != nil {
-			// A peer serving a block that fails verification is the case the
-			// signature layer exists for. Skip it and try the next provider
-			// rather than failing the fetch.
-			n.logf("block %s from %s rejected: %v", key, p.ID, err)
+		blocks, edges := n.importReply(raw)
+		if blocks == 0 {
 			continue
 		}
-		n.logf("block %s: %d edges from %s", blk.Key, edges, p.ID)
+		n.logf("prefix %s: %d blocks, %d edges from %s", prefix, blocks, edges, p.ID)
 		return edges, nil
 	}
 	return 0, nil
+}
+
+// importReply merges every block in a bucket reply.
+//
+// Taking the whole bucket is what makes the request k-anonymous, and it is also
+// what makes the node a useful mirror: the cover traffic becomes hosting
+// capacity for other people. One bad block is skipped rather than failing the
+// batch — a peer must not be able to poison a whole bucket with one bad row.
+func (n *Node) importReply(raw []byte) (blocks int, edges int64) {
+	var list []store.Block
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return 0, 0
+	}
+	for i := range list {
+		encoded, err := list[i].Encode()
+		if err != nil {
+			continue
+		}
+		if _, got, err := n.st.ImportBlock(encoded); err == nil {
+			blocks++
+			edges += got
+		}
+	}
+	return blocks, edges
 }
 
 // AddrInfo is how another node reaches this one.
@@ -376,15 +429,13 @@ func (n *Node) FetchFrom(ctx context.Context, p peer.AddrInfo, key string) (int6
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	raw, err := n.request(ctx, p, key)
+	prefix := store.BlockPrefix(key, n.prefixBits())
+	raw, err := n.request(ctx, p, prefix)
 	if err != nil {
 		return 0, err
 	}
-	blk, edges, err := n.st.ImportBlock(raw)
-	if err != nil {
-		return 0, err
-	}
-	n.logf("block %s: %d edges from %s", blk.Key, edges, p.ID)
+	blocks, edges := n.importReply(raw)
+	n.logf("prefix %s: %d blocks, %d edges from %s", prefix, blocks, edges, p.ID)
 	return edges, nil
 }
 

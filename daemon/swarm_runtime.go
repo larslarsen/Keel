@@ -63,7 +63,12 @@ func swarmConfigFor(level int) swarm.Config {
 		Serve:                level >= store.LevelCatalogue,
 		Fetch:                level >= store.LevelCatalogue,
 		ServeOwnObservations: level >= store.LevelCohort,
-		Log:                  func(f string, a ...any) { log.Printf("swarm: "+f, a...) },
+		// A stable network identity turns k-anonymous prefix requests back
+		// into a trajectory, so every level that is not deliberately
+		// attributable gets a fresh one each start. Level 4 is the exception
+		// by definition: being identifiable is what that level is for.
+		EphemeralIdentity: level < store.LevelTransparency,
+		Log:               func(f string, a ...any) { log.Printf("swarm: "+f, a...) },
 	}
 }
 

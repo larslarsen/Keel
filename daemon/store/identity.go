@@ -30,6 +30,32 @@ const metaSwarmKey = "swarm_private_key"
 // Callers get raw key bytes; the swarm package turns them into a libp2p
 // identity. The key never leaves the machine.
 func (s *Store) SwarmIdentity() ([]byte, error) {
+	return s.swarmIdentity(false)
+}
+
+// EphemeralSwarmIdentity returns a fresh key that is never written down.
+//
+// This is the other half of prefix caching, and prefix caching is incomplete
+// without it. A prefix request is k-anonymous by itself, but a serving peer
+// sees the requester's libp2p peer id, and a *sequence* of prefix requests
+// under one stable id is a trajectory. Trajectories re-identify people even
+// when each point is coarse — this is the same result that defeats
+// "anonymised" mobility data.
+//
+// A new identity per daemon start bounds that trajectory to one session.
+// Requests remain linkable within a session, which is an honest residual rather
+// than a solved problem: unlinking them fully means a new identity per request,
+// and that costs the connection reuse and relay reservations the transport
+// depends on.
+func (s *Store) EphemeralSwarmIdentity() ([]byte, error) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return nil, err
+	}
+	return priv, nil
+}
+
+func (s *Store) swarmIdentity(_ bool) ([]byte, error) {
 	var enc string
 	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, metaSwarmKey).Scan(&enc)
 	if err == nil && enc != "" {
