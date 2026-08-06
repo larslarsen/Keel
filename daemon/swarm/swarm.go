@@ -51,6 +51,9 @@ import (
 // extension is frozen, but the daemon is not, and peers will run old builds.
 const BlockProtocol = protocol.ID("/keel/block/2.0.0")
 
+// CatalogueProtocol carries titles, which travel separately from the graph.
+const CatalogueProtocol = protocol.ID("/keel/catalogue/1.0.0")
+
 // maxBlockBytes bounds what a peer can make this node allocate. A block is one
 // video's neighbourhood — a few hundred edges — so anything approaching this is
 // already pathological.
@@ -61,6 +64,9 @@ const maxBlockBytes = 64 << 20 // 64 MiB
 // a way for a single request to consume a node's upstream.
 const maxBlocksPerReply = 256
 
+// maxCatalogueRows bounds one catalogue bucket reply.
+const maxCatalogueRows = 4096
+
 // requestTimeout bounds a single block fetch. Prewarm runs ahead of the user,
 // so a slow peer must not hold a slot indefinitely.
 const requestTimeout = 20 * time.Second
@@ -70,6 +76,10 @@ const requestTimeout = 20 * time.Second
 type Store interface {
 	BlocksInPrefix(prefix, cohort string, mirrorOnly bool, limit int) ([]store.Block, error)
 	LocalPrefixes(bits int, mirrorOnly bool) ([]string, error)
+	BuildCataloguePack(prefix string, mirrorOnly bool, limit int) (*store.CataloguePack, error)
+	ImportCataloguePack(raw []byte) (int, error)
+	LocalCataloguePrefixes(bits int, mirrorOnly bool) ([]string, error)
+	MissingCataloguePrefixes(videoIDs []string, bits int) ([]string, error)
 	ImportBlock(raw []byte) (*store.Block, int64, error)
 	SwarmIdentity() ([]byte, error)
 	EphemeralSwarmIdentity() ([]byte, error)
@@ -207,6 +217,7 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 
 	if cfg.Serve {
 		h.SetStreamHandler(BlockProtocol, n.handleBlockRequest)
+		h.SetStreamHandler(CatalogueProtocol, n.handleCatalogueRequest)
 		// Relay service is cheap and makes the network work for people whose
 		// routers do not cooperate. Only serving nodes run it.
 		if _, err := relay.New(h); err != nil {
@@ -295,6 +306,98 @@ func trimLine(s string) string {
 	return s
 }
 
+// handleCatalogueRequest answers one stream: a catalogue prefix in, every row
+// held in that bucket out.
+//
+// Below Level 3 the rows come from `peer_catalogue` only. Serving rows derived
+// from this node's own impressions would disclose viewing at video granularity —
+// a requester would see exactly which members of a bucket this node holds, which
+// is what its user watched.
+func (n *Node) handleCatalogueRequest(s network.Stream) {
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(requestTimeout))
+
+	line, err := bufio.NewReader(io.LimitReader(s, 256)).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return
+	}
+	prefix := trimLine(line)
+	if prefix == "" {
+		return
+	}
+	pack, err := n.st.BuildCataloguePack(prefix, !n.cfg.ServeOwnObservations, maxCatalogueRows)
+	if err != nil {
+		n.logf("catalogue %s: %v", prefix, err)
+		return
+	}
+	raw, err := pack.Encode()
+	if err != nil {
+		return
+	}
+	_, _ = s.Write(raw)
+}
+
+// syncCatalogue fetches titles for every target in a graph bucket reply.
+//
+// The argument must be the whole bucket, never the blocks the caller cared
+// about. Deriving the catalogue request set from a subset would identify which
+// block was wanted and undo the graph fetch's anonymity — the reason this takes
+// the full reply rather than a video id.
+func (n *Node) syncCatalogue(ctx context.Context, blocks []store.Block) {
+	if !n.cfg.Fetch || len(blocks) == 0 {
+		return
+	}
+	ids := []string{}
+	for i := range blocks {
+		ids = append(ids, blocks[i].Key)
+		for _, e := range blocks[i].Edges {
+			ids = append(ids, e.To)
+		}
+	}
+	prefixes, err := n.st.MissingCataloguePrefixes(ids, n.prefixBits())
+	if err != nil || len(prefixes) == 0 {
+		return
+	}
+	n.logf("catalogue: %d buckets needed for %d videos", len(prefixes), len(ids))
+	for _, p := range prefixes {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if rows, err := n.fetchCataloguePrefix(ctx, p); err == nil && rows > 0 {
+			n.logf("catalogue %s: %d rows", p, rows)
+		}
+	}
+}
+
+// fetchCataloguePrefix retrieves one catalogue bucket from any provider.
+func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, error) {
+	c, err := prefixCID("catalogue/" + prefix)
+	if err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	for p := range n.dht.FindProvidersAsync(ctx, c, 8) {
+		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
+			continue
+		}
+		raw, err := n.requestOn(ctx, p, prefix, CatalogueProtocol)
+		if err != nil {
+			continue
+		}
+		rows, err := n.st.ImportCataloguePack(raw)
+		if err != nil {
+			n.logf("catalogue %s from %s rejected: %v", prefix, p.ID, err)
+			continue
+		}
+		return rows, nil
+	}
+	return 0, nil
+}
+
 // Announce publishes provider records for everything this node can serve.
 //
 // Called periodically; DHT provider records expire, so re-announcing is how a
@@ -325,7 +428,31 @@ func (n *Node) Announce(ctx context.Context) error {
 		default:
 		}
 	}
-	n.logf("announced %d/%d prefix buckets", announced, len(keys))
+	// Catalogue buckets are announced separately, because the two datasets are
+	// held independently — a node can hold titles for videos whose graph it has
+	// evicted, and vice versa.
+	catKeys, err := n.st.LocalCataloguePrefixes(n.prefixBits(), !n.cfg.ServeOwnObservations)
+	if err != nil {
+		return err
+	}
+	var catAnnounced int
+	for _, k := range catKeys {
+		c, err := prefixCID("catalogue/" + k)
+		if err != nil {
+			continue
+		}
+		if err := n.dht.Provide(ctx, c, true); err != nil {
+			continue
+		}
+		catAnnounced++
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+	n.logf("announced %d/%d graph buckets, %d/%d catalogue buckets",
+		announced, len(keys), catAnnounced, len(catKeys))
 	return nil
 }
 
@@ -380,11 +507,12 @@ func (n *Node) Fetch(ctx context.Context, key string) (int64, error) {
 			n.logf("prefix %s from %s: %v", prefix, p.ID, err)
 			continue
 		}
-		blocks, edges := n.importReply(raw)
+		imported, blocks, edges := n.importReply(raw)
 		if blocks == 0 {
 			continue
 		}
 		n.logf("prefix %s: %d blocks, %d edges from %s", prefix, blocks, edges, p.ID)
+		n.syncCatalogue(ctx, imported)
 		return edges, nil
 	}
 	return 0, nil
@@ -396,10 +524,10 @@ func (n *Node) Fetch(ctx context.Context, key string) (int64, error) {
 // what makes the node a useful mirror: the cover traffic becomes hosting
 // capacity for other people. One bad block is skipped rather than failing the
 // batch — a peer must not be able to poison a whole bucket with one bad row.
-func (n *Node) importReply(raw []byte) (blocks int, edges int64) {
+func (n *Node) importReply(raw []byte) (imported []store.Block, blocks int, edges int64) {
 	var list []store.Block
 	if err := json.Unmarshal(raw, &list); err != nil {
-		return 0, 0
+		return nil, 0, 0
 	}
 	for i := range list {
 		encoded, err := list[i].Encode()
@@ -407,11 +535,12 @@ func (n *Node) importReply(raw []byte) (blocks int, edges int64) {
 			continue
 		}
 		if _, got, err := n.st.ImportBlock(encoded); err == nil {
+			imported = append(imported, list[i])
 			blocks++
 			edges += got
 		}
 	}
-	return blocks, edges
+	return imported, blocks, edges
 }
 
 // AddrInfo is how another node reaches this one.
@@ -434,17 +563,22 @@ func (n *Node) FetchFrom(ctx context.Context, p peer.AddrInfo, key string) (int6
 	if err != nil {
 		return 0, err
 	}
-	blocks, edges := n.importReply(raw)
+	imported, blocks, edges := n.importReply(raw)
 	n.logf("prefix %s: %d blocks, %d edges from %s", prefix, blocks, edges, p.ID)
+	n.syncCatalogue(ctx, imported)
 	return edges, nil
 }
 
-// request opens one stream and reads the response.
+// request opens one stream on the block protocol and reads the response.
 func (n *Node) request(ctx context.Context, p peer.AddrInfo, key string) ([]byte, error) {
+	return n.requestOn(ctx, p, key, BlockProtocol)
+}
+
+func (n *Node) requestOn(ctx context.Context, p peer.AddrInfo, key string, proto protocol.ID) ([]byte, error) {
 	if err := n.host.Connect(ctx, p); err != nil {
 		return nil, err
 	}
-	s, err := n.host.NewStream(ctx, p.ID, BlockProtocol)
+	s, err := n.host.NewStream(ctx, p.ID, proto)
 	if err != nil {
 		return nil, err
 	}

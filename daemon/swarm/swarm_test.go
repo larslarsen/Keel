@@ -255,3 +255,105 @@ func TestMirrorNodeDoesNotServeOwnObservations(t *testing.T) {
 		t.Errorf("mirror re-served %d edges of imported data, want 1", got)
 	}
 }
+
+// TestCatalogueFetchLabelsFetchedGraph is the end-to-end reason this path
+// exists: blocks are stringless, so a node that fetches graph data has ids and
+// no titles until the catalogue arrives on its own protocol.
+func TestCatalogueFetchLabelsFetchedGraph(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	server := newStore(t, "server.sqlite")
+	seed(t, server, "seedaaaaaaa", "targetaaaa1", 0)
+	seed(t, server, "seedaaaaaaa", "targetaaaa2", 1)
+
+	sNode, err := Start(ctx, server, isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	client := newStore(t, "client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+	// Fetching must be on for the catalogue path; isolated(false) is Level 1.
+	cNode.cfg.Fetch = true
+
+	if _, err := cNode.FetchFrom(ctx, sNode.AddrInfo(), "seedaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The graph arrived stringless, so search finds nothing by title yet.
+	before, err := client.SearchVideos("Title targetaaaa1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Total != 0 {
+		t.Errorf("titles present before catalogue sync: %d hits", before.Total)
+	}
+
+	// Pull the catalogue bucket for one of the fetched videos, over its own
+	// protocol, from the same peer.
+	prefix := store.CataloguePrefix("targetaaaa1", store.DefaultPrefixBits)
+	raw, err := cNode.requestOn(ctx, sNode.AddrInfo(), prefix, CatalogueProtocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := client.ImportCataloguePack(raw)
+	if err != nil {
+		t.Fatalf("catalogue pack refused: %v", err)
+	}
+	if rows == 0 {
+		t.Fatal("catalogue bucket was empty")
+	}
+
+	after, err := client.SearchVideos("Title targetaaaa1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Total == 0 {
+		t.Error("catalogue arrived but the video is still not searchable by title")
+	}
+}
+
+// TestMirrorNodeServesNoOwnCatalogue is rule 2: serving catalogue rows derived
+// from this node's own impressions would disclose viewing at video granularity,
+// because a requester sees exactly which bucket members the node holds.
+func TestMirrorNodeServesNoOwnCatalogue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	mirror := newStore(t, "mirror.sqlite")
+	seed(t, mirror, "privateseed", "privatevid1", 0)
+
+	cfg := isolated(true, t)
+	cfg.ServeOwnObservations = false // Level 2
+	mNode, err := Start(ctx, mirror, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mNode.Close()
+
+	client := newStore(t, "client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+
+	prefix := store.CataloguePrefix("privatevid1", store.DefaultPrefixBits)
+	raw, err := cNode.requestOn(ctx, mNode.AddrInfo(), prefix, CatalogueProtocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := client.ImportCataloguePack(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Errorf("a Level 2 node served %d catalogue rows about videos its user saw", rows)
+	}
+}
