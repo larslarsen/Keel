@@ -70,9 +70,14 @@ func TestBlockHoldsOneNeighbourhood(t *testing.T) {
 			t.Error("block leaked an edge belonging to another neighbourhood")
 		}
 	}
-	// Targets must carry labels, or a walk into new territory renders bare ids.
-	if len(b.Catalogue) == 0 {
-		t.Error("block carries no catalogue; fetched blocks would not render")
+	// Blocks are stringless: titles travel in the catalogue dataset, not here.
+	// Re-marshalling must not reintroduce a catalogue field.
+	raw, err := b.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsSub(string(raw), "catalogue") || containsSub(string(raw), "Title ") {
+		t.Errorf("block payload carries strings: %s", raw)
 	}
 }
 
@@ -183,7 +188,7 @@ func TestBlockRejectsTampering(t *testing.T) {
 
 	// Edited content with the digest repaired — caught by the signature.
 	repaired := edited
-	if repaired.ContentSHA256, err = contentDigest(repaired.Catalogue, repaired.Edges); err != nil {
+	if repaired.ContentSHA256, err = contentDigest(nil, repaired.Edges); err != nil {
 		t.Fatal(err)
 	}
 	if raw, err = json.Marshal(&repaired); err != nil {
@@ -199,10 +204,10 @@ func TestBlockRejectsTampering(t *testing.T) {
 	smuggled := *blk
 	smuggled.Edges = append([]bridge.EdgeObservation{}, blk.Edges...)
 	smuggled.Edges[0].From = "elsewhereee"
-	if smuggled.ContentSHA256, err = contentDigest(smuggled.Catalogue, smuggled.Edges); err != nil {
+	if smuggled.ContentSHA256, err = contentDigest(nil, smuggled.Edges); err != nil {
 		t.Fatal(err)
 	}
-	payload, err := canonicalPayload(smuggled.Catalogue, smuggled.Edges)
+	payload, err := canonicalPayload(nil, smuggled.Edges)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,5 +269,61 @@ func TestLocalBlockKeysNeverAdvertisesWatchHistory(t *testing.T) {
 	}
 	if !found["watchedvid1"] || !found["watchedvid2"] {
 		t.Errorf("keys = %v, want both watched videos", own)
+	}
+}
+
+// TestUnlabelledSuggestionsSurfaceUnlessBlocking covers the consequence of
+// stringless blocks: a video known only from a fetched edge has no title and no
+// channel yet.
+//
+// It must still be suggested — the walk found it, and dropping it would make
+// fetched graph data useless until catalogue sync exists. But if the user has
+// blocked any channel, an unlabelled video cannot be checked against that
+// blocklist, and showing something they asked never to see is worse than
+// briefly hiding something they did not.
+func TestUnlabelledSuggestionsSurfaceUnlessBlocking(t *testing.T) {
+	origin := openStore(t, "origin.sqlite")
+	seedEdge(t, origin, "seedaaaaaaa", "unlabelled1", 0)
+	blk, err := origin.BuildBlock("seedaaaaaaa", "GB-en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := blk.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	receiver := openStore(t, "b.sqlite")
+	if _, _, err := receiver.ImportBlock(raw); err != nil {
+		t.Fatal(err)
+	}
+
+	// No blocklist: the unlabelled suggestion is surfaced, title empty.
+	sug, err := receiver.Suggest("seedaaaaaaa", 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sug.Suggestions) == 0 {
+		t.Fatal("unlabelled suggestion was dropped; fetched graph data is unusable")
+	}
+	if sug.Suggestions[0].VideoID != "unlabelled1" {
+		t.Errorf("suggested %q, want unlabelled1", sug.Suggestions[0].VideoID)
+	}
+	if sug.Suggestions[0].Title != "" {
+		t.Errorf("title = %q, want empty — the block carries no strings", sug.Suggestions[0].Title)
+	}
+
+	// With a blocklist, an uncheckable video is withheld rather than shown.
+	if err := receiver.BlockChannel("UCabcdefghijklmnopqrstuv"); err != nil {
+		t.Fatal(err)
+	}
+	sug, err = receiver.Suggest("seedaaaaaaa", 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range sug.Suggestions {
+		if g.VideoID == "unlabelled1" {
+			t.Error("an unlabelled video was shown to a user who has blocked channels")
+		}
 	}
 }

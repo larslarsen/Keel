@@ -28,19 +28,26 @@ import (
 )
 
 // blockSchemaVersion is bumped when the wire shape changes incompatibly.
-const blockSchemaVersion = 1
+// Version 2 removed the embedded catalogue.
+const blockSchemaVersion = 2
 
 // Block is neighbours(v): every edge observed leading out of one video.
+//
+// Blocks are **stringless**. Titles and channel names live in the catalogue
+// dataset (§1) and travel separately, for two reasons. Measurement: strings were
+// 45 KB of a 63 KB pack, because the same title ships again in every block that
+// points at that video. And structure: the graph and the catalogue converge
+// differently — the graph churns forever, the catalogue is written once per
+// video — so binding them into one payload forces the wrong sync policy on both.
+//
+// The cost is that a walk reaching new territory renders ids until the catalogue
+// catches up. That is deliberate.
 type Block struct {
 	SchemaVersion int    `json:"schema_version"`
 	Key           string `json:"key"` // the context video these edges lead out of
 	Cohort        string `json:"cohort"`
 
-	// Catalogue carries metadata for the videos this block points at, so a
-	// fetched block renders without a second round trip. Without it a walk that
-	// hops into new territory shows a list of bare ids.
-	Catalogue []bridge.CatalogueEntry  `json:"catalogue"`
-	Edges     []bridge.EdgeObservation `json:"edges"`
+	Edges []bridge.EdgeObservation `json:"edges"`
 
 	ContentSHA256 string `json:"content_sha256"`
 	Signature     string `json:"signature,omitempty"`
@@ -147,23 +154,6 @@ GROUP BY to_id, surface, slot_bucket, day_bucket, cohort`, videoID)
 	return out, nil
 }
 
-// blockCatalogue returns metadata for a set of video ids, from either the local
-// catalogue or one already imported from a peer.
-func (s *Store) blockCatalogue(ids map[string]bool) ([]bridge.CatalogueEntry, error) {
-	all, err := s.CatalogueEntries()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]bridge.CatalogueEntry, 0, len(ids))
-	for _, c := range all {
-		if ids[c.VideoID] {
-			out = append(out, c)
-		}
-	}
-	sort.Slice(out, func(a, b int) bool { return out[a].VideoID < out[b].VideoID })
-	return out, nil
-}
-
 // BuildBlock assembles a block from this node's own observations. Serving one
 // publishes what this user was recommended, so it belongs to contribution
 // Level 3 and above.
@@ -195,26 +185,17 @@ func (s *Store) buildBlock(videoID, cohort string, mirrorOnly bool) (*Block, err
 	if err != nil {
 		return nil, err
 	}
-	ids := map[string]bool{videoID: true}
-	for _, e := range edges {
-		ids[e.To] = true
-	}
-	cat, err := s.blockCatalogue(ids)
-	if err != nil {
-		return nil, err
-	}
 
 	b := &Block{
 		SchemaVersion: blockSchemaVersion,
 		Key:           videoID,
 		Cohort:        cohort,
-		Catalogue:     cat,
 		Edges:         edges,
 	}
-	if b.ContentSHA256, err = contentDigest(cat, edges); err != nil {
+	if b.ContentSHA256, err = contentDigest(nil, edges); err != nil {
 		return nil, err
 	}
-	payload, err := canonicalPayload(cat, edges)
+	payload, err := canonicalPayload(nil, edges)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +271,7 @@ func VerifyBlock(raw []byte) (*Block, error) {
 				b.Key, e.From)
 		}
 	}
-	digest, err := contentDigest(b.Catalogue, b.Edges)
+	digest, err := contentDigest(nil, b.Edges)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +281,7 @@ func VerifyBlock(raw []byte) (*Block, error) {
 	// Signing postdates the format, so an unsigned block is accepted and simply
 	// carries no attribution — the same allowance bundle.go makes.
 	if b.Signature != "" || b.PublicKey != "" {
-		payload, err := canonicalPayload(b.Catalogue, b.Edges)
+		payload, err := canonicalPayload(nil, b.Edges)
 		if err != nil {
 			return nil, err
 		}
@@ -357,29 +338,6 @@ DO UPDATE SET count = excluded.count`)
 			return nil, 0, err
 		}
 		n++
-	}
-
-	cstmt, err := tx.Prepare(`
-INSERT INTO peer_catalogue(video_id, title, channel_id, duration_s, view_count, published_at, source)
-VALUES(?,?,?,?,?,?,?)
-ON CONFLICT(video_id) DO UPDATE SET
-  title = CASE WHEN excluded.title != '' THEN excluded.title ELSE peer_catalogue.title END,
-  channel_id = COALESCE(excluded.channel_id, peer_catalogue.channel_id),
-  duration_s = COALESCE(excluded.duration_s, peer_catalogue.duration_s),
-  view_count = COALESCE(excluded.view_count, peer_catalogue.view_count),
-  published_at = COALESCE(excluded.published_at, peer_catalogue.published_at)`)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer cstmt.Close()
-	for _, c := range b.Catalogue {
-		if c.VideoID == "" {
-			continue
-		}
-		if _, err := cstmt.Exec(c.VideoID, c.Title, c.ChannelID,
-			c.DurationS, c.ViewCount, c.PublishedAt, source); err != nil {
-			return nil, 0, err
-		}
 	}
 
 	if err := tx.Commit(); err != nil {

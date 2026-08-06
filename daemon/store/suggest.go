@@ -220,6 +220,27 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	for _, r := range ranked {
 		m := meta[r.id]
 		if m == nil {
+			// No metadata: the video arrived as a stringless graph edge and its
+			// catalogue row has not caught up. The suggestion is still real —
+			// the walk found it — so it is surfaced with an empty title rather
+			// than dropped. Dropping would make fetched graph data useless
+			// until catalogue sync exists.
+			//
+			// Except when the user has blocked channels. The channel of an
+			// unlabelled video is unknown, so the blocklist cannot be applied
+			// to it, and silently showing something the user asked never to see
+			// is worse than briefly hiding something they did not. Fail closed
+			// on an explicit instruction; fail open where none was given.
+			if len(blocked) > 0 {
+				continue
+			}
+			out.Suggestions = append(out.Suggestions, bridge.Suggestion{
+				VideoID: r.id,
+				Score:   r.score,
+			})
+			if len(out.Suggestions) >= limit {
+				break
+			}
 			continue
 		}
 		if m.channelID != nil && blocked[*m.channelID] {
