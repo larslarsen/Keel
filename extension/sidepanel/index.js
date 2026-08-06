@@ -235,18 +235,20 @@ function makeSuggestionLi(s) {
     ? `<div class="thumb-wrap">${thumb}<span class="chan">${escapeHtml(chan)}</span></div>`
     : thumb;
   const href = `https://www.youtube.com/watch?v=${encodeURIComponent(s.video_id)}`;
+  // Age rather than how many times Keel saw it. "2w ago" is what people read a
+  // video's age from everywhere else, so it needs no explaining; the
+  // observation count meant something only to us.
   const bits = [
     fmtDuration(s.duration_s),
     typeof s.view_count === "number" && s.view_count > 0
       ? `${fmtCount(s.view_count)} views`
       : "",
+    s.published_at || "",
   ].filter(Boolean);
   li.innerHTML =
     `<div class="row-main">${thumbBox}<div class="row-text">` +
     `<p class="title"><a href="${href}" target="_blank" rel="noreferrer">${escapeHtml(s.title || s.video_id)}</a></p>` +
     `<div class="sub">${escapeHtml(bits.join(" · "))}` +
-    (bits.length ? " · " : "") +
-    `seen ${s.seen}×` +
     (s.via_title ? ` · appeared after ${escapeHtml(s.via_title)}` : "") +
     `</div></div><span class="row-actions"></span></div>`;
 

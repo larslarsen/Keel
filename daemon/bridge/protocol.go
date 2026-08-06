@@ -257,8 +257,12 @@ type Suggestion struct {
 	ChannelID *string  `json:"channel_id"`
 	ViewCount *float64 `json:"view_count"`
 	DurationS *float64 `json:"duration_s"`
-	Score     float64  `json:"score"`
-	Seen      int64    `json:"seen"`
+	// PublishedAt is YouTube's own relative wording — "2w ago", "1mo ago" —
+	// carried through unchanged. It is what people read a video's age from, so
+	// reformatting it would only make it less familiar.
+	PublishedAt *string `json:"published_at"`
+	Score       float64 `json:"score"`
+	Seen        int64   `json:"seen"`
 	// Why is the strongest observed path to this video, for the funnel
 	// inspector's sake. Observational only — never a claim about intent.
 	ViaVideoID *string `json:"via_video_id"`

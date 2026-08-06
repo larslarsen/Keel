@@ -280,6 +280,10 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 			Score:     r.score,
 			Seen:      m.seen,
 		}
+		if m.published != "" {
+			p := m.published
+			sg.PublishedAt = &p
+		}
 		if m.views > 0 {
 			v := m.views
 			sg.ViewCount = &v
@@ -320,6 +324,7 @@ func ids(rs []scored) []string {
 }
 
 type vmeta struct {
+	published string
 	title     string
 	channelID *string
 	views     float64
@@ -432,10 +437,10 @@ func (s *Store) videoMeta(idList []string) (map[string]*vmeta, error) {
 	// useless if the video it points at has no title to show. Local metadata
 	// wins where both exist, since it was observed here.
 	rows, err := s.db.Query(`
-SELECT video_id, MAX(title), MAX(channel_id), MAX(view_count), MAX(duration_s), COUNT(*) AS seen
+SELECT video_id, MAX(title), MAX(channel_id), MAX(view_count), MAX(duration_s), MAX(published_at), COUNT(*) AS seen
 FROM impressions GROUP BY video_id
 UNION ALL
-SELECT video_id, title, channel_id, view_count, duration_s, 0 AS seen
+SELECT video_id, title, channel_id, view_count, duration_s, published_at, 0 AS seen
 FROM peer_catalogue
 WHERE video_id NOT IN (SELECT video_id FROM impressions)`)
 	if err != nil {
@@ -448,16 +453,16 @@ WHERE video_id NOT IN (SELECT video_id FROM impressions)`)
 	}
 	for rows.Next() {
 		var id string
-		var title, ch sql.NullString
+		var title, ch, pub sql.NullString
 		var views, dur sql.NullFloat64
 		var seen int64
-		if err := rows.Scan(&id, &title, &ch, &views, &dur, &seen); err != nil {
+		if err := rows.Scan(&id, &title, &ch, &views, &dur, &pub, &seen); err != nil {
 			return nil, err
 		}
 		if !want[id] {
 			continue
 		}
-		m := &vmeta{title: title.String, views: views.Float64, duration: dur.Float64, seen: seen}
+		m := &vmeta{title: title.String, published: pub.String, views: views.Float64, duration: dur.Float64, seen: seen}
 		if ch.Valid {
 			v := ch.String
 			m.channelID = &v
