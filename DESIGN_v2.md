@@ -1041,12 +1041,17 @@ signal, and staleness changes ordering slightly and nothing else.
 
 ### What each level does, as implemented
 
-| Level | Asks the network | Serves | Publishes its own observations |
-|---|---|---|---|
-| 1 Personal | **Nothing** | Nothing | Nothing |
-| 2 Mirror | Prefix buckets | Mirrored rows only | Nothing |
-| 3 Cohort | Prefix buckets | Own edges too | Aggregate (STAR — not built) |
-| 4 Transparency | Prefix buckets | Own edges too | Attributed (not built) |
+| Level | Asks the network | Serves | Publishes its own observations | Live feed |
+|---|---|---|---|---|
+| 1 Personal | **Nothing** | Nothing | Nothing | **Receives** |
+| 2 Mirror | Prefix buckets | Mirrored rows only | Nothing | Receives + reports |
+| 3 Cohort | Prefix buckets | Own edges too | Aggregate (STAR — not built) | Receives + reports |
+| 4 Transparency | Prefix buckets | Own edges too | Attributed (not built) | Receives + reports |
+
+The live feed is the exception that proves the rule about queries. Level 1 asks
+for nothing *and still receives it*, because gossip has no per-item request —
+see §7.3a. Receiving discloses only that a node looks at livestreams; reporting
+discloses that it saw one, which is why only reporting is gated.
 
 **Level 1 asks for nothing at all**, and that is a stronger promise than "we do
 not upload anything": a request discloses which video was asked about, so the
@@ -1217,10 +1222,19 @@ the TTL against bucket size, not against freshness.
 **1. Publishing discloses the publisher's viewing.** A record says "someone saw
 this stream". For a popular stream that is meaningless; for a rare one the
 publisher set approximates the viewer set, and ephemeral identity plus a relay
-reduce but do not remove it. Publishing must therefore be **opt-in at Level 2 and
-above, never at Level 1**, and described as what it is. This is weaker than the
-fetch-side guarantee, which is unconditional — the asymmetry should be stated
-rather than smoothed over.
+reduce but do not remove it. Publishing is therefore **opt-in at Level 2 and
+above, never at Level 1**.
+
+**Receiving is not gated at all, at any level.** An early implementation gated
+subscription too, which contradicted §7.3a — gossip is a tier-1 mechanism, with
+no per-item query to leak. So the default, maximum-privacy setting gets a working
+global live feed while disclosing nothing about its user. The asymmetry is the
+design: receiving is free, publishing is what costs something.
+
+The one genuine cost of receiving is that gossipsub subscribers relay for their
+topic — a node cannot receive without carrying traffic for others. At a few
+hundred KB a day that is a fair bargain, and it is intrinsic to gossip rather
+than a policy choice.
 
 **2. Records are unverifiable claims.** Nothing signs YouTube state (§6.4), so a
 node can announce a stream that is not live, or attach a misleading title.

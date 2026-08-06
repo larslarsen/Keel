@@ -133,24 +133,43 @@ func TestLiveCorroborationCounts(t *testing.T) {
 	}
 }
 
-// TestLevelOneHoldsNoLiveIndex pins the level boundary: Level 1 asks the network
-// for nothing, and a topic subscription is a form of asking.
-func TestLevelOneHoldsNoLiveIndex(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// TestLevelOneReceivesButNeverPublishes pins the boundary this feature actually
+// has. Gossip is a tier-1 mechanism — no per-item query — so receiving discloses
+// nothing about what a user watches and is available at every level, including
+// the default. Publishing is the disclosing half and is not.
+func TestLevelOneReceivesButNeverPublishes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cfg := isolated(false, t) // Fetch false — Level 1
-	n, err := Start(ctx, newStore(t, "l1.sqlite"), cfg)
+	publisher, err := Start(ctx, newStore(t, "pub.sqlite"), liveCfg(t, true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer n.Close()
+	defer publisher.Close()
 
-	if n.Live() != nil {
-		t.Error("a Level 1 node subscribed to the live topic")
+	// Level 1: Fetch and Serve both off.
+	lvl1, err := Start(ctx, newStore(t, "l1.sqlite"), isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Publishing must be a no-op rather than a panic.
-	n.PublishLive(ctx, LiveRecord{VideoID: "dQw4w9WgXcQ"})
+	defer lvl1.Close()
+
+	if lvl1.Live() == nil {
+		t.Fatal("a Level 1 node has no live index; the feed should work at every level")
+	}
+	connect(t, lvl1, publisher)
+	waitFor(t, "mesh", func() bool { return lvl1.Peers() > 0 })
+	time.Sleep(1500 * time.Millisecond)
+
+	publisher.PublishLive(ctx, LiveRecord{VideoID: "dQw4w9WgXcQ", Title: "Open feed"})
+	waitFor(t, "record at level 1", func() bool { return lvl1.Live().Size() > 0 })
+
+	// But it must announce nothing of its own.
+	lvl1.PublishLive(ctx, LiveRecord{VideoID: "shouldnotgo", Title: "Level one leak"})
+	time.Sleep(1500 * time.Millisecond)
+	if got := publisher.Live().Search("level one leak", 1, 10); len(got) != 0 {
+		t.Error("a Level 1 node published a livestream record")
+	}
 }
 
 // TestLiveValidatorRejectsJunk — the validator runs before forwarding, so junk

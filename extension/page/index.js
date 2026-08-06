@@ -209,9 +209,7 @@ function renderLive(res) {
   const streams = res?.streams || [];
 
   if (res && res.available === false) {
-    el.liveMeta.textContent =
-      res.reason ||
-      "The live feed needs contribution level 2 or above. At level 1 Keel asks the network for nothing at all.";
+    el.liveMeta.textContent = res.reason || "Not connected to the network yet.";
     return;
   }
   if (!streams.length) {

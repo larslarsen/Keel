@@ -113,13 +113,22 @@ type LiveIndex struct {
 
 // startLive joins the topic and begins accumulating.
 //
-// Subscribing is gated on Fetch, which is off at Level 1. Level 1 promises to
-// ask the network for nothing, and announcing a topic subscription is a form of
-// asking — a small one, but the promise is meant to be unqualified.
+// **Every node subscribes, including Level 1.** An earlier version gated this on
+// Fetch, which contradicted §7.3a: gossip is a tier-1 mechanism, meaning there
+// is no per-item query at all. Level 1's promise is that nothing about what the
+// user watches leaves the machine, and subscribing discloses only that this node
+// looks at livestreams — the same class of fact as downloading the seed everyone
+// downloads.
+//
+// So the default, maximum-privacy setting gets a working global live feed while
+// disclosing nothing about its user. That asymmetry is the point: receiving is
+// free, publishing is the part that costs something.
+//
+// The one real cost is that gossipsub subscribers relay for their topic — a node
+// cannot receive without carrying traffic for others. At a few hundred KB a day
+// that is a fair bargain, and it is intrinsic to gossip rather than a policy
+// choice.
 func (n *Node) startLive(ctx context.Context) error {
-	if !n.cfg.Fetch {
-		return nil
-	}
 	ps, err := pubsub.NewGossipSub(ctx, n.host)
 	if err != nil {
 		return err
@@ -337,8 +346,9 @@ func (n *Node) Live() *LiveIndex { return n.live }
 
 // PublishLive announces a stream if this node's level permits it.
 //
-// Serve is the Level 2 gate. A Level 1 node holds no index and announces
-// nothing.
+// Serve is the Level 2 gate, and it is the only gate this feature needs. A Level
+// 1 node receives the whole feed and announces nothing — publishing is what
+// discloses that its publisher saw the stream.
 func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
 	if n.live == nil || !n.cfg.Serve {
 		return

@@ -252,11 +252,12 @@ func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
 		_ = json.Unmarshal(env.Payload, &p)
 	}
 	if swarmNode == nil || swarmNode.Live() == nil {
-		// Level 1 holds no index. Not an error — an empty feed with a reason.
+		// The feed is available at every level, so this means the swarm itself
+		// did not start — no network, not a permission decision.
 		return reply(out, env.ID, "LIVE_RESULT", map[string]any{
 			"query": p.Query, "streams": []any{}, "indexed": 0,
 			"available": false,
-			"reason":    "the live index needs contribution level 2 or above",
+			"reason":    "not connected to the network yet",
 		})
 	}
 	li := swarmNode.Live()
