@@ -62,9 +62,12 @@ let lastRail = new Map();
 let orphaned = false;
 
 function isContextInvalidated(err) {
-  return /context invalidated|receiving end does not exist/i.test(
-    String(err?.message || err),
-  );
+  // Only the genuinely terminal case. "Receiving end does not exist" looks
+  // similar but is routine in MV3 — the service worker sleeps and a message
+  // sent before it wakes rejects with exactly that. Treating it as terminal
+  // would shut down a perfectly healthy observer on a transient error, and it
+  // would only ever be visible as recording quietly stopping.
+  return /context invalidated/i.test(String(err?.message || err));
 }
 
 /** Stop everything. Only a page reload brings this tab back. */

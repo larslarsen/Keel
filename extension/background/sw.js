@@ -170,36 +170,22 @@ function rememberPage(values, failures, generation) {
 }
 
 /**
- * Per-tab side panel availability (WO-021).
+ * The side panel is available everywhere, always.
  *
- * manifest `side_panel.default_path` makes the panel available on every tab,
- * so it stayed open on non-YouTube tabs showing stale data. The default is now
- * disabled and each tab is enabled only when its content script reports an
- * observed surface — the `sender.tab.id` route DESIGN_v2 §2 specifies, which
- * needs no `tabs` permission and no extra host access.
+ * It used to be disabled by default and enabled per tab only when a content
+ * script reported an observed surface. That made the toolbar icon do nothing on
+ * /feed, /results, channel pages, and on every page at all when consent had not
+ * been given — a click with no effect and no error, which reads as broken.
+ *
+ * The problem that behaviour was written for (WO-021) was the panel showing
+ * stale data on unrelated tabs. That is a question of what the panel *renders*,
+ * not of whether it can be opened, and solving it by making the button
+ * conditionally dead traded a cosmetic issue for a functional one.
+ *
+ * Every failure mode of the old approach was also silent: setOptions rejects
+ * without throwing anywhere the user can see, so a panel that would not open
+ * gave no clue why.
  */
-async function setSidePanelForTab(tabId, enabled) {
-  if (!browser.sidePanel?.setOptions || tabId == null) return;
-  try {
-    await browser.sidePanel.setOptions({
-      tabId,
-      path: "sidepanel/index.html",
-      enabled,
-    });
-  } catch (err) {
-    console.warn(LOG, "setOptions", err?.message || err);
-  }
-}
-
-/** Default the panel off everywhere; observed tabs opt themselves in. */
-async function disableSidePanelByDefault() {
-  if (!browser.sidePanel?.setOptions) return;
-  try {
-    await browser.sidePanel.setOptions({ enabled: false });
-  } catch (err) {
-    console.warn(LOG, "setOptions default", err?.message || err);
-  }
-}
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handle(message, sender)
@@ -215,17 +201,6 @@ async function handle(message, sender) {
 
   switch (message.type) {
     case "PAGE_CONTEXT": {
-      // Enable on every YouTube tab, not only observed surfaces.
-      //
-      // WO-021's complaint was the panel lingering on *non-YouTube* tabs
-      // showing stale data, and defaulting to disabled fixes that. Restricting
-      // it further to WATCH_NEXT and HOME went beyond the problem and left the
-      // toolbar icon dead on /feed, /results, channel pages and /@handle — a
-      // click with no effect and no explanation, which reads as broken.
-      //
-      // A content script only runs on youtube.com, so receiving PAGE_CONTEXT at
-      // all is sufficient proof this is a tab where the panel belongs.
-      await setSidePanelForTab(sender?.tab?.id, true);
       if (message.payload?.pageLoadId) {
         lastPage = {
           pageLoadId: message.payload.pageLoadId,
@@ -524,7 +499,6 @@ async function reportCohort() {
 }
 
 // Panel is off by default; a tab enables it by reporting an observed surface.
-disableSidePanelByDefault().catch(() => {});
 
 /**
  * Re-inject bootstrap.js into every open YouTube tab. Idempotent: the observer
