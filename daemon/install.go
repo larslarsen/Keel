@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -124,10 +125,53 @@ func manifestBytes(t browserTarget, exe string, chromeIDs []string, geckoID stri
 	}, "", "  ")
 }
 
+// DefaultExtensionID is Keel's extension ID, and it is the same on every
+// machine.
+//
+// An unpacked extension normally gets a different ID per install, which would
+// force every tester to copy theirs out of chrome://extensions and pass it
+// here — the step most likely to defeat someone who is not a developer. A "key"
+// in manifest.json pins the ID instead: it is derived from that public key, so
+// it is identical everywhere and will match the Chrome Web Store listing when
+// the same key is used there.
+const DefaultExtensionID = "agipaaiffkeeomfeialpkgnegndefgan"
+
+// writeExtensionManifest copies the Chrome manifest template into place.
+//
+// extension/manifest.json is generated from manifest.chrome.json, so a fresh
+// clone has no loadable manifest and "Load unpacked" fails saying nothing
+// useful. The npm script that does this would make Node a prerequisite for
+// people who are only trying to run the thing, so the installer does it
+// instead — it already runs, and it already knows where it is.
+//
+// Best effort: a binary copied elsewhere still installs the host manifests
+// correctly and simply reports that it could not find the extension folder.
+func writeExtensionManifest() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	root := filepath.Dir(filepath.Dir(exe)) // daemon/keel-host -> repo root
+	src := filepath.Join(root, "extension", "manifest.chrome.json")
+	dst := filepath.Join(root, "extension", "manifest.json")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		fmt.Println("note: extension/manifest.chrome.json not found —",
+			"run this from the daemon folder of the repository")
+		return
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		fmt.Println("note: could not write extension/manifest.json:", err)
+		return
+	}
+	fmt.Println("prepared", dst)
+}
+
 // runInstall writes host manifests for every browser detected on this machine.
 func runInstall(args []string) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
-	idCSV := fs.String("extension-id", "", "Chromium extension ID(s), comma separated (from chrome://extensions)")
+	idCSV := fs.String("extension-id", DefaultExtensionID,
+		"Chromium extension ID(s), comma separated. Defaults to Keel's own, fixed by the key in manifest.json.")
 	geckoID := fs.String("firefox-id", "keel@local", "Firefox extension ID (browser_specific_settings.gecko.id)")
 	all := fs.Bool("all", false, "write for every supported browser, not only detected ones")
 	dry := fs.Bool("dry-run", false, "print what would be written, write nothing")
@@ -207,18 +251,28 @@ func runInstall(args []string) int {
 		fmt.Println("skipped:  " + strings.Join(skipped, ", "))
 	}
 	if runtime.GOOS == "windows" && !*dry {
-		installWindowsNote(filepath.Join(ts[0].dir, hostName+".json"))
+		installWindowsRegistry(filepath.Join(ts[0].dir, hostName+".json"))
 	}
 	if !*dry {
+		writeExtensionManifest()
 		fmt.Println("\nReload the extension. The SidePanel should show \"Desktop app connected\".")
 	}
 	return 0
 }
 
-// installWindowsNote prints the registry commands. Registration on Windows is
-// a registry value, not a file drop; the manifests are written but the keys
-// must still be created.
-func installWindowsNote(manifest string) {
+// installWindowsRegistry creates the registry values Windows uses to find the
+// host.
+//
+// Registration on Windows is a registry value rather than a file in a known
+// directory, so writing the manifests is only half the job. This used to print
+// the commands for the user to run, which is a wall for anyone who is not a
+// developer — the point of an installer is that nothing is left to do
+// afterwards.
+//
+// Values go under HKCU, so no administrator rights are needed. A browser that
+// is not installed still gets its key, which is harmless: only that browser
+// ever reads it.
+func installWindowsRegistry(manifest string) {
 	keys := []struct{ name, key string }{
 		{"Chrome", `HKCU\Software\Google\Chrome\NativeMessagingHosts\` + hostName},
 		{"Chromium", `HKCU\Software\Chromium\NativeMessagingHosts\` + hostName},
@@ -226,10 +280,22 @@ func installWindowsNote(manifest string) {
 		{"Edge", `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\` + hostName},
 		{"Firefox", `HKCU\Software\Mozilla\NativeMessagingHosts\` + hostName},
 	}
-	fmt.Println("\nWindows: manifests written, but registration is a registry value.")
-	fmt.Println("Run these for the browsers you use:")
+	var failed bool
 	for _, k := range keys {
-		fmt.Printf("  reg add \"%s\" /ve /t REG_SZ /d \"%s\" /f\n", k.key, manifest)
+		out, err := exec.Command("reg", "add", k.key,
+			"/ve", "/t", "REG_SZ", "/d", manifest, "/f").CombinedOutput()
+		if err != nil {
+			failed = true
+			fmt.Printf("could not register %s: %v %s\n", k.name, err, strings.TrimSpace(string(out)))
+			continue
+		}
+		fmt.Println("registered", k.name)
+	}
+	if failed {
+		fmt.Println("\nRun these in a Command Prompt for the browsers you use:")
+		for _, k := range keys {
+			fmt.Printf("  reg add \"%s\" /ve /t REG_SZ /d \"%s\" /f\n", k.key, manifest)
+		}
 	}
 }
 

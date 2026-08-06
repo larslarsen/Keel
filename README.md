@@ -7,6 +7,11 @@ Keel shows you what the recommendation engine is actually serving, and lets you
 act on it (hide, downrank, surface alternatives) without sending your viewing
 history anywhere it shouldn't go.
 
+## Install
+
+See **[INSTALL.md](INSTALL.md)** — build it yourself in about ten minutes. Not
+in the Chrome Web Store yet.
+
 ## What it is
 
 - **Extension** — reads the *rendered* page DOM only. No MAIN-world scripts, no
