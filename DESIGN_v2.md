@@ -1055,8 +1055,12 @@ recommended, not a curiosity.
 
 Same prefix bucketing as everything else, a third hash namespace. A node that
 observes an active stream holds a lightweight record — video id, title, first
-seen — bucketed by prefix. Records carry a TTL and are refreshed while still
-being observed; when nothing refreshes one it expires and the index stays lean.
+seen — bucketed by prefix. Records carry a long TTL and simply expire.
+
+**The index does not try to mirror what is live right now** (Lars, 2026-08-05).
+Records linger, and a user will sometimes open one that has already finished.
+That is an accepted outcome rather than a defect, and conceding it removes the
+most expensive and most leaky part of the design.
 
 Search works exactly as catalogue search does: **fetch the whole bucket, filter
 locally.** The daemon never sends a keyword anywhere. It pulls every active
@@ -1097,7 +1101,31 @@ nobody to DoS off the network, and no placement metadata. A requester assembles 
 bucket by merging replies from several providers, which is more robust than
 trusting one custodian and costs a few extra streams.
 
-### Three honest problems
+### What dropping the freshness requirement buys
+
+**No heartbeat.** This is the real gain. Keeping a record alive would mean
+re-announcing it repeatedly from the same node — a sustained beacon linking one
+identity to one stream over time, which is precisely the trajectory problem
+§7.4's ephemeral identity exists to prevent. A single publish with a long TTL
+discloses one event instead of a continuous signal, and the anonymity set widens
+across time rather than only across the bucket.
+
+**Corroboration becomes practical.** Displaying only records confirmed by *k*
+distinct publishers is the cheap defence against poisoning. Under a tight TTL it
+was aspirational: a rare stream would expire long before *k* independent nodes
+happened to see it. Over a long window the count actually accumulates.
+
+**The failure mode is nearly free.** A finished YouTube livestream keeps its URL
+and resolves to the recording, so a stale record does not break — the user opens
+a video that is no longer live. That is a mild disappointment, not an error, and
+it is why the trade is worth taking.
+
+**Cost: a larger index.** The bucket holds a window of streams rather than an
+instant's worth. A day-long TTL against a million concurrent streams might hold
+several million records — a few hundred KB per bucket, still comfortable. Tune
+the TTL against bucket size, not against freshness.
+
+### Two honest problems that remain
 
 **1. Publishing discloses the publisher's viewing.** A record says "someone saw
 this stream". For a popular stream that is meaningless; for a rare one the
@@ -1108,17 +1136,18 @@ fetch-side guarantee, which is unconditional — the asymmetry should be stated
 rather than smoothed over.
 
 **2. Records are unverifiable claims.** Nothing signs YouTube state (§6.4), so a
-node can announce a stream that is not live, or attach a misleading title. The
-cheap mitigation is to display only records corroborated by *k* distinct
-publishers, which raises the cost of poisoning without pretending to solve it —
-sybil resistance is an open problem project-wide, not one this feature can fix.
+node can announce a stream that is not live, or attach a misleading title.
+*k*-publisher corroboration raises the cost of poisoning without pretending to
+solve it — sybil resistance is an open problem project-wide, not one this feature
+can fix.
 
-**3. Liveness means "a Keel user is watching", not "the stream is live".** A
-record survives only while someone with Keel keeps observing it. A stream nobody
-here is watching expires from the index while still broadcasting. That is a
-different quantity from YouTube's own liveness and the interface must not claim
-otherwise — though it may be the more interesting one, since it measures
-attention rather than availability.
+### Naming it honestly
+
+The index holds streams **recently seen live by someone running Keel**, not
+streams live at this instant. The interface should say so — "seen live 2 hours
+ago" rather than a live dot — because the claim it can actually support is about
+recency, and users forgive a stale timestamp far more readily than a green light
+that turns out to be wrong.
 
 ### Why this is worth building
 
