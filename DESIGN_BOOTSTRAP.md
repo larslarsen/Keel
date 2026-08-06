@@ -494,3 +494,64 @@ would look for. Tiers 2 and 3 wait for a network with a corpus worth indexing.
 
 The design note is here so the mechanism is settled before anyone builds it, not
 because it needs building now.
+
+## Sync: catalogue buckets alongside graph blocks — designed 2026-08-05
+
+The two datasets of §1 need separate sync logic, because they change in opposite
+ways.
+
+| | Graph blocks | Catalogue |
+|---|---|---|
+| Mutability | Churns — YouTube retrains, edges appear and fade | Write-once per video (title, channel, duration, upload date) |
+| Convergence | Never converges | Converges: a node stops needing to ask |
+| Driver | The video the user is on | The buckets already fetched |
+| Lifetime | Evictable, TTL-refreshed | Long-lived, deduped globally |
+
+### The rule that makes this safe
+
+**Catalogue requests are derived from the whole graph bucket, never from the
+block that was wanted.**
+
+A graph bucket holds many neighbourhoods; their targets span many catalogue
+buckets. If a node fetched catalogue only for the targets of the block it
+actually cared about, the set of catalogue buckets it asked for would identify
+that block — undoing the prefix anonymity the graph fetch just bought.
+
+So the catalogue request set is a pure function of the graph bucket's contents,
+which the node already disclosed by asking for that bucket. It leaks nothing
+further. Any implementation that resolves titles "on demand, for what I need"
+breaks this and must be rejected on sight, however much cheaper it looks.
+
+### Consequences
+
+**Catalogue converges, so the traffic dies away.** Titles never change, so a node
+that holds a video's row never asks again. Steady-state catalogue traffic tends
+to zero for a long-running node, unlike graph traffic, which is perpetual. This
+is what makes the whole-bucket rule affordable.
+
+**`view_count` is the exception and is treated as expendable.** It drifts, but it
+is only a ranking signal; a stale count changes result ordering slightly and
+nothing else. Refreshing it is not worth a second sync path.
+
+**No deltas for the graph.** A stripped block is around a kilobyte, so refetching
+whole blocks costs less than delta machinery would — versioning, ordering,
+idempotence, and the double-counting hazard when an additive delta arrives twice.
+Whole-block replacement keyed on `(source, from_id)` is already idempotent and
+already implemented. Blocks carry an epoch and are refetched on a TTL.
+
+**Titles lag the graph, deliberately.** A walk that reaches new territory may
+render ids until the catalogue buckets arrive. That is the price of stringless
+blocks, and it is the right trade: embedding titles in blocks ships the same
+title again in every block that points at that video, which measurement put at
+45 KB of a 63 KB pack — the strings were most of the payload.
+
+**The disk budget splits.** Catalogue is the durable half and should not be
+evicted to make room for graph blocks; graph blocks are LRU. A node that evicts
+catalogue will re-fetch it forever, since the graph keeps pointing back at the
+same popular videos.
+
+### Order of work
+
+Catalogue sync cannot be built before there is a network holding catalogue. The
+part that must land first is stripping blocks, because every block published
+before that carries strings that will never be removed from anyone's copy.
