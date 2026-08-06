@@ -2,6 +2,8 @@
 /** SidePanel: daemon status + counts. No local observation storage. */
 import { browser } from "../lib/browser.js";
 import {
+  CONSENT_KEY,
+  consentGranted,
   DEFAULT_HIDE_MODE,
   coerceHideMode,
   isChannelId,
@@ -15,6 +17,7 @@ const SIDEPANEL_PORT = "keel-sidepanel";
 
 const el = {
   banner: document.getElementById("daemon-banner"),
+  consentBanner: document.getElementById("consent-banner"),
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
@@ -702,3 +705,26 @@ connectPanelPort();
 loadHideMode();
 loadBlocklist();
 refresh();
+
+/**
+ * Surface an outstanding consent decision.
+ *
+ * Recording is gated on consent, so without this the panel would sit empty with
+ * no explanation and no way forward — the consent screen otherwise appears only
+ * once, at install, and anyone who closed it would have no route back.
+ */
+async function refreshConsentBanner() {
+  let missing = false;
+  try {
+    const bag = await browser.storage?.local?.get(CONSENT_KEY);
+    missing = !consentGranted(bag?.[CONSENT_KEY]);
+  } catch {
+    missing = false; // never nag on a storage error
+  }
+  if (el.consentBanner) el.consentBanner.hidden = !missing;
+}
+
+refreshConsentBanner().catch(() => {});
+browser.storage?.onChanged?.addListener?.((changes, area) => {
+  if (area === "local" && CONSENT_KEY in changes) refreshConsentBanner().catch(() => {});
+});

@@ -164,6 +164,7 @@ function selectTab(name) {
     refreshAggregate().catch(() => {});
     wireDiskSlider();
     refreshDisk().catch(() => {});
+    refreshConsent().catch(() => {});
     refreshContribution().catch(() => {});
   }
   if (name === "search") el.q.focus();
@@ -392,6 +393,23 @@ const LEVELS = [
       "have been retaliated against. Cannot be withdrawn once copied.",
   },
 ];
+
+async function refreshConsent() {
+  const row = document.getElementById("consent-row");
+  const actions = document.getElementById("consent-actions");
+  if (!row) return;
+  let v = null;
+  try {
+    v = (await rpc("GET_CONSENT")).consent;
+  } catch {
+    return;
+  }
+  const on = v === "granted";
+  row.textContent = on
+    ? "Keel is recording the recommendations YouTube shows you, to this device only. To stop it, remove the extension or the desktop app — Wipe, below, erases what it already holds."
+    : "Keel is not recording. It asks first, and has not been given the go-ahead on this browser.";
+  if (actions) actions.hidden = on;
+}
 
 async function refreshContribution() {
   const wrap = document.getElementById("contrib-levels");

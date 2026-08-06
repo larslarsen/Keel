@@ -15,6 +15,7 @@ import {
   surfaceFromUrl,
 } from "./extract.js";
 import { browser } from "../lib/browser.js";
+import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
 import { startHide } from "./hide.js";
 
 const THROTTLE_MS = 750;
@@ -418,6 +419,23 @@ function listenSpa() {
 }
 
 
+/**
+ * Whether the user has agreed to recording.
+ *
+ * Required by Chrome Web Store policy, which as of 1 August 2026 requires all
+ * data collection to be prominently disclosed and affirmatively consented to
+ * inside the product's own interface, before collection begins. The definition
+ * of user data has no carve-out for data that never leaves the device.
+ */
+async function consented() {
+  try {
+    const bag = await browser.storage?.local?.get(CONSENT_KEY);
+    return consentGranted(bag?.[CONSENT_KEY]);
+  } catch {
+    return false; // unreadable means no
+  }
+}
+
 async function start() {
   if (armed) return;
   armed = true;
@@ -426,6 +444,26 @@ async function start() {
   // home grid; off-surface pages are unaffected. Start before arming so it
   // applies without waiting for the first scan.
   startHide().catch((e) => console.warn(LOG, "hide", e?.message || e));
+
+  if (!(await consented())) {
+    console.info(LOG, "no consent — not recording");
+    // Tell the worker this is a YouTube tab anyway, so the side panel can be
+    // opened from the toolbar. Without this the extension deadlocks: the
+    // control for granting consent lives inside the panel, and the panel was
+    // only enabled for tabs that had reported themselves.
+    //
+    // This reports the page as off-surface and observes nothing. Enabling a
+    // surface is not collecting data.
+    await send("PAGE_CONTEXT", { surface: null, pageLoadId: null, href: location.href });
+    browser.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === "CONSENT_CHANGED" && consentGranted(msg.payload?.consent)) {
+        armed = false;
+        start().catch(() => {});
+      }
+    });
+    return;
+  }
+
   listenSpa();
   await onNavigate({ force: true });
   console.info(LOG, "observer armed");
