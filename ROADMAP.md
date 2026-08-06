@@ -20,11 +20,19 @@ That was wrong. It confused *not in this phase* with *not in this product*.
 | **3. Local intelligence** | Graph-walk suggestions with an entropy control (WO-023). Local Interest Vector still to come | **Started** |
 | **4. Distribution** | `keel-host install` registers with every detected browser (WO-020) | **Started** — packaging and signing remain |
 | **5a. Published releases** | Aggregate bundle export and signed-release primitives (WO-028/034). Person-to-person exchange is rejected; see `DESIGN_SHARING.md` | **Built — release transport pending** |
-| **5b. Shared index** | STAR aggregation, then Prio; contribution levels; delay buffer | Not started |
+| **5b. The swarm** | libp2p transport, stringless graph blocks, catalogue sync, prefix bucketing, ephemeral identity (WO-052). See `DESIGN_v2.md` §7.4 | **Built — untested between two machines** |
+| **5c. Shared index** | STAR aggregation, then Prio; delay buffer. Gated on the cross-user dedup measurement | Not started |
 | **6. Peer recommendations** | Semantic graphing over peer paths; entropy slider; serendipity | Not started |
 | **7. Audit** | Cross-peer suppression and shadowban detection | Not started |
 
 Stages 5–7 are the point. Stages 1–4 are what make them possible.
+
+**The one thing blocking 5b from being finished is not code.** The transport,
+both datasets, bucketing and identity rotation are built and tested against
+loopback. NAT traversal, relay, hole punching and DHT provider records all
+behave differently in the wild, and none of them have been exercised between two
+real machines. That test is the next milestone, and it needs a second install
+rather than another ticket.
 
 ## Why the order is what it is
 

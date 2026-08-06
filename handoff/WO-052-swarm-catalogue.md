@@ -3,13 +3,22 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Open — current** |
+| **Status** | **Built — awaiting two-machine test** |
 | **Date** | 2026-08-05 |
 | **Source** | Lars, 2026-08-05; Jr Dev's neighbour-crawl plan |
 
-Make Level 2 real: nodes share the **catalogue** with each other automatically,
-through the app. No file transfer, no user copying anything, no trusting a
-person.
+Make Level 2 real: nodes share data with each other automatically, through the
+app. No file transfer, no user copying anything, no trusting a person.
+
+> **This ticket was written before the architecture settled and its early
+> sections are wrong in places** — it originally scoped Level 2 as catalogue-only
+> and claimed suggestions could not improve. The corrections are recorded inline
+> below, in order. **`DESIGN_v2.md` §7.4 is the statement of what was actually
+> built**; read that first and treat this file as how the decisions were reached.
+>
+> Shipped: libp2p transport, stringless graph blocks, catalogue on its own
+> protocol, prefix bucketing, ephemeral identity, cardinality sketches, seed
+> packs (dormant). Outstanding: a test between two machines on the real DHT.
 
 ## Scope — catalogue only
 
