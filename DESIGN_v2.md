@@ -1082,7 +1082,39 @@ The concurrent global set is what matters, not the share of the catalogue. At
 This is comfortable across the whole plausible range, which is the point: the
 design does not depend on getting the estimate right.
 
-### Correction — the DHT cannot hold these records
+### Use gossip, not the DHT *(decided 2026-08-05)*
+
+Lars asked whether nodes could simply sync this over a gossip network. They can,
+and it is better than the fetch-based design below.
+
+libp2p ships **gossipsub**, which is built for exactly this shape of data:
+small, ephemeral, high-churn, of interest to a subset of peers. Nodes subscribe
+to a topic and receive what is published there. Nothing is stored, nobody is
+custodian of anything, and peers carry traffic only for topics they subscribe to.
+
+**And because the live index is small, a node can subscribe to the whole feed.**
+That removes the last leak in this design. Under prefix bucketing, *which* bucket
+a node requests still narrows its interests — a small disclosure, but a real one.
+Subscribe to everything and there is nothing to narrow: a peer learns only that
+this node looks at livestreams, which is what running the feature means anyway.
+
+So the mechanism is:
+
+- One gossipsub topic for the live index — or a handful of prefix topics only if
+  volume later demands it, taking the selection leak back at that point.
+- A node observing a stream publishes one record. No heartbeat.
+- Every subscriber accumulates records in memory, expires them on TTL, and runs
+  search, filtering and sorting locally.
+- Gossipsub's peer scoring handles flooding and amplification; *k*-publisher
+  corroboration handles false records at the application layer.
+
+**This is the dividing line for the whole system: gossip for data that is small
+and ephemeral, fetch-by-bucket for data that is large and durable.** Blocks and
+the catalogue stay as §7.4 describes — they are far too large to broadcast. The
+live index is the one dataset small enough to give every node the whole thing,
+and that is exactly why it gets the stronger privacy property.
+
+### Why not the DHT — kept for the record
 
 The obvious formulation, "publish the record into the DHT to the nodes
 responsible for that bucket", does not work on the network we use. The public
@@ -1091,15 +1123,14 @@ will not store arbitrary application values for us. Storing them would mean
 running a separate DHT with our own protocol prefix, which forfeits the free,
 already-populated network that §7.4 depends on.
 
-**Keep the DHT as a directory, exactly as blocks do.** A node holding live
-records for a bucket announces itself as a *provider* of that bucket; requesters
-find providers and fetch the records over a Keel protocol stream.
+The fallback, if gossip proves unworkable at scale, is to keep the DHT as a
+directory exactly as blocks do: a node holding live records for a bucket
+announces itself as a *provider*, and requesters find providers and fetch over a
+Keel stream. That also avoids custodial assignment — nobody is responsible for a
+bucket, so there is nobody to coerce or knock offline — but it reintroduces the
+bucket-selection disclosure that gossip avoids entirely.
 
-This also removes custodial assignment, which is a gain rather than a
-compromise: no node is *responsible* for a bucket, so there is nobody to coerce,
-nobody to DoS off the network, and no placement metadata. A requester assembles a
-bucket by merging replies from several providers, which is more robust than
-trusting one custodian and costs a few extra streams.
+Gossip first.
 
 ### What dropping the freshness requirement buys
 
