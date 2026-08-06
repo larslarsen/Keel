@@ -1121,12 +1121,23 @@ and Level 1 does not query the DHT at all.
 
 So the exposure is availability, on one path, above the default setting.
 
-**Mitigation, and why it is already half-built.** The DHT is a directory, not a
-transport (§5b). `FetchFrom` already retrieves a bucket from a known peer with no
-DHT lookup at all, which is the escape hatch: a node that has talked to a peer
-can go back to it directly. What is missing is remembering useful peers and
-preferring them, so discovery failure degrades instead of stopping. That is worth
-building before the network is large enough to be worth attacking.
+**Mitigation — built.** The DHT is a directory, not a transport (§5b), so a node
+that already knows who holds something can ask directly.
+
+Every peer that serves a reply which verifies is recorded in `known_peers`, and
+when discovery returns nobody — which is what censorship looks like, and also
+what the long tail looks like — the fetch falls back to those peers in order of
+how often they have helped. Both the block and catalogue paths do this. A
+censored lookup then costs latency instead of the data.
+
+Only successful peers are kept, and at most 64, trimmed by usefulness rather than
+recency alone: a peer that has served many times is worth more than one that
+answered once.
+
+**What it does not fix.** A node with no history has nobody to ask, so a new
+install under active censorship is still stuck, and remembered peers only hold
+what they happened to cache. This makes an established node degrade to slower
+rather than to nothing — it is not a substitute for discovery.
 
 **Do not treat this as fixed by an upgrade.** There is no fixed version. Anyone
 re-running the scanner will see it, and the right response is to check whether

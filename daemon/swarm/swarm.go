@@ -41,6 +41,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
+	"github.com/multiformats/go-multiaddr"
 	mh "github.com/multiformats/go-multihash"
 
 	"github.com/keel-app/keel/daemon/store"
@@ -78,6 +79,8 @@ type Store interface {
 	LocalPrefixes(bits int, mirrorOnly bool) ([]string, error)
 	BuildCataloguePack(prefix string, mirrorOnly bool, limit int) (*store.CataloguePack, error)
 	ImportCataloguePack(raw []byte) (int, error)
+	RememberPeer(id string, addrs []string) error
+	KnownPeers(limit int) ([]store.KnownPeer, error)
 	LocalCataloguePrefixes(bits int, mirrorOnly bool) ([]string, error)
 	MissingCataloguePrefixes(videoIDs []string, bits int) ([]string, error)
 	ImportBlock(raw []byte) (*store.Block, int64, error)
@@ -410,7 +413,27 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 			n.logf("catalogue %s from %s rejected: %v", prefix, p.ID, err)
 			continue
 		}
+		n.remember(p)
 		return rows, nil
+	}
+
+	// Same fallback as blocks: titles are no use if only discovery is blocked.
+	known, err := n.st.KnownPeers(0)
+	if err != nil {
+		return 0, nil
+	}
+	for _, k := range known {
+		info, err := addrInfo(k)
+		if err != nil {
+			continue
+		}
+		raw, err := n.requestOn(ctx, info, prefix, CatalogueProtocol)
+		if err != nil {
+			continue
+		}
+		if rows, err := n.st.ImportCataloguePack(raw); err == nil && rows > 0 {
+			return rows, nil
+		}
 	}
 	return 0, nil
 }
@@ -529,10 +552,83 @@ func (n *Node) Fetch(ctx context.Context, key string) (int64, error) {
 			continue
 		}
 		n.logf("prefix %s: %d blocks, %d edges from %s", prefix, blocks, edges, p.ID)
+		n.remember(p)
+		n.syncCatalogue(ctx, imported)
+		return edges, nil
+	}
+
+	// Discovery found nobody. That is normal for the long tail, and it is also
+	// what a censored DHT looks like (§7.4a, GO-2024-3218 — no fix available).
+	// Either way a peer that has served us before can be asked directly, since
+	// the block protocol needs no DHT.
+	return n.fetchFromKnown(ctx, prefix)
+}
+
+// remember records a peer that served a reply which verified.
+func (n *Node) remember(p peer.AddrInfo) {
+	addrs := make([]string, 0, len(p.Addrs))
+	for _, a := range p.Addrs {
+		addrs = append(addrs, a.String())
+	}
+	if err := n.st.RememberPeer(p.ID.String(), addrs); err != nil {
+		n.logf("remember %s: %v", p.ID, err)
+	}
+}
+
+// fetchFromKnown asks peers that have served us before, in order of usefulness.
+//
+// This is the escape hatch from DHT censorship. It cannot replace discovery —
+// a node with no history has nobody to ask, and these peers only hold what they
+// happened to cache — but it means an established node degrades to slower rather
+// than to nothing.
+func (n *Node) fetchFromKnown(ctx context.Context, prefix string) (int64, error) {
+	known, err := n.st.KnownPeers(0)
+	if err != nil || len(known) == 0 {
+		return 0, nil
+	}
+	for _, k := range known {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+		info, err := addrInfo(k)
+		if err != nil {
+			continue
+		}
+		raw, err := n.requestOn(ctx, info, prefix, BlockProtocol)
+		if err != nil {
+			continue
+		}
+		imported, blocks, edges := n.importReply(raw)
+		if blocks == 0 {
+			continue
+		}
+		n.logf("prefix %s: %d blocks, %d edges from remembered peer %s", prefix, blocks, edges, info.ID)
 		n.syncCatalogue(ctx, imported)
 		return edges, nil
 	}
 	return 0, nil
+}
+
+// addrInfo rebuilds a libp2p peer address from stored strings.
+func addrInfo(k store.KnownPeer) (peer.AddrInfo, error) {
+	id, err := peer.Decode(k.ID)
+	if err != nil {
+		return peer.AddrInfo{}, err
+	}
+	info := peer.AddrInfo{ID: id}
+	for _, a := range k.Addrs {
+		ma, err := multiaddr.NewMultiaddr(a)
+		if err != nil {
+			continue
+		}
+		info.Addrs = append(info.Addrs, ma)
+	}
+	if len(info.Addrs) == 0 {
+		return peer.AddrInfo{}, fmt.Errorf("no usable addresses")
+	}
+	return info, nil
 }
 
 // importReply merges every block in a bucket reply.
@@ -582,6 +678,9 @@ func (n *Node) FetchFrom(ctx context.Context, p peer.AddrInfo, key string) (int6
 	}
 	imported, blocks, edges := n.importReply(raw)
 	n.logf("prefix %s: %d blocks, %d edges from %s", prefix, blocks, edges, p.ID)
+	if blocks > 0 {
+		n.remember(p)
+	}
 	n.syncCatalogue(ctx, imported)
 	return edges, nil
 }

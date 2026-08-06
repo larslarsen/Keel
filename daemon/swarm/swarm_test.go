@@ -257,8 +257,13 @@ func TestMirrorNodeDoesNotServeOwnObservations(t *testing.T) {
 }
 
 // TestCatalogueFetchLabelsFetchedGraph is the end-to-end reason this path
-// exists: blocks are stringless, so a node that fetches graph data has ids and
-// no titles until the catalogue arrives on its own protocol.
+// exists: blocks are stringless, so a node that fetches graph data holds ids
+// and no titles until the catalogue arrives on its own protocol.
+//
+// Titles now arrive without a second call. Fetching remembers the peer that
+// served the blocks, and the catalogue path falls back to remembered peers when
+// discovery finds nobody — which on an isolated network is always. That is the
+// censorship fallback doing its job on a path it was not written for.
 func TestCatalogueFetchLabelsFetchedGraph(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -279,35 +284,18 @@ func TestCatalogueFetchLabelsFetchedGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cNode.Close()
-	// Fetching must be on for the catalogue path; isolated(false) is Level 1.
-	cNode.cfg.Fetch = true
+	cNode.cfg.Fetch = true // the catalogue path is gated with block fetching
 
-	if _, err := cNode.FetchFrom(ctx, sNode.AddrInfo(), "seedaaaaaaa"); err != nil {
-		t.Fatal(err)
-	}
-
-	// The graph arrived stringless, so search finds nothing by title yet.
 	before, err := client.SearchVideos("Title targetaaaa1", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if before.Total != 0 {
-		t.Errorf("titles present before catalogue sync: %d hits", before.Total)
+		t.Fatalf("a fresh node already had titles: %d hits", before.Total)
 	}
 
-	// Pull the catalogue bucket for one of the fetched videos, over its own
-	// protocol, from the same peer.
-	prefix := store.CataloguePrefix("targetaaaa1", store.DefaultPrefixBits)
-	raw, err := cNode.requestOn(ctx, sNode.AddrInfo(), prefix, CatalogueProtocol)
-	if err != nil {
+	if _, err := cNode.FetchFrom(ctx, sNode.AddrInfo(), "seedaaaaaaa"); err != nil {
 		t.Fatal(err)
-	}
-	rows, err := client.ImportCataloguePack(raw)
-	if err != nil {
-		t.Fatalf("catalogue pack refused: %v", err)
-	}
-	if rows == 0 {
-		t.Fatal("catalogue bucket was empty")
 	}
 
 	after, err := client.SearchVideos("Title targetaaaa1", 10)
@@ -315,7 +303,7 @@ func TestCatalogueFetchLabelsFetchedGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after.Total == 0 {
-		t.Error("catalogue arrived but the video is still not searchable by title")
+		t.Error("graph arrived but the video never became searchable by title")
 	}
 }
 
@@ -355,5 +343,74 @@ func TestMirrorNodeServesNoOwnCatalogue(t *testing.T) {
 	}
 	if rows != 0 {
 		t.Errorf("a Level 2 node served %d catalogue rows about videos its user saw", rows)
+	}
+}
+
+// TestFallsBackToRememberedPeers is the escape hatch from DHT censorship.
+//
+// GO-2024-3218 has no fix: flooding provider records makes a key undiscoverable.
+// Only discovery breaks — the block protocol needs no DHT — so a node that has
+// been served before must be able to ask that peer directly. Here the DHT is
+// empty, which is indistinguishable from being censored.
+func TestFallsBackToRememberedPeers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	serverStore := newStore(t, "server.sqlite")
+	seed(t, serverStore, "seedaaaaaaa", "targetaaaa1", 0)
+	seed(t, serverStore, "seedaaaaaaa", "targetaaaa2", 1)
+	server, err := Start(ctx, serverStore, isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	clientStore := newStore(t, "client.sqlite")
+	client, err := Start(ctx, clientStore, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	client.cfg.Fetch = true
+
+	// A first, direct exchange — the kind that happens before an attack.
+	if _, err := client.FetchFrom(ctx, server.AddrInfo(), "seedaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	known, err := clientStore.KnownPeers(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(known) != 1 || known[0].ID != server.ID().String() {
+		t.Fatalf("peer was not remembered after a successful fetch: %+v", known)
+	}
+
+	// Now discovery yields nothing, as it would under censorship. A fresh
+	// client with the same memory must still get the data.
+	victimStore := newStore(t, "victim.sqlite")
+	if err := victimStore.RememberPeer(known[0].ID, known[0].Addrs); err != nil {
+		t.Fatal(err)
+	}
+	victim, err := Start(ctx, victimStore, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer victim.Close()
+	victim.cfg.Fetch = true
+
+	edges, err := victim.Fetch(ctx, "seedaaaaaaa")
+	if err != nil {
+		t.Fatalf("fallback fetch failed: %v", err)
+	}
+	if edges == 0 {
+		t.Fatal("discovery found nothing and the remembered peer was not tried")
+	}
+
+	sug, err := victimStore.Suggest("seedaaaaaaa", 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sug.Suggestions) == 0 {
+		t.Error("edges arrived via the fallback but the walk returns nothing")
 	}
 }

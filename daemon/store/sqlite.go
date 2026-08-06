@@ -177,6 +177,24 @@ CREATE TABLE IF NOT EXISTS channel_blocklist (
   channel_id TEXT PRIMARY KEY,
   blocked_at INTEGER NOT NULL
 );
+-- Peers that have actually served us data (WO-052).
+--
+-- The public DHT is subject to a censorship attack with no available fix
+-- (GO-2024-3218): flooding provider records for a key stops others discovering
+-- who holds it. Discovery is the only thing that breaks — the block protocol
+-- works fine peer-to-peer — so remembering peers that worked turns a censored
+-- lookup into a slower one instead of a dead one.
+--
+-- Only peers that successfully served a verified block are kept, so this is a
+-- record of what worked rather than of everyone we ever met.
+CREATE TABLE IF NOT EXISTS known_peers (
+  peer_id TEXT PRIMARY KEY,
+  addrs TEXT NOT NULL,
+  last_ok INTEGER NOT NULL,
+  successes INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_known_peers_ok ON known_peers(last_ok DESC);
+
 -- Imported measurement tuples from another node (WO-027). Kept apart from
 -- impressions on purpose: "what YouTube showed me" must stay citable, so
 -- foreign observations never merge into the local corpus.
