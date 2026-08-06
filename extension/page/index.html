@@ -21,6 +21,9 @@
       <button class="tab" role="tab" id="tab-suggest" aria-selected="false" aria-controls="view-suggest">
         Suggestions
       </button>
+      <button class="tab" role="tab" id="tab-live" aria-selected="false" aria-controls="view-live">
+        Live
+      </button>
       <button class="tab" role="tab" id="tab-analysis" aria-selected="false" aria-controls="view-analysis">
         Analysis
       </button>
@@ -66,6 +69,30 @@
         </p>
         <p class="meta" id="suggest-meta"></p>
         <ol id="suggestions"></ol>
+      </section>
+
+      <section id="view-live" role="tabpanel" aria-labelledby="tab-live" hidden>
+        <label class="field">
+          <span>Filter</span>
+          <input
+            type="search"
+            id="live-q"
+            placeholder="Type to filter — nothing is sent anywhere"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <label class="check">
+          <input type="checkbox" id="live-corrob" />
+          Only streams reported by more than one node
+        </label>
+        <p class="meta" id="live-meta"></p>
+        <ol id="live-list"></ol>
+        <p class="note">
+          Streams other people running Keel have seen live recently. Times are
+          when a stream was last reported, not a guarantee it is still running —
+          an older entry may open the recording instead.
+        </p>
       </section>
 
       <section id="view-analysis" role="tabpanel" aria-labelledby="tab-analysis" hidden>

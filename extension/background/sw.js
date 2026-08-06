@@ -379,6 +379,24 @@ async function handle(message, sender) {
       return { search: env.payload };
     }
 
+    /**
+     * DESIGN_v2 §7.5: the live index lives in the daemon's memory, gossiped
+     * whole. The query is matched there against records this machine already
+     * holds, so nothing about it reaches the network.
+     */
+    case "LIVE_SEARCH": {
+      if (!bridge.helloOk) throw new Error("daemon not connected");
+      const env = await bridge.request("LIVE_SEARCH", {
+        query: String(message.payload?.query || ""),
+        min_publishers: Number(message.payload?.min_publishers) || 1,
+        limit: Number(message.payload?.limit) || 100,
+      });
+      if (env.type === "ERROR") {
+        throw new Error(env.payload?.message || "LIVE_SEARCH failed");
+      }
+      return { live: env.payload };
+    }
+
     case "SUGGEST": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
       const env = await bridge.request("SUGGEST", {

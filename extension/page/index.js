@@ -35,6 +35,10 @@ const el = {
   suggestBtn: document.getElementById("btn-suggest"),
   suggestMeta: document.getElementById("suggest-meta"),
   suggestions: document.getElementById("suggestions"),
+  liveQ: document.getElementById("live-q"),
+  liveCorrob: document.getElementById("live-corrob"),
+  liveMeta: document.getElementById("live-meta"),
+  liveList: document.getElementById("live-list"),
 };
 
 async function rpc(type, payload) {
@@ -148,7 +152,7 @@ armPanelOnVideoLinkClick(el.suggestions);
 /* ---------- tabs ---------- */
 
 function selectTab(name) {
-  for (const t of ["search", "suggest", "analysis", "config"]) {
+  for (const t of ["search", "suggest", "live", "analysis", "config"]) {
     const tab = document.getElementById(`tab-${t}`);
     const view = document.getElementById(`view-${t}`);
     const on = t === name;
@@ -168,12 +172,102 @@ function selectTab(name) {
   if (name === "suggest" && !el.suggestions.children.length) {
     loadSuggestions().catch(() => {});
   }
+  if (name === "live") {
+    el.liveQ.focus();
+    loadLive().catch(() => {});
+  }
   if (name === "analysis") loadAnalysis().catch(() => {});
 }
 
-for (const t of ["search", "suggest", "analysis", "config"]) {
+for (const t of ["search", "suggest", "live", "analysis", "config"]) {
   document.getElementById(`tab-${t}`).addEventListener("click", () => selectTab(t));
 }
+
+/* ---------- live ---------- */
+
+/**
+ * The live feed (DESIGN_v2 §7.5).
+ *
+ * Filtering happens in the daemon's memory, over an index it already holds in
+ * full — so typing here sends no query anywhere. That is why this box filters as
+ * you type rather than waiting for a submit: there is no request to be careful
+ * about.
+ */
+function fmtAgo(ms) {
+  if (!ms) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (secs < 90) return "just now";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+  return `${Math.floor(hrs / 24)} day${hrs < 48 ? "" : "s"} ago`;
+}
+
+function renderLive(res) {
+  el.liveList.replaceChildren();
+  const streams = res?.streams || [];
+
+  if (res && res.available === false) {
+    el.liveMeta.textContent =
+      res.reason ||
+      "The live feed needs contribution level 2 or above. At level 1 Keel asks the network for nothing at all.";
+    return;
+  }
+  if (!streams.length) {
+    el.liveMeta.textContent = res?.query
+      ? `Nothing matching “${res.query}” among ${res.indexed || 0} known streams.`
+      : "No streams reported yet. The feed fills as other nodes see livestreams.";
+    return;
+  }
+  el.liveMeta.textContent =
+    `${streams.length} stream${streams.length === 1 ? "" : "s"}` +
+    (res.indexed ? ` of ${res.indexed} known` : "");
+
+  for (const s of streams) {
+    const li = document.createElement("li");
+    // Publishers is corroboration, not popularity: how many unrelated nodes
+    // reported the same stream. One report is a claim; several are harder to
+    // fabricate. It is not proof — nothing signs YouTube's state.
+    const who =
+      s.publishers > 1
+        ? `${s.publishers} nodes reported this`
+        : "reported by one node";
+    li.innerHTML =
+      `<div class="row-main">${thumbHtml(s.v)}<div class="row-text">` +
+      `<p class="r-title"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(s.v)}"` +
+      ` target="_blank" rel="noreferrer">${escapeHtml(s.t || s.v)}</a></p>` +
+      `<p class="r-sub">seen live ${escapeHtml(fmtAgo(s.last_seen))} · ${escapeHtml(who)}` +
+      (s.c ? ` · ${escapeHtml(s.c)}` : "") +
+      `</p></div></div>`;
+    el.liveList.appendChild(li);
+    const im = li.querySelector("img.thumb[data-vid]");
+    if (im) fillThumb(im, decodeURIComponent(im.dataset.vid || ""));
+  }
+}
+
+async function loadLive() {
+  try {
+    const r = await rpc("LIVE_SEARCH", {
+      query: el.liveQ.value.trim(),
+      min_publishers: el.liveCorrob.checked ? 2 : 1,
+      limit: 200,
+    });
+    renderLive(r.live);
+  } catch (err) {
+    el.liveList.replaceChildren();
+    el.liveMeta.textContent = String(err?.message || err);
+  }
+}
+
+let liveTimer = null;
+el.liveQ.addEventListener("input", () => {
+  // Debounced only to avoid re-rendering on every keystroke; there is no
+  // network call to rate-limit.
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => loadLive().catch(() => {}), 120);
+});
+el.liveCorrob.addEventListener("change", () => loadLive().catch(() => {}));
 
 /* ---------- search ---------- */
 
