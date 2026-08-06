@@ -50,10 +50,54 @@ let generation = 1;
 /** slot_index → video_id of the last extracted rail (change detection). */
 let lastRail = new Map();
 
+/**
+ * True once this content script has been orphaned by an extension reload.
+ *
+ * The old script keeps running in the page but its `browser.runtime` handle is
+ * dead, so every call throws "Extension context invalidated". Left alone it
+ * would keep a MutationObserver and its timers alive in a tab that can never
+ * report anything again — burning CPU for nothing, which is the failure WO-006
+ * was about.
+ */
+let orphaned = false;
+
+function isContextInvalidated(err) {
+  return /context invalidated|receiving end does not exist/i.test(
+    String(err?.message || err),
+  );
+}
+
+/** Stop everything. Only a page reload brings this tab back. */
+function shutdown(reason) {
+  if (orphaned) return;
+  orphaned = true;
+  gen += 1; // invalidate any in-flight scan
+  if (mo) {
+    mo.disconnect();
+    mo = null;
+  }
+  if (throttleTimer != null) {
+    clearTimeout(throttleTimer);
+    throttleTimer = null;
+  }
+  if (armRetryTimer != null) {
+    clearTimeout(armRetryTimer);
+    armRetryTimer = null;
+  }
+  console.info(LOG, `stopped: ${reason} — reload the page to resume`);
+}
+
 async function send(type, payload) {
+  if (orphaned) return;
   try {
     await browser.runtime.sendMessage({ type, payload });
   } catch (err) {
+    if (isContextInvalidated(err)) {
+      // Expected after the extension is reloaded or updated. Say it once and
+      // go quiet rather than warning on every mutation.
+      shutdown("extension was reloaded");
+      return;
+    }
     console.warn(LOG, "sendMessage", err?.message || err);
   }
 }
@@ -268,6 +312,7 @@ function disarm() {
 }
 
 function armMo() {
+  if (orphaned) return;
   if (mo) mo.disconnect();
   mo = null;
   if (armRetryTimer != null) {
@@ -301,6 +346,7 @@ function armMo() {
 }
 
 async function onNavigate({ force = false } = {}) {
+  if (orphaned) return;
   const href = location.href;
   if (!force && href === lastHref && armed) return;
   lastHref = href;
