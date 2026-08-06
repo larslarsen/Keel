@@ -244,9 +244,8 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 // full (DESIGN_v2 §7.5).
 func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
 	var p struct {
-		Query         string `json:"query"`
-		MinPublishers int    `json:"min_publishers"`
-		Limit         int    `json:"limit"`
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
 	}
 	if len(env.Payload) > 0 {
 		_ = json.Unmarshal(env.Payload, &p)
@@ -261,10 +260,7 @@ func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
 		})
 	}
 	li := swarmNode.Live()
-	if p.MinPublishers <= 0 {
-		p.MinPublishers = 1
-	}
-	hits := li.Search(p.Query, p.MinPublishers, p.Limit)
+	hits := li.Search(p.Query, p.Limit)
 	return reply(out, env.ID, "LIVE_RESULT", map[string]any{
 		"query": p.Query, "streams": hits, "indexed": li.Size(), "available": true,
 	})

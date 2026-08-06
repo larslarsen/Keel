@@ -16,21 +16,36 @@
 // Search happens entirely in local memory. The daemon never sends a keyword
 // anywhere; it holds the whole index and filters it on this machine.
 //
-// Two things are deliberately not solved here:
+// **Messages carry no author, so publishing is ungated.** An earlier version
+// signed them and counted distinct publishers as corroboration, which forced
+// publishing behind Level 2. That was the wrong trade twice over:
 //
-//   - **Publishing discloses that the publisher saw the stream.** For a popular
-//     stream that means nothing; for a rare one the publisher set approximates
-//     the viewer set. Publishing is therefore opt-in at Level 2 and above and
-//     never happens at Level 1. This is weaker than the receive side, which
-//     discloses nothing, and the asymmetry is real.
-//   - **Records are unverifiable claims.** Nothing signs YouTube state
-//     (DESIGN_v2 §6.4), so a node can announce a stream that is not live or
-//     attach a misleading title. Corroboration by distinct publishers raises the
-//     cost without pretending to fix it.
+//   - It broke the product. Most livestreams have one observer, and a feed
+//     showing only corroborated streams is YouTube's live search with extra
+//     steps. The long tail — streams almost nobody sees — is the entire reason
+//     to build this.
+//   - It cost privacy for nothing. Signed messages name their origin to every
+//     subscriber, not just the first hop, so reporting a stream disclosed that
+//     the reporter saw it.
+//
+// Unsigned and authorless, a report says only "this stream exists". In a gossip
+// mesh originating and forwarding are indistinguishable to neighbours, so even a
+// direct peer cannot tell whether this node saw the stream or is passing on
+// somebody else's report. Every node can therefore report at every level,
+// including the default, which is also what fills the long tail.
+//
+// What is given up: records remain unverifiable claims — nothing signs YouTube
+// state (DESIGN_v2 §6.4) — and without authorship they cannot be corroborated by
+// counting publishers. Flooding is handled at the transport instead, by
+// gossipsub's peer scoring of whoever *delivers* a message, by the topic
+// validator, and by a cap on the index. That is weaker, and the right call here:
+// a bogus livestream entry is a nuisance, where a bogus edge would corrupt the
+// research corpus.
 package swarm
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"sort"
@@ -39,6 +54,7 @@ import (
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -86,19 +102,17 @@ const (
 
 	liveSweepInterval = 10 * time.Minute
 
-	// liveEnoughPublishers is the point at which a node stops announcing a
-	// stream others have already announced.
+	// liveTimeGranularity rounds the sighting time in a record.
 	//
-	// This is what makes the feature scale, and the reason is easy to miss: the
-	// index is small — a few hundred KB of distinct streams — but *message*
-	// volume is not, because it grows with publishers × sightings rather than
-	// with distinct streams. A thousand users seeing one popular stream would
-	// otherwise send a thousand messages carrying one fact, and at a million
-	// users that is gigabytes a day rather than kilobytes.
+	// This is what makes duplicate reports nearly free. Message ids are the hash
+	// of the payload, so two nodes reporting the same stream in the same hour
+	// produce byte-identical messages, which gossipsub recognises as duplicates
+	// and stops forwarding. Without rounding, a per-millisecond timestamp would
+	// make every report unique and the network would carry one message per
+	// sighting rather than one per stream per hour.
 	//
-	// Suppression collapses it back: the first few observers announce, everyone
-	// after them stays quiet, and traffic scales with distinct streams again.
-	liveEnoughPublishers = 3
+	// A coarse timestamp is also less of a fingerprint than an exact one.
+	liveTimeGranularity = time.Hour
 
 	// liveRefreshAfter lets a stream be re-announced once its record is ageing,
 	// so suppression cannot let a still-running stream expire out of the index.
@@ -117,21 +131,15 @@ type LiveRecord struct {
 // LiveEntry is the merged view of one stream across every node that reported it.
 type LiveEntry struct {
 	LiveRecord
-	// Publishers counts distinct peers that reported this stream. It is the
-	// corroboration signal: one report is a claim, several from unrelated peers
-	// is harder to fake. It is not sybil-proof and must not be presented as
-	// proof of anything.
-	Publishers int `json:"publishers"`
 	// FirstSeen and LastSeen bound local knowledge, not the stream itself.
 	FirstSeen int64 `json:"first_seen"`
 	LastSeen  int64 `json:"last_seen"`
 }
 
 type liveEntry struct {
-	rec        LiveRecord
-	publishers map[peer.ID]bool
-	firstSeen  time.Time
-	lastSeen   time.Time
+	rec       LiveRecord
+	firstSeen time.Time
+	lastSeen  time.Time
 }
 
 // LiveIndex is the in-memory index. Nothing here is written to disk: these
@@ -165,7 +173,20 @@ type LiveIndex struct {
 // that is a fair bargain, and it is intrinsic to gossip rather than a policy
 // choice.
 func (n *Node) startLive(ctx context.Context) error {
-	ps, err := pubsub.NewGossipSub(ctx, n.host)
+	ps, err := pubsub.NewGossipSub(ctx, n.host,
+		// No signature and no author: a report must not name whoever saw the
+		// stream. Neighbours cannot distinguish originating from forwarding, so
+		// publishing discloses nothing and needs no contribution gate.
+		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
+		pubsub.WithNoAuthor(),
+		// Required once messages have no author, since the default id is
+		// sender plus sequence number. Hashing the payload also makes identical
+		// reports collapse into one message network-wide.
+		pubsub.WithMessageIdFn(func(m *pb.Message) string {
+			sum := sha256.Sum256(m.Data)
+			return string(sum[:])
+		}),
+	)
 	if err != nil {
 		return err
 	}
@@ -230,9 +251,7 @@ func (li *LiveIndex) Snapshot() []LiveRecord {
 // backfillLive asks connected peers for their index once a mesh exists.
 //
 // Peers are asked in turn until one answers, and their records are merged as
-// though they had been gossiped. Corroboration counts are not carried over: a
-// snapshot is one peer's word for all of it, and inheriting its publisher counts
-// would let a single node manufacture apparent agreement.
+// though they had been gossiped.
 func (n *Node) backfillLive(ctx context.Context) {
 	for attempt := 0; attempt < 12; attempt++ {
 		select {
@@ -274,7 +293,7 @@ func (n *Node) fetchLiveSnapshot(ctx context.Context, p peer.ID) bool {
 	}
 	for _, r := range recs {
 		if len(r.VideoID) == 11 {
-			n.live.merge(r, p)
+			n.live.merge(r)
 		}
 	}
 	if len(recs) > 0 {
@@ -314,18 +333,15 @@ func (li *LiveIndex) consume(ctx context.Context) {
 		if err := json.Unmarshal(msg.Data, &r); err != nil {
 			continue
 		}
-		li.merge(r, msg.GetFrom())
+		li.merge(r)
 	}
 }
 
 // merge folds one report into the index.
 //
-// Publisher identity comes from gossipsub, which signs messages with the
-// sender's key, so corroboration needs no application-level signature. Under
-// ephemeral identity a node's key changes per session, which weakens
-// corroboration slightly — the same node across two sessions counts twice — and
-// that is the correct trade: unlinkability matters more than an exact count.
-func (li *LiveIndex) merge(r LiveRecord, from peer.ID) {
+// There is no publisher to record: messages are authorless by design, and the
+// index is a set of streams rather than a tally of who saw what.
+func (li *LiveIndex) merge(r LiveRecord) {
 	if r.VideoID == "" {
 		return
 	}
@@ -338,7 +354,7 @@ func (li *LiveIndex) merge(r LiveRecord, from peer.ID) {
 		if len(li.entries) >= maxLiveRecords {
 			return // backstop; sweep will make room
 		}
-		e = &liveEntry{rec: r, publishers: map[peer.ID]bool{}, firstSeen: now}
+		e = &liveEntry{rec: r, firstSeen: now}
 		li.entries[r.VideoID] = e
 	}
 	// Keep the richest version seen: a later report may carry a title an
@@ -352,7 +368,6 @@ func (li *LiveIndex) merge(r LiveRecord, from peer.ID) {
 	if r.SeenAt > e.rec.SeenAt {
 		e.rec.SeenAt = r.SeenAt
 	}
-	e.publishers[from] = true
 	e.lastSeen = now
 }
 
@@ -380,22 +395,17 @@ func (li *LiveIndex) sweep(ctx context.Context) {
 
 // shouldPublish reports whether this node's announcement would add anything.
 //
-// Staying quiet about a well-corroborated, freshly-reported stream costs the
-// network nothing and saves it a message. It also happens to reduce disclosure:
-// an announcement says its publisher saw the stream, so not making a redundant
-// one is strictly better for the publisher too.
+// Duplicate reports are already nearly free — identical payloads share a message
+// id and stop propagating — but originating one still costs a round of mesh
+// traffic. A node announces a stream it has not heard of, or one whose record is
+// ageing, so suppression cannot quietly let a still-running stream expire.
 func (li *LiveIndex) shouldPublish(videoID string) bool {
 	li.mu.RLock()
 	defer li.mu.RUnlock()
 	e := li.entries[videoID]
 	if e == nil {
-		return true // nobody has reported it
+		return true
 	}
-	if len(e.publishers) < liveEnoughPublishers {
-		return true // corroboration is still worth adding
-	}
-	// Well corroborated. Announce only if the record is ageing, so suppression
-	// cannot quietly let a still-running stream expire.
 	return time.Since(e.lastSeen) > liveRefreshAfter
 }
 
@@ -407,13 +417,16 @@ func (li *LiveIndex) Publish(ctx context.Context, r LiveRecord) error {
 	if r.SeenAt == 0 {
 		r.SeenAt = time.Now().UnixMilli()
 	}
+	// Round so two nodes reporting the same stream in the same hour emit
+	// byte-identical messages, which the network then carries only once.
+	r.SeenAt = time.UnixMilli(r.SeenAt).Truncate(liveTimeGranularity).UnixMilli()
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
 	// Fold our own announcement in locally: gossipsub does not deliver a node
 	// its own messages, and a user should see their own discovery in the feed.
-	li.merge(r, li.self)
+	li.merge(r)
 	return li.topic.Publish(ctx, raw)
 }
 
@@ -422,7 +435,7 @@ func (li *LiveIndex) Publish(ctx context.Context, r LiveRecord) error {
 // This is the whole privacy argument for the feature: the query never leaves the
 // machine, because the machine already holds the entire index. minPublishers
 // applies the corroboration filter.
-func (li *LiveIndex) Search(query string, minPublishers, limit int) []LiveEntry {
+func (li *LiveIndex) Search(query string, limit int) []LiveEntry {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -435,9 +448,6 @@ func (li *LiveIndex) Search(query string, minPublishers, limit int) []LiveEntry 
 	out := make([]LiveEntry, 0, 64)
 	for _, e := range li.entries {
 		if e.lastSeen.Before(cutoff) {
-			continue
-		}
-		if len(e.publishers) < minPublishers {
 			continue
 		}
 		if len(terms) > 0 {
@@ -455,18 +465,15 @@ func (li *LiveIndex) Search(query string, minPublishers, limit int) []LiveEntry 
 		}
 		out = append(out, LiveEntry{
 			LiveRecord: e.rec,
-			Publishers: len(e.publishers),
 			FirstSeen:  e.firstSeen.UnixMilli(),
 			LastSeen:   e.lastSeen.UnixMilli(),
 		})
 	}
 
-	// Most corroborated first, then most recently reported. Corroboration leads
-	// because it is the only signal here that resists a single bad actor.
+	// Most recently reported first. There is no popularity signal here and that
+	// is deliberate: this feed exists for the streams nobody else surfaces, so
+	// ranking by any measure of attention would rebuild what it replaces.
 	sort.Slice(out, func(a, b int) bool {
-		if out[a].Publishers != out[b].Publishers {
-			return out[a].Publishers > out[b].Publishers
-		}
 		if out[a].LastSeen != out[b].LastSeen {
 			return out[a].LastSeen > out[b].LastSeen
 		}
@@ -488,13 +495,13 @@ func (li *LiveIndex) Size() int {
 // Live returns the index, or nil when not subscribed.
 func (n *Node) Live() *LiveIndex { return n.live }
 
-// PublishLive announces a stream if this node's level permits it.
+// PublishLive announces a stream.
 //
-// Serve is the Level 2 gate, and it is the only gate this feature needs. A Level
-// 1 node receives the whole feed and announces nothing — publishing is what
-// discloses that its publisher saw the stream.
+// Ungated at every level, including the default. A report carries no author, so
+// it discloses nothing about who saw the stream, and every node reporting is
+// what fills the long tail this feed exists for.
 func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
-	if n.live == nil || !n.cfg.Serve {
+	if n.live == nil {
 		return
 	}
 	if !n.live.shouldPublish(r.VideoID) {

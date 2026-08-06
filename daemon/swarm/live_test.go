@@ -72,25 +72,22 @@ func TestLiveRecordPropagates(t *testing.T) {
 	waitFor(t, "record to arrive", func() bool { return sub.Live().Size() > 0 })
 
 	// The subscriber searches its own memory; no query left the machine.
-	hits := sub.Live().Search("breaking", 1, 10)
+	hits := sub.Live().Search("breaking", 10)
 	if len(hits) != 1 {
 		t.Fatalf("search returned %d hits, want 1", len(hits))
 	}
 	if hits[0].VideoID != "dQw4w9WgXcQ" {
 		t.Errorf("got %q", hits[0].VideoID)
 	}
-	if hits[0].Publishers != 1 {
-		t.Errorf("publishers = %d, want 1", hits[0].Publishers)
-	}
 	// A term that matches nothing must return nothing — the filter is real.
-	if got := sub.Live().Search("cooking", 1, 10); len(got) != 0 {
+	if got := sub.Live().Search("cooking", 10); len(got) != 0 {
 		t.Errorf("unrelated query returned %d hits", len(got))
 	}
 }
 
-// TestLiveCorroborationCounts checks the only defence against a fabricated
-// record: distinct publishers reporting the same stream.
-func TestLiveCorroborationCounts(t *testing.T) {
+// TestLiveLongTailSurvives is the product requirement. A stream seen by one node
+// must reach everyone, because most livestreams have exactly one observer.
+func TestLiveLongTailSurvives(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -121,23 +118,25 @@ func TestLiveCorroborationCounts(t *testing.T) {
 	b.PublishLive(ctx, rec)
 
 	waitFor(t, "both reports", func() bool {
-		hits := watcher.Live().Search("", 2, 10)
-		return len(hits) == 1 && hits[0].Publishers >= 2
+		return len(watcher.Live().Search("corroborated", 10)) == 1
 	})
 
-	// A stream only one node claims must be filterable out.
+	// A stream only one node has seen must appear too. This is the whole point:
+	// most livestreams have exactly one observer, and filtering them out would
+	// leave the popular subset YouTube already shows.
 	a.PublishLive(ctx, LiveRecord{VideoID: "lonelyvid01", Title: "Unconfirmed stream"})
-	waitFor(t, "single report", func() bool { return len(watcher.Live().Search("unconfirmed", 1, 10)) == 1 })
-	if got := watcher.Live().Search("unconfirmed", 2, 10); len(got) != 0 {
-		t.Error("a stream with one publisher passed a two-publisher filter")
-	}
+	waitFor(t, "single-observer stream", func() bool {
+		return len(watcher.Live().Search("unconfirmed", 10)) == 1
+	})
 }
 
-// TestLevelOneReceivesButNeverPublishes pins the boundary this feature actually
-// has. Gossip is a tier-1 mechanism — no per-item query — so receiving discloses
-// nothing about what a user watches and is available at every level, including
-// the default. Publishing is the disclosing half and is not.
-func TestLevelOneReceivesButNeverPublishes(t *testing.T) {
+// TestLevelOneParticipatesFully pins what this feature gates: nothing.
+//
+// Reports carry no author, so publishing one discloses nothing about who saw the
+// stream, and in a gossip mesh originating is indistinguishable from forwarding.
+// Every node therefore both receives and reports at every level, which is also
+// what fills the long tail the feed exists for.
+func TestLevelOneParticipatesFully(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -164,11 +163,11 @@ func TestLevelOneReceivesButNeverPublishes(t *testing.T) {
 	publisher.PublishLive(ctx, LiveRecord{VideoID: "dQw4w9WgXcQ", Title: "Open feed"})
 	waitFor(t, "record at level 1", func() bool { return lvl1.Live().Size() > 0 })
 
-	// But it must announce nothing of its own.
+	// And it reports its own sightings, at the default setting.
 	lvl1.PublishLive(ctx, LiveRecord{VideoID: "shouldnotgo", Title: "Level one leak"})
 	time.Sleep(1500 * time.Millisecond)
-	if got := publisher.Live().Search("level one leak", 1, 10); len(got) != 0 {
-		t.Error("a Level 1 node published a livestream record")
+	if got := publisher.Live().Search("level one leak", 10); len(got) == 0 {
+		t.Error("a Level 1 node's report did not reach the network")
 	}
 }
 
@@ -206,17 +205,10 @@ func TestPublishSuppressionScales(t *testing.T) {
 		t.Error("refused to announce a stream nobody has reported")
 	}
 
-	// Thinly reported: corroboration is still worth adding.
-	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"}, "peer-a")
-	if !li.shouldPublish("dQw4w9WgXcQ") {
-		t.Error("refused to corroborate a thinly reported stream")
-	}
-
-	// Well corroborated and fresh: stay quiet.
-	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"}, "peer-b")
-	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"}, "peer-c")
+	// Already known and fresh: stay quiet.
+	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ"})
 	if li.shouldPublish("dQw4w9WgXcQ") {
-		t.Error("announced a stream that is already well corroborated and fresh")
+		t.Error("re-announced a stream already in the index")
 	}
 
 	// Ageing: announce again, so suppression cannot let a live stream expire.
@@ -249,7 +241,7 @@ func TestLiveSnapshotBackfill(t *testing.T) {
 		{VideoID: "dQw4w9WgXcQ", Title: "Existing stream one"},
 		{VideoID: "oHg5SJYRHA0", Title: "Existing stream two"},
 	} {
-		warm.Live().merge(r, "some-earlier-peer")
+		warm.Live().merge(r)
 	}
 
 	cold, err := Start(ctx, newStore(t, "cold.sqlite"), liveCfg(t, false))
@@ -268,17 +260,8 @@ func TestLiveSnapshotBackfill(t *testing.T) {
 	if cold.Live().Size() != 2 {
 		t.Fatalf("index holds %d records after backfill, want 2", cold.Live().Size())
 	}
-	hits := cold.Live().Search("existing", 1, 10)
+	hits := cold.Live().Search("existing", 10)
 	if len(hits) != 2 {
 		t.Errorf("backfilled records are not searchable: %d hits", len(hits))
-	}
-
-	// A snapshot is one peer's word for everything in it. Inheriting its
-	// publisher counts would let a single node manufacture apparent agreement,
-	// so every backfilled record counts as one publisher: the peer that sent it.
-	for _, h := range hits {
-		if h.Publishers != 1 {
-			t.Errorf("%s shows %d publishers after backfill, want 1", h.VideoID, h.Publishers)
-		}
 	}
 }

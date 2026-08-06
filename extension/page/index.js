@@ -36,7 +36,6 @@ const el = {
   suggestMeta: document.getElementById("suggest-meta"),
   suggestions: document.getElementById("suggestions"),
   liveQ: document.getElementById("live-q"),
-  liveCorrob: document.getElementById("live-corrob"),
   liveMeta: document.getElementById("live-meta"),
   liveList: document.getElementById("live-list"),
 };
@@ -224,18 +223,11 @@ function renderLive(res) {
 
   for (const s of streams) {
     const li = document.createElement("li");
-    // Publishers is corroboration, not popularity: how many unrelated nodes
-    // reported the same stream. One report is a claim; several are harder to
-    // fabricate. It is not proof — nothing signs YouTube's state.
-    const who =
-      s.publishers > 1
-        ? `${s.publishers} nodes reported this`
-        : "reported by one node";
     li.innerHTML =
       `<div class="row-main">${thumbHtml(s.v)}<div class="row-text">` +
       `<p class="r-title"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(s.v)}"` +
       ` target="_blank" rel="noreferrer">${escapeHtml(s.t || s.v)}</a></p>` +
-      `<p class="r-sub">seen live ${escapeHtml(fmtAgo(s.last_seen))} · ${escapeHtml(who)}` +
+      `<p class="r-sub">seen live ${escapeHtml(fmtAgo(s.last_seen))}` +
       (s.c ? ` · ${escapeHtml(s.c)}` : "") +
       `</p></div></div>`;
     el.liveList.appendChild(li);
@@ -248,7 +240,6 @@ async function loadLive() {
   try {
     const r = await rpc("LIVE_SEARCH", {
       query: el.liveQ.value.trim(),
-      min_publishers: el.liveCorrob.checked ? 2 : 1,
       limit: 200,
     });
     renderLive(r.live);
@@ -265,7 +256,6 @@ el.liveQ.addEventListener("input", () => {
   clearTimeout(liveTimer);
   liveTimer = setTimeout(() => loadLive().catch(() => {}), 120);
 });
-el.liveCorrob.addEventListener("change", () => loadLive().catch(() => {}));
 
 /* ---------- search ---------- */
 

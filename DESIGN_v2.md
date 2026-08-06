@@ -1043,15 +1043,14 @@ signal, and staleness changes ordering slightly and nothing else.
 
 | Level | Asks the network | Serves | Publishes its own observations | Live feed |
 |---|---|---|---|---|
-| 1 Personal | **Nothing** | Nothing | Nothing | **Receives** |
-| 2 Mirror | Prefix buckets | Mirrored rows only | Nothing | Receives + reports |
-| 3 Cohort | Prefix buckets | Own edges too | Aggregate (STAR — not built) | Receives + reports |
-| 4 Transparency | Prefix buckets | Own edges too | Attributed (not built) | Receives + reports |
+| 1 Personal | **Nothing** | Nothing | Nothing | Full participant |
+| 2 Mirror | Prefix buckets | Mirrored rows only | Nothing | Full participant |
+| 3 Cohort | Prefix buckets | Own edges too | Aggregate (STAR — not built) | Full participant |
+| 4 Transparency | Prefix buckets | Own edges too | Attributed (not built) | Full participant |
 
-The live feed is the exception that proves the rule about queries. Level 1 asks
-for nothing *and still receives it*, because gossip has no per-item request —
-see §7.3a. Receiving discloses only that a node looks at livestreams; reporting
-discloses that it saw one, which is why only reporting is gated.
+The live feed is outside the level system entirely, because it discloses nothing
+at any level: there is no per-item query to leak (§7.3a) and reports carry no
+author (§7.5). Level 1 both receives and reports.
 
 **Level 1 asks for nothing at all**, and that is a stronger promise than "we do
 not upload anything": a request discloses which video was asked about, so the
@@ -1229,18 +1228,23 @@ streams.** Somebody running a livestream discovery feature is looking at
 livestreams; that is the product, not a disclosure. Whole-index subscription plus
 local filtering protects the part that matters completely.
 
-**Publish suppression is what bounds the cost instead.** The index is small — a
-few hundred KB of distinct streams — but *message* volume is not, because it
-grows with publishers × sightings rather than with distinct streams. A thousand
-users seeing one popular stream would send a thousand messages carrying one fact,
-which at a million users is gigabytes a day. So a node announces a stream only
-while it is thinly corroborated, or once its record is ageing; otherwise it stays
-quiet. Traffic then scales with distinct streams again, which is the small
-number.
+**Two mechanisms bound the cost instead, and together they make traffic scale
+with distinct streams per hour rather than with users.** The index is small — a
+few hundred KB of distinct streams — but *message* volume would otherwise grow
+with publishers × sightings: a thousand users seeing one popular stream sending a
+thousand messages carrying one fact, which at a million users is gigabytes a day.
 
-Suppression happens to reduce disclosure too: an announcement says its publisher
-saw the stream, so not making a redundant one is better for the publisher as
-well as the network.
+1. **Origination suppression.** A node announces a stream it has not heard of, or
+   one whose record is ageing so a still-running stream cannot quietly expire.
+   Otherwise it stays quiet.
+2. **Content dedup.** Message ids are the hash of the payload and sighting times
+   are rounded to the hour, so two nodes independently discovering the same
+   stream emit byte-identical messages. Gossipsub recognises the duplicate and
+   stops forwarding at the first hop.
+
+The second is the stronger guarantee, because it does not depend on a node
+already knowing about the stream. Rounding the timestamp is also less of a
+fingerprint than an exact one.
 
 **Cold start needs a snapshot.** Gossip carries only what is published after a
 node subscribes, so a freshly started daemon holds nothing — and suppression
@@ -1281,30 +1285,39 @@ instant's worth. A day-long TTL against a million concurrent streams might hold
 several million records — a few hundred KB per bucket, still comfortable. Tune
 the TTL against bucket size, not against freshness.
 
-### Two honest problems that remain
+### Nothing here is gated — decided 2026-08-06
 
-**1. Publishing discloses the publisher's viewing.** A record says "someone saw
-this stream". For a popular stream that is meaningless; for a rare one the
-publisher set approximates the viewer set, and ephemeral identity plus a relay
-reduce but do not remove it. Publishing is therefore **opt-in at Level 2 and
-above, never at Level 1**.
+Reports carry **no signature and no author**. An earlier build signed them and
+counted distinct publishers as corroboration, which forced publishing behind
+Level 2. Lars: corroboration kills the feature anyway, because most livestreams
+will never have *k* observers, and the point is to show **all** livestreams —
+which is precisely what YouTube's live search does not.
 
-**Receiving is not gated at all, at any level.** An early implementation gated
-subscription too, which contradicted §7.3a — gossip is a tier-1 mechanism, with
-no per-item query to leak. So the default, maximum-privacy setting gets a working
-global live feed while disclosing nothing about its user. The asymmetry is the
-design: receiving is free, publishing is what costs something.
+That is decisive, and it unwinds the whole chain. If corroboration is not
+load-bearing, messages need no author; with no author, publishing discloses
+nothing; with no disclosure, there is nothing to gate. **Product and privacy
+improve together**, which is rare enough to note.
 
-The one genuine cost of receiving is that gossipsub subscribers relay for their
-topic — a node cannot receive without carrying traffic for others. At a few
-hundred KB a day that is a fair bargain, and it is intrinsic to gossip rather
-than a policy choice.
+In a gossip mesh, originating and forwarding are indistinguishable to
+neighbours. So a node that reports a stream is not distinguishable from one
+relaying somebody else's report, even to a direct peer. Every node receives and
+reports at every level, including the default.
 
-**2. Records are unverifiable claims.** Nothing signs YouTube state (§6.4), so a
-node can announce a stream that is not live, or attach a misleading title.
-*k*-publisher corroboration raises the cost of poisoning without pretending to
-solve it — sybil resistance is an open problem project-wide, not one this feature
-can fix.
+**What this costs.** Records remain unverifiable claims — nothing signs YouTube
+state (§6.4) — and without authorship they cannot be corroborated by counting
+publishers. Flooding is handled at the transport instead: gossipsub's peer
+scoring penalises whoever *delivers* a bad message, the topic validator rejects
+malformed records before forwarding, and the index is capped. Weaker, and the
+right call here — a bogus livestream entry is a nuisance, where a bogus edge
+would corrupt the research corpus.
+
+**Ranking has no popularity signal, deliberately.** Results are ordered by
+recency alone. Ranking by any measure of attention would rebuild the thing this
+feed exists to replace.
+
+The one genuine cost of participating is that gossipsub subscribers relay for
+their topic — a node cannot receive without carrying traffic for others. It is
+intrinsic to gossip rather than a policy choice.
 
 ### Naming it honestly
 
