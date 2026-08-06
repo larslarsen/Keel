@@ -407,7 +407,6 @@ async function handle(message, sender) {
       return { bundle: env.payload };
     }
 
-    case "THUMBNAIL":
     case "GET_CONSENT": {
       const bag = await browser.storage.local.get(CONSENT_KEY);
       return { consent: bag?.[CONSENT_KEY] ?? null };
@@ -422,6 +421,12 @@ async function handle(message, sender) {
       return { consent: v };
     }
 
+    // Plain daemon relays. THUMBNAIL belongs here and was stranded above when
+    // the contribution cases were added: its label ended up adjacent to
+    // GET_CONSENT, so every thumbnail request fell through and returned a
+    // consent value instead of an image. A fall-through is valid JavaScript, so
+    // nothing warned — the panel simply rendered blank boxes.
+    case "THUMBNAIL":
     case "GET_CONTRIBUTION":
     case "SET_CONTRIBUTION":
     case "GET_DISK_BUDGET":
