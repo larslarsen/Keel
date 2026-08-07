@@ -1,0 +1,79 @@
+# Dependency reporting. Deliberately does not gate releases.
+#
+# Every step reports and none of them fail the build. That is a decision, not an
+# oversight: GO-2024-3218 in go-libp2p-kad-dht has no published fix (see
+# DESIGN_v2.md §7.4a), so a blocking scan would sit permanently red and everyone
+# would learn to ignore it. A check nobody reads is worse than no check.
+#
+# The output is a build artifact and a job summary a person can look at.
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly published advisory against a pinned dependency is
+    # noticed without anyone pushing.
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # go.mod pins the toolchain; this only needs to be new enough to read it.
+          go-version-file: daemon/go.mod
+          check-latest: true
+
+      - name: Module hashes match go.sum
+        id: verify
+        continue-on-error: true
+        working-directory: daemon
+        run: |
+          echo "## Module verification" >> "$GITHUB_STEP_SUMMARY"
+          if go mod verify; then
+            echo "All modules match the hashes in go.sum." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**A module does not match go.sum.** That means a dependency" \
+                 "changed under a version that was already pinned — treat it as" \
+                 "tampering until shown otherwise." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Dependency roots are known
+        continue-on-error: true
+        run: |
+          echo "## Dependency roots" >> "$GITHUB_STEP_SUMMARY"
+          ./scripts/check-deps.sh >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+
+      - name: Known vulnerabilities
+        continue-on-error: true
+        working-directory: daemon
+        run: |
+          echo "## Vulnerabilities" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./... 2>&1 \
+            | tail -40 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Software bill of materials
+        continue-on-error: true
+        working-directory: daemon
+        run: |
+          go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest \
+            mod -json -output sbom.cyclonedx.json .
+          echo "## SBOM" >> "$GITHUB_STEP_SUMMARY"
+          echo "CycloneDX, $(python3 -c 'import json;print(len(json.load(open("sbom.cyclonedx.json"))["components"]))') components." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sbom
+          path: daemon/sbom.cyclonedx.json

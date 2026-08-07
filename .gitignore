@@ -18,3 +18,4 @@ daemon/keel-host
 *.sqlite-wal
 *.sqlite-shm
 src/manifest.json
+daemon/sbom.cyclonedx.json
