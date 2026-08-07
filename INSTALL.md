@@ -7,16 +7,47 @@ Keel is two pieces that work together:
 
 Both have to be installed. The extension on its own has nowhere to put anything.
 
-Keel is not in the Chrome Web Store yet, so this is the developer route: you
-build it yourself. It is about ten minutes and you do not need to know how to
-program — every command below is copy-and-paste.
+Keel is not in the Chrome Web Store yet, so it is installed by hand. There are
+two routes: download a prebuilt desktop app, or build it yourself in about ten
+minutes. Either way you do not need to know how to program — every command below
+is copy-and-paste.
 
 **Nothing you record leaves your computer.** Not to us, not to anyone. There is
 no account and nothing to sign up for.
 
 ---
 
-## Before you start
+## The short way — no Go needed
+
+If a release is available, download the desktop app instead of building it:
+
+1. Go to [Releases](https://github.com/larslarsen/Keel/releases) and download
+   the file for your machine:
+   - Windows — `keel-host-windows-amd64.exe`
+   - Mac (Apple silicon, 2020 onward) — `keel-host-darwin-arm64`
+   - Mac (Intel) — `keel-host-darwin-amd64`
+2. Download `keel-extension.zip` from the same page and unzip it somewhere you
+   will keep — that folder is the extension.
+3. Put the desktop app next to the unzipped folder, open a terminal there, and
+   run it with `install` (see Step 3 below for the exact command).
+4. Load the extension folder as described in Step 4.
+
+**Your computer will warn you about these files.** They are not code-signed —
+a certificate costs money this project has not spent, and saying so is better
+than letting you meet the warning unwarned.
+
+- **Windows:** SmartScreen says "Windows protected your PC". Click *More info*,
+  then *Run anyway*.
+- **Mac:** the file will not open. Right-click it, choose *Open*, then confirm.
+  Or run `xattr -d com.apple.quarantine keel-host-darwin-arm64` in Terminal.
+
+If that trade is not one you want to make, build it yourself instead — it is the
+only way to check the program against the source, and it is what the rest of
+this page describes.
+
+---
+
+## Building it yourself
 
 You need two free tools and a browser.
 

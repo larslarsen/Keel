@@ -1,0 +1,84 @@
+# Build the desktop app for people who should not have to install Go.
+#
+# Requiring a toolchain is the single largest barrier to anyone testing this,
+# and the next milestone is testers rather than code. Go cross-compiles cleanly,
+# so one runner produces every target.
+#
+# These binaries are NOT code-signed. Windows SmartScreen and macOS Gatekeeper
+# will both complain, and INSTALL.md says so plainly rather than letting people
+# hit it unwarned — a signing certificate costs money the project has not spent,
+# and pretending otherwise would be worse than the warning.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # go.mod pins the exact toolchain, so every build here uses the same
+          # compiler and standard library as a developer build.
+          go-version-file: daemon/go.mod
+          check-latest: true
+
+      - name: Build every target
+        working-directory: daemon
+        run: |
+          set -eu
+          mkdir -p ../dist
+          build() {
+            ext=""; [ "$1" = windows ] && ext=".exe"
+            out="../dist/keel-host-$1-$2$ext"
+            GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w" -o "$out" .
+            echo "built $out"
+          }
+          build windows amd64
+          build windows arm64
+          build darwin  amd64
+          build darwin  arm64
+          build linux   amd64
+          build linux   arm64
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum keel-host-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Package the extension
+        run: |
+          cp extension/manifest.chrome.json extension/manifest.json
+          cd extension && zip -qr ../dist/keel-extension.zip . -x 'manifest.firefox.json'
+          echo "packaged extension"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keel-binaries
+          path: dist/
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            Desktop app builds and the extension, for testing without installing Go.
+
+            **These binaries are not code-signed.** Windows will show a
+            SmartScreen warning and macOS will refuse to open the file until you
+            allow it — see INSTALL.md. Verify what you downloaded against
+            `SHA256SUMS` if you want to be sure it is what CI built.
+
+            Building from source is still supported and is the only way to check
+            the binary against the code yourself.
