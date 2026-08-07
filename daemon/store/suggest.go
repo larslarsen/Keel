@@ -207,6 +207,26 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 		return nil, err
 	}
 
+	// A running livestream is the one thing worth keeping from the rail, and it
+	// is exempt from the exclusion above.
+	//
+	// The exclusion exists so the panel is not a reordering of what YouTube just
+	// offered. A live stream is the exception because its value expires: if it
+	// is on now, "you were already shown this" is not a reason to hide it, and
+	// by the time it would stop being a rail item it is over.
+	//
+	// This must be computed before the exclusion is applied. An earlier version
+	// looked up live videos after filtering, so a stream in the current rail was
+	// dropped before the boost could ever reach it — the panel showed no live
+	// streams at all while appearing to prioritise them.
+	live, err := s.currentlyLive()
+	if err != nil {
+		return nil, err
+	}
+	for id := range live {
+		delete(seen, id)
+	}
+
 	var ranked []scored
 	for id, sc := range rank {
 		if id == seed || id == HomeFrom || sc <= 0 || seen[id] {
@@ -260,15 +280,6 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// Serendipity: at high entropy, damp by popularity so the walk surfaces
 	// niche material instead of falling into gravity wells. This — not the
 	// crypto — is what delivers the anti-popularity promise (§3).
-	// A running livestream is the one thing worth keeping from YouTube's rail,
-	// because it is the only recommendation whose value expires — everything
-	// else can be watched later. Applied after popularity damping so a niche
-	// stream is not pushed back down by it.
-	live, err := s.currentlyLive()
-	if err != nil {
-		return nil, err
-	}
-
 	pop := float64(entropy) / 100.0
 	for i := range ranked {
 		m := meta[ranked[i].id]
