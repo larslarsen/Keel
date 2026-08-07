@@ -40,6 +40,15 @@ const (
 	// liveBoost lifts running streams above everything else. Large enough to be
 	// decisive, since a stream ranked fourth has already lost its advantage.
 	liveBoost = 6.0
+
+	// finishedLivePenalty pushes ended streams down without hiding them.
+	finishedLivePenalty = 0.15
+
+	// seedRestartShare is how much of the walk's restart mass returns to the
+	// video being watched, the rest spreading over the corpus. High enough that
+	// suggestions clearly follow what you are watching, low enough that a seed
+	// whose neighbours are all rail still has somewhere to go.
+	seedRestartShare = 0.75
 	// maxSuggestions caps the response.
 	maxSuggestions = 50
 )
@@ -184,7 +193,25 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	}
 
 	alpha := alphaForEntropy(entropy)
-	rank, via := walkFrom(g, map[string]float64{seed: 1.0}, alpha)
+
+	// Restart mostly at the seed, partly across the corpus.
+	//
+	// A pure seed restart is too thin on a young graph: the seed's only
+	// neighbours are the rail, the rail is excluded from output, and what is
+	// left is often two or three videos. The previous answer was to fall back to
+	// a corpus-wide walk when that happened — but that walk ignores the seed, so
+	// every video produced the same list and the panel appeared frozen while
+	// browsing, which is worse than being thin.
+	//
+	// Blending keeps both properties: the seed dominates, so suggestions change
+	// as you move, and there is always enough mass elsewhere to fill the list.
+	restart := map[string]float64{seed: seedRestartShare}
+	if roots, err := s.watchedRoots(); err == nil {
+		for k, v := range roots {
+			restart[k] += v * (1 - seedRestartShare)
+		}
+	}
+	rank, via := walkFrom(g, restart, alpha)
 
 	blocked, err := s.blocklistSet()
 	if err != nil {
@@ -237,31 +264,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// A corpus too small to reach past one hop would otherwise show nothing at
 	// all. An empty panel is worse than a familiar one, so fall back — and the
 	// caller is told, so the interface can say why.
-	// A seed with no second hop is the common case on a young corpus: the user
-	// has watched the video but nothing it leads to, so its neighbourhood is
-	// only the rail. Rather than hand the rail back, walk the whole corpus —
-	// everything they have actually watched — and suggest from that.
-	//
-	// "Something from what you have collected" is a real answer. "What YouTube
-	// just showed you" is not.
-	if len(ranked) == 0 {
-		roots, err := s.watchedRoots()
-		if err != nil {
-			return nil, err
-		}
-		if len(roots) > 0 {
-			out.FromCorpus = true
-			corpusRank, corpusVia := walkFrom(g, roots, alpha)
-			via = corpusVia
-			for id, sc := range corpusRank {
-				if id == seed || id == HomeFrom || sc <= 0 || seen[id] {
-					continue
-				}
-				ranked = append(ranked, scored{id, sc})
-			}
-		}
-	}
-	// Still nothing: the corpus cannot reach past this rail at all.
+	// Nothing at all: the corpus cannot reach past this rail yet.
 	if len(ranked) == 0 {
 		out.RailOnly = true
 		for id, sc := range rank {
@@ -291,9 +294,21 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 		}
 	}
 
+	// A stream that has finished is a bad recommendation: hours long, titled as
+	// though it were still on, and usually worth nothing once it ends. Being in
+	// the graph at all makes them rank like any other video, so they filled the
+	// panel. Penalised rather than removed — a past stream can still be the
+	// right answer, it just should not lead.
+	pastLive, err := s.everLive()
+	if err != nil {
+		return nil, err
+	}
 	for i := range ranked {
-		if live[ranked[i].id] {
+		switch {
+		case live[ranked[i].id]:
 			ranked[i].score *= liveBoost
+		case pastLive[ranked[i].id]:
+			ranked[i].score *= finishedLivePenalty
 		}
 	}
 	sort.Slice(ranked, func(a, b int) bool {
@@ -483,6 +498,27 @@ GROUP BY root`, HomeFrom)
 		counts[k] = v / total
 	}
 	return counts, nil
+}
+
+// everLive returns videos this node has ever seen carrying a LIVE badge.
+//
+// Distinct from currentlyLive, which is about right now. This is "was a stream",
+// and a stream that is over ranks poorly — see the penalty in Suggest.
+func (s *Store) everLive() (map[string]bool, error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT video_id FROM impressions WHERE badges_json LIKE '%LIVE%'`)
+	if err != nil {
+		return map[string]bool{}, nil
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			out[id] = true
+		}
+	}
+	return out, nil
 }
 
 // railFor returns the videos this user was shown alongside one context video.
