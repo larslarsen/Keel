@@ -368,20 +368,24 @@ const LEVELS = [
   },
   {
     n: 2,
-    name: "Catalogue only",
+    name: "Mirror",
     body:
-      "Would share facts about the videos themselves — title, channel, " +
-      "length, view count — and never which video was recommended after " +
-      "which. This is the part that makes search work for everyone. It still " +
-      "reveals which videos you came across, but not how you got there.",
+      "Lends disk space to store and pass on data other people published — " +
+      "the recommendation graph and titles that let suggestions reach past " +
+      "what you have seen yourself. Nothing you recorded is published. " +
+      "Requests ask for a bucket of thousands of videos at once and filter " +
+      "on your machine, and your computer uses a different network identity " +
+      "each session, so a peer answering cannot tell which video you wanted " +
+      "or link your requests together. Set the disk limit below.",
   },
   {
     n: 3,
     name: "Cohort aggregator",
     body:
       "Would add counts of which videos were recommended after which, " +
-      "grouped by rough position and day, with a threshold so anything only " +
-      "you saw stays hidden.",
+      "grouped by rough position and day, under threshold encryption: your " +
+      "report stays sealed unless enough other people report the same thing, " +
+      "so anything only you saw can never be read. Not built.",
   },
   {
     n: 4,
@@ -391,7 +395,7 @@ const LEVELS = [
       "YouTube already knows what it showed you — what changes is that " +
       "everyone else would too, and that YouTube would know you are the one " +
       "publishing it. Researchers running similar projects on other platforms " +
-      "have been retaliated against. Cannot be withdrawn once copied.",
+      "have been retaliated against. Cannot be withdrawn once copied. Not built.",
   },
 ];
 

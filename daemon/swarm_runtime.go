@@ -62,8 +62,8 @@ var (
 // that publishes a funnel and is why it is a separate, explicit choice.
 func swarmConfigFor(level int) swarm.Config {
 	return swarm.Config{
-		Serve:                level >= store.LevelCatalogue,
-		Fetch:                level >= store.LevelCatalogue,
+		Serve:                level >= store.LevelMirror,
+		Fetch:                level >= store.LevelMirror,
 		ServeOwnObservations: level >= store.LevelCohort,
 		// A stable network identity turns k-anonymous prefix requests back
 		// into a trajectory, so every level that is not deliberately

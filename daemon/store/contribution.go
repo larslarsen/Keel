@@ -37,11 +37,19 @@ const (
 	// No feature may ever be gated above it — that would make the privacy
 	// promise a toll booth.
 	LevelPersonal = 1
-	// LevelCatalogue shares video metadata only — no edges. Not implemented.
-	LevelCatalogue = 2
-	// LevelCohort adds STAR-aggregated edge counts. Not implemented.
+	// LevelMirror lends storage and bandwidth: the node holds and re-serves
+	// data other people published, and fetches in buckets for itself.
+	//
+	// Named for what it does. It was LevelCatalogue when the plan was to share
+	// video metadata and no edges, which is neither what shipped nor what makes
+	// suggestions reach past a user's own history. Nothing this node observed is
+	// published at this level — that begins at LevelCohort.
+	LevelMirror = 2
+	// LevelCohort publishes this node's own edge counts under threshold
+	// encryption. Not implemented — STAR does not exist yet.
 	LevelCohort = 3
-	// LevelTransparency publishes attributable funnel state. Not implemented.
+	// LevelTransparency publishes attributable funnel state, deliberately
+	// identifiable. Not implemented.
 	LevelTransparency = 4
 
 	metaContributionKey = "contribution_level"
@@ -52,7 +60,7 @@ const (
 // Raise this only when the corresponding pipeline exists. It is what the UI
 // reads to decide which options are selectable, so a stale value here would let
 // the interface promise something the daemon cannot do.
-const MaxImplementedLevel = LevelCatalogue
+const MaxImplementedLevel = LevelMirror
 
 // ContributionLevel returns the stored level, defaulting to Personal.
 //
