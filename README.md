@@ -109,12 +109,29 @@ look at it on a schedule and publish what we find.
 ## Status
 
 The local product works: recording, search, suggestions, channel blocking,
-analysis, export and wipe. The peer-to-peer layer is built and tested, though
-not yet between two machines over the open internet — that is the next
-milestone, and it needs a second person more than it needs more code.
+analysis, export and wipe. The peer-to-peer layer is built and passes its tests,
+but has only ever run against loopback.
 
-Aggregate publication under threshold encryption is designed and not built. It
-is gated on a measurement that needs more than one corpus to make.
+**The next milestone is people, not code.** Not one more person — several, and
+the reasons are specific:
+
+- **NAT traversal only means something across different networks.** Two machines
+  behind the same router prove nothing about the case that actually matters.
+- **A gossip mesh needs a handful of nodes to behave like one.** With two, every
+  message is a direct hop and none of the routing is exercised.
+- **The measurement that gates aggregate publication needs several independent
+  corpora.** How much do two people's recommendations overlap? Two people give
+  one number, and one number could be a coincidence.
+- **The installer fails on machines we do not have.** Windows, macOS, browsers
+  and Go versions we have never seen are where new people actually get stuck.
+- **The livestream index is only useful once enough people watch enough
+  different things.** One person's view of "what is live" is one person's.
+
+If you want to help, [INSTALL.md](INSTALL.md) is about ten minutes, and an
+issue saying what broke is worth more than a patch right now.
+
+Aggregate publication under threshold encryption is designed and not built,
+gated on the overlap measurement above.
 
 Not in the Chrome Web Store yet. The plan is to apply once, with the whole thing
 finished.

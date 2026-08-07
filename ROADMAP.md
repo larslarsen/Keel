@@ -28,12 +28,19 @@ That was wrong. It confused *not in this phase* with *not in this product*.
 
 Stages 5–7 are the point. Stages 1–4 are what make them possible.
 
-**The one thing blocking 5b from being finished is not code.** The transport,
-both datasets, bucketing and identity rotation are built and tested against
-loopback. NAT traversal, relay, hole punching and DHT provider records all
-behave differently in the wild, and none of them have been exercised between two
-real machines. That test is the next milestone, and it needs a second install
-rather than another ticket.
+**The one thing blocking 5b from being finished is not code — it is testers,
+plural.** The transport, both datasets, bucketing and identity rotation are built
+and tested against loopback. NAT traversal, relay, hole punching and DHT provider
+records all behave differently in the wild.
+
+Two installs is not the bar. Two machines behind one router say nothing about NAT
+traversal; a two-node gossip mesh exercises no routing; and the cross-user
+overlap figure that gates STAR needs several independent corpora, since two give
+one number and one number could be a coincidence. Different operating systems and
+browsers matter too — the installer fails on machines we do not have.
+
+So the milestone is a handful of people on different networks, and it is reached
+by recruiting rather than by writing another ticket.
 
 ## Why the order is what it is
 
