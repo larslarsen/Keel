@@ -1,11 +1,46 @@
 # Keel
 
-Browser extension + local daemon that give you **transparency and control over
-the video recommendations you're shown** — starting with YouTube.
+**Keel replaces YouTube's recommendations with your own.**
 
-Keel shows you what the recommendation engine is actually serving, and lets you
-act on it (hide, downrank, surface alternatives) without sending your viewing
-history anywhere it shouldn't go.
+It hides the suggestion rail and puts a different list there — one computed on
+your machine, from what you have actually been shown, with a control that runs
+from *focus* to *serendipity*. Turn it up and it stops handing you the obvious
+next thing.
+
+That is the point. A recommendation engine optimised for watch time will find
+whatever keeps you there, and you have no say in it and no record of it. Keel
+gives you both.
+
+## What it does
+
+- **Suggests, rather than repeating.** A random walk over your own recorded
+  graph. YouTube's rail is how the walk travels, never what it recommends — if
+  a video was just offered to you, it is not a suggestion.
+- **Keeps the receipts.** Every recommendation you were shown, on which surface,
+  in which position, and when. Searchable. That record is the thing nobody
+  otherwise has, including researchers.
+- **Finds livestreams nobody else surfaces.** A live index shared between Keel
+  users, showing streams *actually* live now rather than the popular handful
+  YouTube's own live search returns. Most livestreams have almost no audience,
+  which is exactly why they are worth finding.
+- **Blocks channels properly.** Not "show fewer" — gone, everywhere.
+- **Shows you what is being pushed hardest**, and which video led to which.
+
+## Where your data goes
+
+Nowhere, by default. The recording lives in a SQLite file on your machine, there
+is no account, and there is no server to send it to — none exists.
+
+Above the default you can lend disk space to mirror what *other* people have
+published, which is what lets suggestions reach past your own history. Even
+then, nothing you recorded is published: that needs threshold encryption, which
+is not built.
+
+The one exception, at every setting: when Keel sees a livestream it tells other
+Keel users the stream exists. That notice carries no sender — not your address,
+not an identifier for your copy of Keel. It says a stream is on, not who saw it.
+
+Full detail in [PRIVACY.md](PRIVACY.md).
 
 ## Install
 
@@ -56,32 +91,33 @@ libp2p, which is large. What we are claiming is that you can see all of it,
 that it cannot change underneath you without the build breaking, and that we
 look at it on a schedule and publish what we find.
 
-## What it is
+## How it is built
 
-- **Extension** — reads the *rendered* page DOM only. No MAIN-world scripts, no
-  `fetch`/XHR interception, no YouTube Data API calls. It observes the rail you
-  already see and reports structured records to the daemon.
-- **Daemon (Go)** — the product. Owns blocking/downranking decisions and the
-  local contribution corpus. Observation data is held in memory and bounded; it
-  is never persisted in browser storage.
-- **Publication is metadata-only.** The release path aggregates signals (STAR)
-  and publishes over free channels, so the project stays clear of video-archiving
-  exposure.
+- **Extension** — reads the *rendered* page only. No MAIN-world scripts, no
+  `fetch`/XHR interception, no YouTube Data API calls. It sees the same rail you
+  do and hands structured records to the daemon. It stores no observations
+  itself, not in `localStorage`, not in extension storage.
+- **Daemon (Go)** — the product. The corpus, the suggestion walk, blocking,
+  search, thumbnails, and the peer-to-peer layer all live here. Splitting it this
+  way is deliberate: the extension can stay small and stop changing, while the
+  part that does the work keeps improving.
+- **Peer-to-peer, no server.** Discovery rides the public IPFS DHT as a
+  directory; nodes serve each other directly. Requests go out in buckets of
+  thousands rather than naming one video, and network identity is a fresh key
+  each session, so a peer answering you learns very little.
 
-## Why
+## Status
 
-Recommendation feeds shape what a large share of people watch, with little
-visibility into *why* a given video appeared or *how* to push back on it. Keel
-makes the feed legible and gives the viewer a local, auditable control surface.
+The local product works: recording, search, suggestions, channel blocking,
+analysis, export and wipe. The peer-to-peer layer is built and tested, though
+not yet between two machines over the open internet — that is the next
+milestone, and it needs a second person more than it needs more code.
 
-## Privacy posture
+Aggregate publication under threshold encryption is designed and not built. It
+is gated on a measurement that needs more than one corpus to make.
 
-- No observation data in browser storage (in-memory, bounded, flushed on reconnect).
-- No raw search queries stored — queries are hashed.
-- No runtime dependencies, no framework, no bundler, no build step in the
-  extension. Plain ES modules; the daemon is Go.
-- Minimum permissions: `sidePanel`, `storage`, `nativeMessaging`, `alarms`,
-  `scripting`, plus host access to `youtube.com` only.
+Not in the Chrome Web Store yet. The plan is to apply once, with the whole thing
+finished.
 
 ## Repository layout
 
@@ -94,12 +130,8 @@ makes the feed legible and gives the viewer a local, auditable control surface.
 | `DESIGN_v2.md` | Architecture and rationale (load-bearing sections marked). |
 | `BUILD_P0.md` | P0 spec and acceptance record. |
 | `ROADMAP.md` | Phase state and queue. |
-
-## Status
-
-P0 is implemented and the fixture-driven test suite passes. This is an early,
-serving-phase project: the local control surface works; cross-user aggregation is
-the next stage.
+| `INSTALL.md` | Build and install, for people who have never built software. |
+| `PRIVACY.md` | What is recorded, what leaves, and what does not. |
 
 ## Licence
 
