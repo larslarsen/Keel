@@ -184,3 +184,23 @@ func prewarm(st *store.Store, videoID string) {
 		}
 	}()
 }
+
+// swarmStatus reports what the network layer is doing, for the interface.
+//
+// Reported rather than logged: a peer-to-peer feature that silently does
+// nothing is indistinguishable from one that is working, and the first thing
+// anyone will ask is whether they connected to anybody.
+func swarmStatus() map[string]any {
+	if swarmNode == nil {
+		return map[string]any{"up": false}
+	}
+	out := map[string]any{
+		"up":    true,
+		"peers": swarmNode.Peers(),
+		"id":    swarmNode.ID().String(),
+	}
+	if li := swarmNode.Live(); li != nil {
+		out["live_indexed"] = li.Size()
+	}
+	return out
+}

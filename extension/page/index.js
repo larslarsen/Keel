@@ -399,6 +399,32 @@ const LEVELS = [
   },
 ];
 
+/**
+ * Show whether the peer network is doing anything.
+ *
+ * A peer-to-peer feature that silently connects to nobody looks exactly like
+ * one that works, so this is the first question anyone will have.
+ */
+function renderSwarm(sw) {
+  const row = document.getElementById("swarm-row");
+  if (!row) return;
+  if (!sw || !sw.up) {
+    row.textContent =
+      "Not connected to the peer network. That is normal at the default " +
+      "setting for everything except livestreams, and expected if this " +
+      "machine has no route out.";
+    return;
+  }
+  const peers = Number(sw.peers) || 0;
+  const live = Number(sw.live_indexed) || 0;
+  row.textContent =
+    (peers === 0
+      ? "On the network, but no peers connected yet — nobody else is reachable right now."
+      : `Connected to ${peers} peer${peers === 1 ? "" : "s"}.`) +
+    (live ? ` ${live} livestream${live === 1 ? "" : "s"} known.` : "") +
+    (sw.id ? ` This node: ${String(sw.id).slice(-8)}` : "");
+}
+
 async function refreshConsent() {
   const row = document.getElementById("consent-row");
   const actions = document.getElementById("consent-actions");
@@ -637,6 +663,7 @@ async function refreshStats() {
     setDaemonUi(Boolean(st.connected));
     const s = st.stats;
     if (!s) return;
+    renderSwarm(s.swarm);
     el.total.textContent = String(s.total ?? 0);
     el.watch.textContent = String(s.by_surface?.WATCH_NEXT ?? 0);
     el.home.textContent = String(s.by_surface?.HOME ?? 0);

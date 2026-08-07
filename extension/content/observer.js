@@ -106,6 +106,16 @@ async function send(type, payload) {
 }
 
 function buildCtx() {
+  // A scan queued before an SPA navigation can run after the URL has already
+  // changed but before onNavigate has processed it. Building a context then
+  // pairs the new page's surface with the previous page's page_load_id, which
+  // files homepage rows under a watch page. Observed in the corpus: one page
+  // load carrying both surfaces thirteen minutes apart.
+  //
+  // lastHref is the URL onNavigate last accepted, so a mismatch means the scan
+  // belongs to a page that is already gone. Dropping it costs nothing — the
+  // navigation about to be processed will scan the new page properly.
+  if (location.href !== lastHref) return null;
   const { surface, context_video_id } = surfaceFromUrl(location.href);
   if (surface === "WATCH_NEXT") {
     if (!context_video_id) return null;

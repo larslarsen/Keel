@@ -126,7 +126,13 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		if err != nil {
 			return replyErr(out, env.ID, err)
 		}
-		return reply(out, env.ID, "STATS_RESULT", stats)
+		// Whether the network is doing anything is otherwise only visible in
+		// the daemon's log, which nobody reads. A user who turns on sharing
+		// deserves to see whether it connected to anything at all.
+		return reply(out, env.ID, "STATS_RESULT", struct {
+			*bridge.StatsPayload
+			Swarm map[string]any `json:"swarm"`
+		}{stats, swarmStatus()})
 	case "EXPORT":
 		return handleExport(env, out, st)
 	case "WIPE":
