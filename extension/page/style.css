@@ -176,6 +176,13 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
   white-space: nowrap;
   opacity: 0.8;
 }
+#live-table td.live-thumb {
+  padding-right: 8px;
+  width: 128px;
+}
+#live-table td.live-thumb .thumb {
+  display: block;
+}
 #live-table .r-sub {
   opacity: 0.7;
 }

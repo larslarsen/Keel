@@ -234,6 +234,7 @@ function renderLive(res) {
     const tr = document.createElement("tr");
     const platform = s.p || "yt";
     tr.innerHTML =
+      `<td class="live-thumb">${thumbHtml(s.v)}</td>` +
       `<td class="live-where">${escapeHtml(platformLabel(platform))}</td>` +
       `<td><a href="${escapeHtml(liveUrl(s.v, platform))}" target="_blank" rel="noreferrer">` +
       `${escapeHtml(s.t || s.v)}</a>` +
@@ -242,6 +243,8 @@ function renderLive(res) {
       `<td>${escapeHtml(liveFor(s))}</td>` +
       `<td>${escapeHtml(fmtAgo(s.s ?? s.last_seen))}</td>`;
     el.liveList.appendChild(tr);
+    const img = tr.querySelector("img.thumb[data-vid]");
+    fillThumb(img, s.v);
   }
 }
 
