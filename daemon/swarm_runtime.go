@@ -124,9 +124,10 @@ func announceLive(imps []bridge.Impression) {
 			continue
 		}
 		rec := swarm.LiveRecord{
-			VideoID: imp.VideoID,
-			Title:   imp.Title,
-			SeenAt:  imp.ObservedAt,
+			VideoID:   imp.VideoID,
+			Title:     imp.Title,
+			SeenAt:    imp.ObservedAt,
+			StartedAt: imp.ObservedAt, // node's earliest-known live sighting = best lower bound on start
 		}
 		if imp.ChannelID != nil {
 			rec.ChannelID = *imp.ChannelID

@@ -550,6 +550,15 @@ func (li *LiveIndex) merge(r LiveRecord) {
 		e = &liveEntry{rec: rec, firstSeen: now}
 		li.entries[key] = e
 	}
+	// Accumulate the earliest start seen. A peer (or this node's earlier
+	// sighting) that spotted the stream live before we did lowers StartedAt,
+	// which is the lower bound on how long it has been running — and the field
+	// the maxLiveAge cap keys off. Without this, a later report with
+	// StartedAt=0 (the default when a sender omits it) would wipe a real
+	// start time, defeating the staleness filter.
+	if r.StartedAt > 0 && (e.rec.StartedAt == 0 || r.StartedAt < e.rec.StartedAt) {
+		e.rec.StartedAt = r.StartedAt
+	}
 	// Keep the richest version seen: a later report may carry a title an
 	// earlier one lacked.
 	if r.Title != "" {

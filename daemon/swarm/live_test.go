@@ -604,6 +604,44 @@ func TestDeadStreamByStartedAt(t *testing.T) {
 	}
 }
 
+// TestMergeMinAccumulatesStartedAt locks the rule that merge keeps the EARLIEST
+// StartedAt seen across reports. Regression for the announceLive bug: that path
+// used to send StartedAt=0, and an incoming 0 must not clobber a real start
+// time a peer or earlier sighting already supplied — otherwise the maxLiveAge
+// cap (which keys off StartedAt) silently degrades to firstSeen and stale
+// streams linger (the "17+ hours / 5 min ago" class).
+func TestMergeMinAccumulatesStartedAt(t *testing.T) {
+	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
+	now := time.Now()
+	// A peer already supplied a real start 3h ago (within maxLiveAge, so it is
+	// not frozen by the age guard).
+	t3 := now.Add(-3 * time.Hour).UnixMilli()
+
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-2 * time.Minute).UnixMilli(), StartedAt: t3})
+	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != t3 {
+		t.Fatalf("first merge did not record StartedAt: want %d, got %d", t3, got)
+	}
+
+	// A later report OMITS StartedAt (the pre-fix announceLive behaviour).
+	// It must NOT clobber the real 3h start with 0.
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-2 * time.Minute).UnixMilli()})
+	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != t3 {
+		t.Fatalf("merge with StartedAt=0 clobbered real start: want %d, got %d", t3, got)
+	}
+
+	// A later report claims a LATER start (1h ago). Min must hold at 3h.
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-1 * time.Minute).UnixMilli(), StartedAt: now.Add(-1 * time.Hour).UnixMilli()})
+	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != t3 {
+		t.Fatalf("merge raised StartedAt on a later report: want %d, got %d", t3, got)
+	}
+
+	// And a genuinely-earlier start (5h) from another reporter must lower it.
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-1 * time.Minute).UnixMilli(), StartedAt: now.Add(-5 * time.Hour).UnixMilli()})
+	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != now.Add(-5*time.Hour).UnixMilli() {
+		t.Fatalf("merge did not adopt an earlier start: want %d, got %d", now.Add(-5*time.Hour).UnixMilli(), got)
+	}
+}
+
 // TestDeadStreamTombstoneBlocksResurrection reproduces the failure of the first
 // fix attempt: freezing set lastSeen = firstSeen so the sweep deleted the entry,
 // but a subsequent peer re-announcement re-inserted it fresh (firstSeen = now),
