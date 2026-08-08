@@ -431,11 +431,28 @@ func writeEnv(out io.Writer, env *bridge.Envelope) error {
 	if err != nil {
 		return err
 	}
-	if len(b) > bridge.MaxHostToBrowser {
-		log.Printf("drop oversized response %d bytes", len(b))
-		return nil
+	if len(b) <= bridge.MaxHostToBrowser {
+		return bridge.WriteMessage(out, b)
 	}
-	return bridge.WriteMessage(out, b)
+	// Response exceeds the 1 MiB host→browser native-messaging cap. Dropping
+	// it (returning nil) leaves the client's request() promise hanging until
+	// its 8s timeout with no error — a silent failure. Instead reply with a
+	// small ERROR envelope carrying the same correlation id, so the client
+	// rejects cleanly and the interface can say why.
+	log.Printf("oversized response %d bytes (cap %d) for id %s type %s",
+		len(b), bridge.MaxHostToBrowser, env.ID, env.Type)
+	errEnv, e := bridge.NewEnvelope(env.ID, "ERROR", bridge.ErrorPayload{
+		Message: fmt.Sprintf("response %d bytes exceeds 1 MiB native-messaging limit", len(b)),
+		Code:    "response_too_large",
+	})
+	if e != nil {
+		return e
+	}
+	eb, e := errEnv.Encode()
+	if e != nil {
+		return e
+	}
+	return bridge.WriteMessage(out, eb)
 }
 
 func mustJSON(v any) json.RawMessage {
