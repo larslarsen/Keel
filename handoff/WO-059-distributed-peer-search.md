@@ -272,6 +272,55 @@ sound. Listed in priority order.
   is NO real-versus-decoy distinction — the node genuinely takes the whole
   bucket, so repetition adds no signal.
 
+## Privacy degradation at small scale + user warning
+
+The bucket's k-anonymity is a function of how much data the swarm holds, not of
+anything cryptographic. When the network is small, a "common" token like "rec"
+may match only 3 videos across ALL peers — so fetching bucket "rec" tells the
+serving peer "you searched one of these 3," k=3, no privacy. This is unavoidable
+at launch (coupled to WO-058: empty peer graph). The honest move is to surface it,
+not pretend.
+
+### Token-bucket population reporting (Lars, 2026-08-08)
+
+Each node already builds its token → videoID inverted index locally (Construction
+B, server side). So it knows, per token, exactly how many videos are in that
+bucket. Reporting the COUNT costs nothing extra — the table exists; expose the
+size per token.
+
+- **What it buys:** a querying node learns the population of each token bucket
+  across the network — not the contents, just "token 'rec' = 4,200 videos,
+  token 'xyz' = 3." A count reveals nothing about which video YOU want, so it has
+  zero privacy cost. Big counts are harmless to broadcast; small counts ARE the
+  warning. Self-protecting.
+- **How to aggregate:** extend the existing HLL sketch infra (sketch.go:214
+  `Intersection`) from "how big is the network" to "how big is each token bucket"
+  — a per-token cardinality union across peers. (Brute-force alternative: fetch
+  each bucket and count what comes back — but fetching a 3-video bucket IS the
+  leak, so report counts SEPARATELY from contents.)
+- **Attack resistance:** a node could lie, claiming 4,200 for "rec" when it holds
+  3. Aggregate with **MIN across peers** — warn if any honest peer reports small;
+  a liar reporting large is overridden by the minimum. A lying-INFLATED count only
+  hurts the node that trusts it, and min-aggregation makes the conservative
+  choice automatic.
+- **Drives the warning:** aggregate bucket population → gradient (green/amber/red
+  by bucket size). Per-token detail lets the client drop or substitute a token
+  whose bucket is too small, or show "this query isn't private yet."
+
+### Warning design
+
+- **Macro signal:** `keel_peers` from `swarmStatus()` (swarm_runtime.go:193-213)
+  — how many real installs are online. Simple, already available.
+- **Per-query signal:** the per-token bucket populations from the reporting
+  above. Threshold matches the existing STAR K floor (≥50 contributors): if the
+  smallest token bucket for a query is < ~50 videos, warn.
+- **Copy (honest, not scare-mongering):** "Keel is early. With this little data
+  in the network, a peer serving your search could narrow down what you looked
+  for. This improves as more people join." Gradient by bucket size.
+
+Couples to WO-059 vector 3 (bucket-population inference — same signal used
+benevolently as a warning) and WO-058 (empty graph is the root cause).
+
 ## Acceptance (when built)
 
 - [ ] Static token/term → videoID inverted index built from local catalogue.
@@ -280,3 +329,9 @@ sound. Listed in priority order.
 - [ ] Local intersection yields the precise result; no peer observes the query.
 - [ ] Test: a node searches a term another node holds, peer logs show only
       token-buckets, never the term or the result.
+- [ ] Each node reports per-token bucket population counts (from its local index)
+      without revealing bucket contents.
+- [ ] Network-wide per-token counts aggregated via HLL sketch (sketch.go),
+      MIN-across-peers for attack resistance.
+- [ ] Search UI shows a gradient warning driven by aggregate bucket population
+      (threshold ≈ STAR K of 50); copy states the small-network limit honestly.
