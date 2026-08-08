@@ -11,7 +11,48 @@ export {
 } from "./extract_yt.js";
 
 /** Video card selectors — keep in sync with RENDERER_KEYS in extract_yt.js */
-import { DEFAULT_SELECTORS, pick, pickAll } from "../lib/selectors.js";
+import {
+  DEFAULT_SELECTORS,
+  alternation,
+  pick,
+  pickAll,
+} from "../lib/selectors.js";
+
+/**
+ * Matchers built from the config's vocabulary.
+ *
+ * The pattern shapes live here, compiled: a count is digits then an optional
+ * magnitude, an age is a number then a unit then a trailing marker. Only the
+ * words come from config, and every one is escaped on the way in — see
+ * `escapeToken`. Cached per config object so a scan does not rebuild them.
+ */
+const matcherCache = new WeakMap();
+function matchers(cfg) {
+  let m = matcherCache.get(cfg);
+  if (m) return m;
+  const v = cfg.vocabulary || DEFAULT_SELECTORS.vocabulary;
+  const ago = alternation(v.ago);
+  m = {
+    // "2 weeks ago", "1h ago" — a number, a unit, then the trailing marker.
+    age: new RegExp(`(\\d+\\s*[a-z]{1,6}\\s+(?:${ago}))\\s*$`, "i"),
+    // Words that make a metadata row worth reading at all.
+    interesting: new RegExp(
+      [alternation(v.views), ago, alternation(v.broadcast)]
+        .filter(Boolean)
+        .join("|"),
+      "i",
+    ),
+    viewWords: new RegExp(`(?:${alternation(v.views)})`, "gi"),
+    magnitudes: (v.magnitudes || []).map((x) => String(x).toLowerCase()),
+    live: new RegExp(`\\b(?:${alternation(v.live)})\\b`, "i"),
+    liveLoose: new RegExp(`(?:${alternation(v.live)})`, "i"),
+    verified: new RegExp(`(?:${alternation(v.verified)})`, "i"),
+    sponsored: new RegExp(`\\b(?:${alternation(v.sponsored)})\\b`, "i"),
+    ageGated: new RegExp(`(?:${alternation(v.ageGated)})`, "i"),
+  };
+  matcherCache.set(cfg, m);
+  return m;
+}
 
 /**
  * Selectors are configuration, not constants (WO-056).
@@ -61,21 +102,24 @@ export function parseDuration(text) {
 }
 
 /** @param {string | null | undefined} text */
-export function parseViewCount(text) {
+export function parseViewCount(text, cfg = DEFAULT_SELECTORS) {
   if (text == null) return null;
   let s = String(text).trim().toLowerCase();
-  if (!s || s === "no views") return 0;
-  s = s.replace(/views?|watching/g, "").replace(/,/g, "").trim();
-  const m = s.match(/^([\d.]+)\s*([kmb])?$/i);
+  if (!s) return 0;
+  // "No views" and its equivalents: a count word with no number in front.
+  if (/^no\s/i.test(s)) return 0;
+  const mt = matchers(cfg);
+  s = s.replace(mt.viewWords, "").replace(/,/g, "").trim();
+  const magn = mt.magnitudes.join("");
+  const m = s.match(new RegExp(`^([\\d.]+)\\s*([${magn}])?$`, "i"));
   if (!m) {
     const n = Number(s);
     return Number.isFinite(n) ? n : null;
   }
   let n = Number(m[1]);
   const u = (m[2] || "").toLowerCase();
-  if (u === "k") n *= 1e3;
-  else if (u === "m") n *= 1e6;
-  else if (u === "b") n *= 1e9;
+  const idx = mt.magnitudes.indexOf(u);
+  if (idx >= 0) n *= Math.pow(1000, idx + 1);
   return Math.round(n);
 }
 
@@ -153,23 +197,24 @@ export function surfaceFromUrl(href) {
  * @param {string} text
  * @returns {string | null} e.g. "2w ago", "15 min ago"
  */
-export function parseAge(text) {
-  const m = String(text || "").match(/(\d+\s*[a-z]{1,6}\s+ago)\s*$/i);
+export function parseAge(text, cfg = DEFAULT_SELECTORS) {
+  const m = String(text || "").match(matchers(cfg).age);
   return m ? m[1].replace(/\s+/g, " ").trim() : null;
 }
 
 /** @param {Element} el */
 export function extractBadges(el, cfg = DEFAULT_SELECTORS) {
   const out = new Set();
+  const mt = matchers(cfg);
   for (const n of pickAll(el, cfg.badges.containers)) {
-    const t = (n.textContent || "").toUpperCase();
-    if (/\bLIVE\b/.test(t)) out.add("LIVE");
-    if (/VERIFIED|OFFICIAL ARTIST/.test(t)) out.add("VERIFIED");
-    if (/SPONSORED|PAID|\bAD\b/.test(t)) out.add("SPONSORED");
-    if (/AGE|MEMBERS ONLY|18\+/.test(t)) out.add("AGE_GATED");
+    const t = (n.textContent || "").trim();
+    if (mt.live.test(t)) out.add("LIVE");
+    if (mt.verified.test(t)) out.add("VERIFIED");
+    if (mt.sponsored.test(t)) out.add("SPONSORED");
+    if (mt.ageGated.test(t)) out.add("AGE_GATED");
   }
   const overlay = pick(el, cfg.badges.overlay);
-  if (/LIVE/i.test(overlay?.textContent || "")) out.add("LIVE");
+  if (mt.liveLoose.test(overlay?.textContent || "")) out.add("LIVE");
   return [...out];
 }
 
@@ -205,8 +250,10 @@ function readCompactFields(el, cfg = DEFAULT_SELECTORS) {
   let published_at = null;
   for (const span of pickAll(el, c.metadata)) {
     const t = (span.textContent || "").trim();
-    if (/view|watching/i.test(t)) view_count = parseViewCount(t);
-    else if (published_at == null) published_at = parseAge(t);
+    if (matchers(cfg).interesting.test(t) && /\d/.test(t)) {
+      if (view_count == null) view_count = parseViewCount(t, cfg);
+    }
+    if (published_at == null) published_at = parseAge(t, cfg);
   }
 
   return {
@@ -298,12 +345,12 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
   let published_at = null;
   for (const n of pickAll(el, c.metadata)) {
     const t = (n.textContent || "").replace(/\s+/g, " ").trim();
-    if (!t || !/view|watching|ago|streamed|premier/i.test(t)) continue;
+    if (!t || !matchers(cfg).interesting.test(t)) continue;
     if (view_count == null) {
       const num = t.match(/^([\d.,]+\s*[kmb]?)\b/i);
       if (num) view_count = parseViewCount(num[1]);
     }
-    if (published_at == null) published_at = parseAge(t);
+    if (published_at == null) published_at = parseAge(t, cfg);
   }
 
   return {

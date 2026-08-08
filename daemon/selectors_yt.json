@@ -86,6 +86,43 @@
     "videoRenderer",
     "lockupViewModel"
   ],
+  "vocabulary": {
+    "ago": [
+      "ago"
+    ],
+    "views": [
+      "views",
+      "view",
+      "watching"
+    ],
+    "live": [
+      "live"
+    ],
+    "verified": [
+      "verified",
+      "official artist"
+    ],
+    "sponsored": [
+      "sponsored",
+      "paid",
+      "ad"
+    ],
+    "ageGated": [
+      "age",
+      "members only",
+      "18+"
+    ],
+    "broadcast": [
+      "streamed",
+      "premiered",
+      "premieres"
+    ],
+    "magnitudes": [
+      "k",
+      "m",
+      "b"
+    ]
+  },
   "badges": {
     "containers": [
       "ytd-badge-supported-renderer",

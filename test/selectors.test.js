@@ -177,3 +177,49 @@ describe("containers and renderer keys are config too", () => {
     assert.equal(validateSelectorConfig(cfg), null);
   });
 });
+
+describe("vocabulary is data, patterns are not", () => {
+  it("a wording change is a config change", async () => {
+    const { parseAge, parseViewCount } = await import(
+      "../extension/content/extract.js"
+    );
+
+    // What ships today.
+    assert.equal(parseAge("Streamed 2 weeks ago"), "2 weeks ago");
+    assert.equal(parseViewCount("1.2K views"), 1200);
+
+    // YouTube starts saying something else. Only words change.
+    const cfg = cloneDefault();
+    cfg.vocabulary.ago = ["previously"];
+    cfg.vocabulary.views = ["plays"];
+
+    assert.equal(parseAge("2 weeks previously", cfg), "2 weeks previously");
+    assert.equal(parseViewCount("1.2K plays", cfg), 1200);
+    assert.equal(
+      parseAge("2 weeks ago", cfg),
+      null,
+      "the old wording should stop matching once config replaces it"
+    );
+  });
+
+  it("magnitudes come from config, in order", async () => {
+    const { parseViewCount } = await import("../extension/content/extract.js");
+    assert.equal(parseViewCount("3M views"), 3_000_000);
+    const cfg = cloneDefault();
+    cfg.vocabulary.magnitudes = ["t"]; // a locale with one suffix meaning 10^3
+    assert.equal(parseViewCount("3T views", cfg), 3000);
+  });
+
+  it("a token carrying regex syntax is refused, and escaped if it ever arrived", async () => {
+    const { escapeToken } = await import("../extension/lib/selectors.js");
+    const cfg = cloneDefault();
+    cfg.vocabulary.live = ["(?:.*)"];
+    assert.equal(
+      validateSelectorConfig(cfg),
+      null,
+      "a token that is really a pattern must be refused"
+    );
+    // Belt and braces: even a token that passed validation is escaped at use.
+    assert.equal(escapeToken("a.*b"), "a\\.\\*b");
+  });
+});

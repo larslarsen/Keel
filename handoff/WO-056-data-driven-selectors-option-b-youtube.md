@@ -130,22 +130,31 @@ has: container selectors for both surfaces (11 across two ordered chains) and th
 `ytInitialData` renderer keys are now config. Every selector the extension uses
 to find YouTube's content comes from the daemon.
 
-**What cannot move, and why it is not a limitation to fix later.** 28 parsing
-sites in `extract.js` interpret the text once it is found — durations, view
-counts, ages, badge labels. Those are regexes, and a daemon-supplied regex is
-logic: it decides behaviour rather than location. Shipping one would be exactly
-the thing DESIGN_BOOTSTRAP forbids and the Web Store asks about.
+**Third bite — the parser vocabulary, 2026-08-08.** Lars: finish it. The words
+those parsers look for are now config too: the trailing marker on a date, the
+words meaning a view count, the badge labels, the magnitude suffixes.
+
+The pattern *shapes* stay compiled — a count is digits then an optional
+magnitude, an age is a number then a unit then a marker — and every token from
+config is escaped before it reaches a regex. A token carrying `(?:.*)` is
+refused by validation, and escaped anyway if it somehow arrived. That keeps the
+daemon supplying nouns rather than behaviour.
+
+This is the part that actually breaks. `parseAge` failed earlier this week on
+real wording, and 27% of stored dates were malformed as a result. A locale
+saying "Aufrufe" instead of "views", or YouTube writing "1 hour ago" instead of
+"1h ago", is now a config change.
 
 The line that falls out is worth stating because it settles future cases without
 re-arguing them:
 
-> **Where to look is data. How to read what you find is logic.**
+> **Where to look is data. Which words to look for is data. How to combine them
+> is logic, and stays in the extension.**
 
-If YouTube changes its wording rather than its markup — "1h ago" becoming "1 hour
-ago" — that is a parser change and needs a republish. The vocabulary inside those
-parsers (unit words, separators) could become data later without crossing the
-line, if that turns out to be where breakage actually happens. It has not been
-yet.
+What still needs a republish: a change in the *shape* of what YouTube writes, not
+its vocabulary. If a duration stopped being colon-separated, or a count stopped
+being "number then suffix", no config fixes that. Those shapes have been stable
+for years, which is why this is the right place to stop.
 
 Also fixed while moving the containers: the validator rejected `>`, the CSS child
 combinator, because the forbidden-character check was written to catch `=>`.

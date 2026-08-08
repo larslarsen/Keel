@@ -130,6 +130,28 @@ export const DEFAULT_SELECTORS = Object.freeze({
   // in the same sense as a selector — they say where to look, not what to do.
   rendererKeys: ["compactVideoRenderer", "videoRenderer", "lockupViewModel"],
 
+  // Words the parsers look for. Not patterns — the pattern shapes stay compiled
+  // in extract.js, and every token here is escaped before it reaches a regex.
+  //
+  // This is the part that actually breaks. YouTube changing "1h ago" to "1 hour
+  // ago", or a locale saying "Aufrufe" instead of "views", is a wording change,
+  // and a wording change should not need a new extension.
+  vocabulary: {
+    // Trailing marker on a relative date: "2 weeks ago".
+    ago: ["ago"],
+    // Words meaning a view or concurrent-viewer count.
+    views: ["views", "view", "watching"],
+    // Text that marks a card as a running stream.
+    live: ["live"],
+    verified: ["verified", "official artist"],
+    sponsored: ["sponsored", "paid", "ad"],
+    ageGated: ["age", "members only", "18+"],
+    // Marks a card as a past or upcoming broadcast, which reads like an age.
+    broadcast: ["streamed", "premiered", "premieres"],
+    // Thousands / millions / billions suffixes, in order.
+    magnitudes: ["k", "m", "b"],
+  },
+
   badges: {
     containers: [
       "ytd-badge-supported-renderer",
@@ -240,6 +262,7 @@ export function validateSelectorConfig(cfg) {
   }
   if (!cfg.badges || !validFieldSet(cfg.badges)) return null;
   if (!cfg.containers || !validFieldSet(cfg.containers)) return null;
+  if (!validVocabulary(cfg.vocabulary)) return null;
   if (!cfg.containers.watch || !cfg.containers.home) return null;
 
   // Renderer keys are JSON property names, not selectors: plain identifiers,
@@ -261,6 +284,57 @@ export function validateSelectorConfig(cfg) {
     if (!cfg.shapes[name]) return null;
   }
   return cfg;
+}
+
+/**
+ * Vocabulary is words, never patterns.
+ *
+ * A token that reached a regex unescaped would be logic: `.*` or `(?:` supplied
+ * by the daemon changes what the parser *does*, not what it looks for. So a
+ * token must be plain — letters, digits, spaces, and the handful of characters
+ * that appear in real words like "18+" — and `escapeToken` is applied at every
+ * use site regardless.
+ */
+const VOCAB_FIELDS = new Set([
+  "ago",
+  "views",
+  "live",
+  "verified",
+  "sponsored",
+  "ageGated",
+  "broadcast",
+  "magnitudes",
+]);
+
+function validVocabulary(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  for (const [k, list] of Object.entries(v)) {
+    if (!VOCAB_FIELDS.has(k)) return false;
+    if (!Array.isArray(list) || list.length === 0 || list.length > MAX_LIST_LEN) {
+      return false;
+    }
+    for (const t of list) {
+      if (typeof t !== "string") return false;
+      const s = t.trim();
+      if (!s || s.length > 40) return false;
+      if (!/^[\p{L}\p{N} '+.-]+$/u.test(s)) return false;
+    }
+  }
+  for (const need of VOCAB_FIELDS) if (!v[need]) return false;
+  return true;
+}
+
+/** Make a vocabulary token safe to place inside a pattern. */
+export function escapeToken(t) {
+  return String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** An alternation of escaped tokens, for building a matcher. */
+export function alternation(tokens) {
+  return (Array.isArray(tokens) ? tokens : [])
+    .map((t) => escapeToken(String(t).trim()))
+    .filter(Boolean)
+    .join("|");
 }
 
 /** First element matching any candidate, in order. */
