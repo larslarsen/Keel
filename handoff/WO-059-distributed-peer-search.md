@@ -99,6 +99,94 @@ precomputed and served as opaque buckets.)
 4. **Rare-term residual leak.** Single rare token still reveals more than a
    common one. The shingle helps but doesn't zero it.
 
+## Security analysis (attack vectors + mitigations)
+
+Compiled 2026-08-08 from Lars's challenge "find ways to break it." All are
+engineering/parameter problems, not conceptual breaks — the construction is
+sound. Listed in priority order.
+
+1. **Linkage / collusion attack (BREAKS IT IF DONE LAZILY).** If one identity
+   fetches token "rec" then "eco" then "com", a passive observer or colluding
+   peers link the fetches and reconstruct "recommendation" by intersecting which
+   words contain all three. **Mitigation: fresh ephemeral identity PER FETCH,
+   spread fetches across different peers.** Non-negotiable. Current code rotates
+   per SESSION (swarm_runtime.go:72) — must tighten to per-fetch or the whole
+   construction collapses to the invertible-query leak it was built to avoid.
+
+2. **Rare-token floor.** Shingling a rare word can still produce rare tokens
+   ("xyzzy" → "xyz","yzz","zzy", all rare). A rare token's bucket is small,
+   fetching it reveals more. Token length is a knob: shorter = more common but
+   noisier (more false positives, more bandwidth). **Mitigation: tune token
+   length so even rare-word tokens stay common; accept a residual floor for
+   genuinely exotic character sequences.** Documented, not eliminated.
+
+3. **Bucket-population inference.** An adversary running many nodes learns global
+   bucket populations. Fetching a bucket known to contain exactly 3 videos tells
+   them you searched one of those 3, regardless of token vs word. **Mitigation:
+   pad buckets to a minimum size, or only serve buckets above a popularity
+   floor.**
+
+4. **Temporal / fetch-count attack.** "This identity fetched 11 token-buckets in
+   200ms" reveals query structure (single word ≈ N tokens, multi-word ≈ sum),
+   even without knowing WHICH word. **Mitigation: pad fetches to a fixed count,
+   or batch timing so volume doesn't encode structure.**
+
+5. **Catalogue-poisoning.** Buckets are served from each node's local index, so a
+   malicious peer can drop or add videos. Because you intersect across MULTIPLE
+   peers, one poisoned bucket is caught by disagreement (a video in 3 of 4
+   token-buckets but absent in the 4th is suspect). **Mitigation: extend the
+   existing seed-pack per-block signature (seed.go) to token-buckets; treat
+   cross-peer disagreement as a poison signal.** Consensus across peers catches
+   lies about absence too.
+
+6. **Single-source / cold-start limit.** If only one peer holds videos for token
+   X (long tail), fetching X's bucket means that peer knows you wanted something
+   in X and is the only source, so it correlates with its own corpus. **This is
+   the fundamental long-tail limit and is exactly why WO-058 (empty peer graph)
+   matters: with no seed, every fetch goes to the one node with data, which is
+   you or nobody. The construction makes fetches private; it does NOT fix
+   cold-start.** Coupled to WO-058.
+
+7. **Substring false positives (correctness, not privacy).** Token "men" appears
+   in "recommendation" AND "moment","amendment", etc. Intersection of all
+   token-buckets for "recommendation" yields "videos containing ALL tokens as
+   substrings" — a superset. **Mitigation: after intersection, locally re-check
+   each candidate title actually contains the word (cheap, exact, on-device).**
+   Duplicate tokens across words are idempotent in the set-AND, so harmless.
+
+## Primitive citations (from the literature)
+
+- **Inverted index** — term → document/video IDs. Standard IR since Salton's
+  SMART system (1960s); every search engine. Here: each node builds
+  token/term → videoID from its local catalogue, serves buckets from it. Local,
+  no crypto.
+- **Character-shingling / K-shingles** — Manber 1994 ("Finding Similar Files in
+  a Large File System"), Broder 1997 (near-duplicate detection via shingles +
+  MinHash). Your use: shingle a word into 3-grams so one word becomes a SET of
+  common chunks; a bucket keyed by a chunk is large because the chunk appears in
+  many words.
+- **Private Information Retrieval (PIR)** — Chor, Kushilevitz, Goldreich, Sudan,
+  1995. Client retrieves from a server's DB such that the server learns NOTHING
+  about which item. Two flavors: information-theoretic (needs multiple
+  non-colluding servers) and computational (one server, crypto-heavy). **Lars's
+  construction is essentially the information-theoretic multi-server PIR, except
+  it retrieves a SET ("all items matching token t") rather than one item. The
+  multi-peer + fresh-identity + take-the-whole-bucket part IS the "multiple
+  non-colluding servers" requirement of IT-PIR.** Honest citation: this is a
+  PIR variant, user-composed.
+- **Private Set Intersection (PSI)** — two parties compute the intersection of
+  their sets without revealing more. Extensive literature (DH-based, OT-based).
+  NOTE: the construction does NOT need full PSI — it fetches supersets from peers
+  and intersects LOCALLY, so it is closer to PIR than PSI. WO-052:176-188
+  deferred PSI; this design sidesteps it. (Revisit only if exact peer-to-peer
+  set intersection is ever needed for its own sake.)
+- **k-anonymity and why the v1 buffer failed** — a release is k-anonymous if each
+  record is indistinguishable from k-1 others. The v1 k-anonymity buffer
+  (prefix.go:7-14) hid a real query among decoys; repeated observation separated
+  the real one via intersection attack. This construction survives because there
+  is NO real-versus-decoy distinction — the node genuinely takes the whole
+  bucket, so repetition adds no signal.
+
 ## Acceptance (when built)
 
 - [ ] Static token/term → videoID inverted index built from local catalogue.
