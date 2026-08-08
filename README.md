@@ -179,6 +179,19 @@ What Keel does differently is the combination, not any one part:
    enclave audit can.
 4. **Publication is decentralised** (the swarm), not a central research database.
 
+The bucket system is the quiet part that makes the peer sharing work at all. When
+a node asks the network for data it never requests one video's neighbourhood — it
+asks for every neighbourhood whose key falls in a prefix bucket (thousands of
+videos at once, hashed so the buckets are evenly populated) and takes the whole
+bucket. There is no "real request hidden among decoys" to statistically separate,
+because the node genuinely takes everything in the bucket. The blocks fetched for
+cover are exactly the blocks that make the node a useful mirror for others, so
+Level 2's privacy mechanism and its contribution are the *same act*, and the disk
+budget you set is the anonymity parameter. Combined with a fresh network identity
+per session, a peer answering you learns almost nothing about what you watched —
+and the aggregate that results is the empirical density estimate of the
+population manifold.
+
 **What is already known, and what is not**
 
 The phenomenon is real. Twitter's own 2021 study and Huszár et al. (PNAS 2022)
