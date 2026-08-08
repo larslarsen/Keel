@@ -94,6 +94,16 @@ const (
 	// recording.
 	liveTTL = 12 * time.Hour
 
+	// maxLiveAge bounds how long a stream can plausibly be "live". Even
+	// marathon charity / music streams end; a record whose first sighting is
+	// older than this cannot still be running. Without this bound, a stream a
+	// peer keeps re-announcing stays in the index forever (its SeenAt is bumped
+	// to "now" on every gossip, so the LiveRecency freeze and the 12h sweep
+	// never fire) while firstSeen stays anchored in the past — so the UI shows
+	// "17+ hours" live with a "5 min ago" last-seen. maxLiveAge lets us retire
+	// such dead entries outright, regardless of peer re-claims.
+	maxLiveAge = 6 * time.Hour
+
 	// maxLiveRecords bounds memory against a flood. Gossipsub's peer scoring is
 	// the first defence; this is the backstop.
 	maxLiveRecords = 200000
@@ -441,11 +451,39 @@ func (li *LiveIndex) merge(r LiveRecord) {
 	li.mu.Lock()
 	defer li.mu.Unlock()
 
+	// A livestream cannot have been "seen" longer ago than maxLiveAge and still
+	// be running. A peer reporting SeenAt that old is re-announcing a stream
+	// that has finished; folding it in would re-seed a dead entry (see the
+	// maxLiveAge note on the constant). Drop it.
+	if now.UnixMilli()-r.SeenAt > maxLiveAge.Milliseconds() {
+		return
+	}
+
 	// Keyed by platform and id together. Nothing guarantees TikTok and YouTube
 	// will never mint the same string, and one colliding id would merge two
 	// unrelated streams into one entry.
 	key := r.Platform + ":" + r.VideoID
 	e := li.entries[key]
+	// An existing entry whose first sighting is older than maxLiveAge cannot
+	// still be live — even a marathon stream ends. Peers re-announcing it keep
+	// bumping SeenAt to "now" (so the LiveRecency freeze and the 12h sweep
+	// never fire), which is exactly how a finished stream lingers in the feed
+	// showing an impossible "17+ hours" duration.
+	//
+	// Do NOT delete the entry here: a subsequent re-announcement would
+	// re-seed it with firstSeen = now, resurrecting the dead stream. Instead
+	// freeze it — stop accepting SeenAt bumps and age its lastSeen to its
+	// firstSeen so the periodic sweep retires it — and let Search skip it by
+	// age (below). The entry stays in the map, so later merges find it already
+	// frozen and cannot revive it.
+	if e != nil && now.Sub(e.firstSeen) > maxLiveAge {
+		// Freeze: age lastSeen to firstSeen so the periodic sweep retires the
+		// entry. Returning here also skips the SeenAt bump below, so peers
+		// re-announcing it cannot refresh it. The entry stays in the map, so a
+		// later merge finds it already frozen and cannot revive it.
+		e.lastSeen = e.firstSeen
+		return
+	}
 	if e == nil {
 		if len(li.entries) >= maxLiveRecords {
 			return // backstop; sweep will make room
@@ -593,6 +631,8 @@ func (li *LiveIndex) Search(query string, limit int) []LiveEntry {
 	// stays warm for a stream that finished hours ago — filtering on it lets
 	// dead streams sit at the top of the feed forever.
 	cutoff := time.Now().Add(-liveTTL).UnixMilli()
+	// A stream first seen longer ago than maxLiveAge cannot still be live.
+	maxAgeCutoff := time.Now().Add(-maxLiveAge)
 
 	li.mu.RLock()
 	defer li.mu.RUnlock()
@@ -600,6 +640,13 @@ func (li *LiveIndex) Search(query string, limit int) []LiveEntry {
 	out := make([]LiveEntry, 0, 64)
 	for _, e := range li.entries {
 		if e.rec.SeenAt < cutoff {
+			continue
+		}
+		// Skip streams whose first sighting is older than maxLiveAge: they
+		// cannot still be live (a finished stream lingers only because peers
+		// keep re-announcing it). Hidden from the feed immediately; the sweep
+		// retires the entry from memory.
+		if e.firstSeen.Before(maxAgeCutoff) {
 			continue
 		}
 		if len(terms) > 0 {

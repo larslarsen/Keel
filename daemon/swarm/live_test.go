@@ -506,3 +506,62 @@ func TestPlatformsDoNotCollide(t *testing.T) {
 		t.Errorf("platforms did not stay distinct: %+v", seen)
 	}
 }
+
+// TestDeadStreamRetiredDespiteReannounce is the regression for the "17+ hours
+// live, 5 min ago" stale-list bug.
+//
+// A stream this node never watched locally has no local observation, so the
+// LiveRecency freeze (which keys off a local sighting) never engages. A peer
+// re-announcing it bumps SeenAt to "now" on every gossip, so the 12h sweep
+// never fires either. The stream's firstSeen stays anchored in the past, so the
+// UI shows an impossible "17+ hours" duration. The fix: a hard maxLiveAge cap —
+// an entry older than that is retired outright, regardless of re-announcements.
+func TestDeadStreamRetiredDespiteReannounce(t *testing.T) {
+	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
+	now := time.Now()
+	key := "yt:deadstreamX"
+
+	// Seed the entry as though it was first seen 17 hours ago.
+	li.entries[key] = &liveEntry{
+		rec:       LiveRecord{VideoID: "deadstreamX", Title: "Quick Friday Stream", SeenAt: now.Add(-17 * time.Hour).UnixMilli()},
+		firstSeen: now.Add(-17 * time.Hour),
+	}
+
+	// Peers keep re-announcing it with a fresh SeenAt (the "5 min ago" the UI
+	// showed). This used to keep the dead stream in the feed forever.
+	for i := 0; i < 3; i++ {
+		li.merge(LiveRecord{
+			VideoID: "deadstreamX",
+			Title:   "Quick Friday Stream",
+			SeenAt:  now.Add(-5 * time.Minute).UnixMilli(),
+		})
+	}
+
+	// The stream must not appear in the feed — ever, even with re-announcements.
+	hits := li.Search("", 100)
+	for _, h := range hits {
+		if h.VideoID == "deadstreamX" {
+			t.Fatalf("dead stream (firstSeen 17h ago, peers re-announcing) still appears in Search results")
+		}
+	}
+	// The entry stays in the map (frozen, so it cannot be resurrected) — that is
+	// the mechanism preventing re-seed, not a leak.
+	if _, ok := li.entries[key]; !ok {
+		t.Errorf("freeze should keep the frozen entry in the map to block reseed")
+	}
+
+	// And a genuinely fresh stream must survive the same merge path.
+	li.merge(LiveRecord{VideoID: "freshliveYY", Title: "Actually live", SeenAt: now.Add(-2 * time.Minute).UnixMilli()})
+	if _, ok := li.entries["yt:freshliveYY"]; !ok {
+		t.Errorf("a fresh stream was wrongly retired")
+	}
+	found := false
+	for _, h := range li.Search("", 100) {
+		if h.VideoID == "freshliveYY" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a fresh stream was wrongly hidden from Search")
+	}
+}
