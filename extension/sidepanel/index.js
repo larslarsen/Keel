@@ -251,7 +251,7 @@ function makeSuggestionLi(s) {
   ].filter(Boolean);
   li.innerHTML =
     `<div class="row-main">${thumbBox}<div class="row-text">` +
-    `<p class="title"><a href="${href}" target="_blank" rel="noreferrer">${escapeHtml(s.title || s.video_id)}</a></p>` +
+    `<p class="title"><a href="${href}" target="_blank" rel="noreferrer">${escapeHtml(s.title || "Untitled — no title recorded yet")}</a></p>` +
     `<div class="sub">${escapeHtml(bits.join(" · "))}` +
     (s.via_title ? ` · appeared after ${escapeHtml(s.via_title)}` : "") +
     `</div></div><span class="row-actions"></span></div>`;
@@ -371,10 +371,22 @@ function renderSuggestions(res, seed) {
       "Nothing to suggest yet — Keel needs to have seen a few watch pages first.";
     return;
   }
+  // Never fall back to the raw video id.
+  //
+  // Keel records what YouTube *offered*, never what you watched, so the video
+  // you are on has no title in the corpus — it was never recommended to you in
+  // a rail we captured. Printing its id instead is the "meaningless hash"
+  // complaint of WO-041, and fetching the title to fix it would start recording
+  // what you watch, which PRIVACY.md promises Keel does not do.
+  const from = res.seed_title
+    ? `From ${escapeHtml(res.seed_title)}`
+    : seed
+      ? "From the video you're watching"
+      : "From your recent watching";
   el.meta.textContent =
-    `From ${escapeHtml(res.seed_title || seed || "your last watch")}` +
+    from +
     ` · graph ${res.graph_nodes} node(s), ${res.graph_edges} edge(s)` +
-    (seed ? "" : " · no watch page open, using last-watch context");
+    (seed ? "" : " · no watch page open");
   el.list.replaceChildren();
   for (const s of list) el.list.appendChild(makeSuggestionLi(s));
 }

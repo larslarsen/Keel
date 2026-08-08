@@ -78,3 +78,27 @@ than an engineer guessing at a layout. The panel has changed substantially since
 this was filed (suggestions replaced the impressions list, thumbnails and ages
 were added), so the right next step is a fresh look rather than acting on the
 2026-08-03 description.
+
+## What to look at — 2026-08-07
+
+Lars asked what he is meant to be judging. Concretely, three things, all in the
+side panel on a watch page:
+
+1. **Header height.** Three icon buttons — Back, hide-rail, full-page — were
+   stacked vertically and made the header taller than the first suggestion row.
+   They now sit side by side. The question is whether the header still takes more
+   room than it earns.
+
+2. **Row height.** Each suggestion is a thumbnail, a title, a sub-line
+   (duration · views · age), and a row of action buttons. The original complaint
+   was that the buttons reserve a whole second line. Worth deciding whether they
+   should appear on hover, move into the row, or go entirely — the "why" button
+   opens the funnel inspector, and the block button is a one-click channel block.
+
+3. **Sub-line content.** It currently reads e.g. `32:07 · 4,600 views · 1h ago`.
+   Nothing opaque remains — the raw video id, the `UC…` channel key and the
+   page-load hash are all gone. The judgement is whether those three facts are
+   the right three.
+
+There is nothing left in this ticket that an engineer can settle by reading the
+code. It needs someone looking at the panel and saying what is wrong with it.

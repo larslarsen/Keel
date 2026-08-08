@@ -254,10 +254,13 @@ h2 {
 }
 .header-row .btn-icon { width: 20px; height: 20px; font-size: 13px; }
 .header-actions {
+  /* Side by side. Stacked, three icons made the header taller than the first
+     suggestion row, which is a lot of vertical space in a panel this narrow. */
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  gap: 6px;
   align-items: center;
+  flex: 0 0 auto;
 }
 .header-row .banner {
   margin: 0;
