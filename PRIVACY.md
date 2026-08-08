@@ -14,8 +14,8 @@ behave. The source is public and each one can be checked.
 ## The short version
 
 **Your recording stays on your device.** There is no account, no server
-receiving your data, and no analytics. The record of what you were shown — every
-video, position and time — is never sent anywhere, at any setting.
+receiving your data, and no analytics. The record of what you were shown, and of
+which videos you opened, is never sent anywhere at any setting.
 
 **One thing does leave, at every setting: when Keel sees a livestream it tells
 other Keel users that the stream exists.** That notice is a video id and title
@@ -32,21 +32,35 @@ videos being **recommended to you**:
 
 - Video ID, title, channel, duration, view count and published date
 - Which position the recommendation appeared in, and on which surface
-- Which video it appeared beside — the id only, so one recommendation can be
-  told from another
+- Which video it appeared beside — the id of the video you had open
 - When it was observed
 
 That is the whole of it.
 
+### This means Keel holds a list of videos you opened
+
+Worth stating outright rather than leaving to be inferred. Every recommendation
+is recorded against the video it appeared beside, and that video is one you had
+open — so the file on your computer contains, in effect, a list of the videos you
+watched on pages where recommendations were captured.
+
+It has to. A recommendation with no source is not a recommendation, and the
+entire point of Keel is showing *what leads to what*.
+
+What follows from a recommendation appearing in that list, and then later
+appearing as a video you opened, is that you followed it. Keel can work that out
+from what it already has. Nothing extra is collected to do so, and it is
+computed on your machine like everything else.
+
 ## What Keel does not record
 
-- **Not how you watch.** Keel notes the id of the video a recommendation
-  appeared beside — that is what makes it a recommendation *from* something —
-  but nothing about your viewing of it: not whether you pressed play, how long
-  you stayed, how far you got, or whether you finished. It cannot tell a video
-  you watched to the end from one you closed after a second.
-- **Not videos that recommended nothing.** A video only appears at all if Keel
-  captured recommendations next to it, and it only runs on watch pages and the
+- **Not how you watch.** Keel records *which* videos you opened, because a
+  recommendation has to come from somewhere — see below. It records nothing
+  about your viewing of them: not whether you pressed play, how long you
+  stayed, how far you got, or whether you finished. It cannot tell a video you
+  watched to the end from one you closed after a second.
+- **Not videos that recommended nothing.** A video is only noted if Keel
+  captured recommendations beside it, and it runs only on watch pages and the
   homepage. Anything you reach from search, your subscriptions, a channel page
   or a link leaves no trace unless recommendations were recorded there.
 - **Not your searches.** Search pages are out of scope entirely; Keel does not
