@@ -58,10 +58,11 @@ GROUP BY video_id ORDER BY n DESC, video_id ASC LIMIT ?`, analysisTopN)
 	}
 
 	rows, err = s.db.Query(`
-SELECT channel_id, MAX(channel_id), COUNT(*) AS n, AVG(slot_index)
-FROM impressions
-WHERE channel_id IS NOT NULL AND channel_id != ''
-GROUP BY channel_id ORDER BY n DESC, channel_id ASC LIMIT ?`, analysisTopN)
+SELECT i.channel_id, MAX(c.name), COUNT(*) AS n, AVG(i.slot_index)
+FROM impressions i
+LEFT JOIN channels c ON c.channel_id = i.channel_id
+WHERE i.channel_id IS NOT NULL AND i.channel_id != ''
+GROUP BY i.channel_id ORDER BY n DESC, i.channel_id ASC LIMIT ?`, analysisTopN)
 	if err != nil {
 		return nil, err
 	}

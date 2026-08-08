@@ -1266,3 +1266,97 @@ func TestBundleDigestDetectsTampering(t *testing.T) {
 		t.Fatalf("rejected bundle still wrote rows: %+v", peers)
 	}
 }
+
+// TestAnalysisTopChannelsUseName verifies the analysis view shows channel
+// names, not just the channel_id hash. Regression for the long-standing bug
+// where "Channels seen most" listed hashes (channel_id) because the query
+// selected MAX(channel_id) for the label column and never read channel_name.
+func TestAnalysisTopChannelsUseName(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "t.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ch := "@realchannel"
+	name := "Real Channel Name"
+	ctx := "ctxvid001"
+	// Same channel, two impressions, name present on both.
+	base := bridge.Impression{
+		PageLoadID:  "11111111-1111-4111-8111-111111111111",
+		ObservedAt:  time.Now().UnixMilli(),
+		Surface:     "WATCH_NEXT",
+		ContextVideoID: &ctx,
+		VideoID:     "vidA",
+		ChannelID:   &ch,
+		ChannelName: &name,
+		Title:       "A video",
+		Badges:      []string{},
+	}
+	other := base
+	other.PageLoadID = "22222222-2222-4222-8222-222222222222"
+	other.VideoID = "vidB"
+	if _, err := st.PutImpressions([]bridge.Impression{base, other}); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := st.Analysis()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.TopChannels) == 0 {
+		t.Fatal("expected at least one channel in TopChannels")
+	}
+	row := a.TopChannels[0]
+	if row.Key != ch {
+		t.Errorf("Key should be the channel_id %q, got %q", ch, row.Key)
+	}
+	if row.Label == nil {
+		t.Fatalf("Label is nil — channel name not surfaced (got hash-only row)")
+	}
+	if *row.Label != name {
+		t.Errorf("Label should be the channel name %q, got %q (hash shown instead)", name, *row.Label)
+	}
+}
+
+// TestAnalysisTopChannelsNameFallback covers the case where channel_name is
+// null (only recorded for first-paint cards): the label falls back to the
+// channel_id hash rather than crashing or showing empty.
+func TestAnalysisTopChannelsNameFallback(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "t.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ch := "@norecordname"
+	ctx := "ctxvid002"
+	imp := bridge.Impression{
+		PageLoadID:  "11111111-1111-4111-8111-111111111111",
+		ObservedAt:  time.Now().UnixMilli(),
+		Surface:     "WATCH_NEXT",
+		ContextVideoID: &ctx,
+		VideoID:     "vidX",
+		ChannelID:   &ch,
+		ChannelName: nil, // not a first-paint card
+		Title:       "A video",
+		Badges:      []string{},
+	}
+	if _, err := st.PutImpressions([]bridge.Impression{imp}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := st.Analysis()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.TopChannels) == 0 {
+		t.Fatal("expected one channel in TopChannels")
+	}
+	row := a.TopChannels[0]
+	// Label may be nil (page falls back to Key) but Key must still be the id.
+	if row.Key != ch {
+		t.Errorf("Key should be channel_id %q, got %q", ch, row.Key)
+	}
+}
