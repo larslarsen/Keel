@@ -203,7 +203,7 @@ function fmtAgo(ms) {
   return `${Math.floor(hrs / 24)} day${hrs < 48 ? "" : "s"} ago`;
 }
 
-function renderLive(res) {
+export function renderLive(res) {
   el.liveList.replaceChildren();
   const table = document.getElementById("live-table");
   const streams = res?.streams || [];

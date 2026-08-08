@@ -19,6 +19,24 @@ import (
 
 const version = "0.1.0"
 
+// builtAt is when this binary was written, read from the executable itself.
+//
+// Reported to the interface because "is the running daemon the one I just
+// built?" has come up repeatedly, and the answer has never been visible. The
+// browser keeps a native-messaging process alive across extension reloads, so a
+// rebuilt binary is not necessarily the one answering.
+func builtAt() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	fi, err := os.Stat(exe)
+	if err != nil {
+		return ""
+	}
+	return fi.ModTime().Format("2006-01-02 15:04:05")
+}
+
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("keel: ")
@@ -131,8 +149,12 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		// deserves to see whether it connected to anything at all.
 		return reply(out, env.ID, "STATS_RESULT", struct {
 			*bridge.StatsPayload
-			Swarm map[string]any `json:"swarm"`
-		}{stats, swarmStatus()})
+			Swarm  map[string]any `json:"swarm"`
+			Daemon map[string]any `json:"daemon"`
+		}{stats, swarmStatus(), map[string]any{
+			"version":  version,
+			"built_at": builtAt(),
+		}})
 	case "EXPORT":
 		return handleExport(env, out, st)
 	case "WIPE":
