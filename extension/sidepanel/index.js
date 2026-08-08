@@ -373,11 +373,12 @@ function renderSuggestions(res, seed) {
   }
   // Never fall back to the raw video id.
   //
-  // Keel records what YouTube *offered*, never what you watched, so the video
-  // you are on has no title in the corpus — it was never recommended to you in
-  // a rail we captured. Printing its id instead is the "meaningless hash"
-  // complaint of WO-041, and fetching the title to fix it would start recording
-  // what you watch, which PRIVACY.md promises Keel does not do.
+  // Usually there is a title: the video being watched was itself recommended
+  // somewhere Keel captured, so its title is already in the corpus. But not
+  // always — a video reached from search, subscriptions, a channel page or a
+  // link was never offered on a captured surface, so nothing here knows what it
+  // is called. Printing the id in that case is the "meaningless hash" of
+  // WO-041.
   const from = res.seed_title
     ? `From ${escapeHtml(res.seed_title)}`
     : seed

@@ -32,15 +32,23 @@ videos being **recommended to you**:
 
 - Video ID, title, channel, duration, view count and published date
 - Which position the recommendation appeared in, and on which surface
-- Which video you were watching when it appeared
+- Which video it appeared beside — the id only, so one recommendation can be
+  told from another
 - When it was observed
 
 That is the whole of it.
 
 ## What Keel does not record
 
-- **Not what you watch.** Keel records what is *offered* to you, never what you
-  play, how long you watch, or whether you finish.
+- **Not how you watch.** Keel notes the id of the video a recommendation
+  appeared beside — that is what makes it a recommendation *from* something —
+  but nothing about your viewing of it: not whether you pressed play, how long
+  you stayed, how far you got, or whether you finished. It cannot tell a video
+  you watched to the end from one you closed after a second.
+- **Not videos that recommended nothing.** A video only appears at all if Keel
+  captured recommendations next to it, and it only runs on watch pages and the
+  homepage. Anything you reach from search, your subscriptions, a channel page
+  or a link leaves no trace unless recommendations were recorded there.
 - **Not your searches.** Search pages are out of scope entirely; Keel does not
   run there.
 - **Not your identity.** No account, no email, no sign-in, no device

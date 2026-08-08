@@ -550,12 +550,25 @@ func (s *Store) UnblockChannel(channelID string) error {
 }
 
 // titleForVideo returns any recorded title for video_id, or nil.
+// titleForVideo finds a title for a video from anything this node knows.
+//
+// Both tables, because the video being watched is often not in `impressions` at
+// all. Keel captures watch-page rails and the homepage, so a video reached from
+// search, subscriptions, a channel page, a link or autoplay was never recorded
+// as something offered — even though the user is plainly watching it. The
+// catalogue may still know its title, from a peer or from a bundle.
+//
+// There is no privacy question in showing this. The watched video's id is
+// already recorded as `context_video_id` — it is the thing every edge hangs
+// off — and a title is a public fact about a public video.
 func (s *Store) titleForVideo(videoID string) *string {
 	var t sql.NullString
-	err := s.db.QueryRow(
-		`SELECT title FROM impressions WHERE video_id = ? AND title != '' LIMIT 1`,
-		videoID,
-	).Scan(&t)
+	err := s.db.QueryRow(`
+SELECT title FROM (
+  SELECT title FROM impressions WHERE video_id = ? AND title != ''
+  UNION ALL
+  SELECT title FROM peer_catalogue WHERE video_id = ? AND title != ''
+) LIMIT 1`, videoID, videoID).Scan(&t)
 	if err != nil || !t.Valid || t.String == "" {
 		return nil
 	}
