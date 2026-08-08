@@ -136,6 +136,85 @@ gated on the overlap measurement above.
 Not in the Chrome Web Store yet. The plan is to apply once, with the whole thing
 finished.
 
+## Research
+
+A recommendation system is a map from *who you are and what you just watched* to
+*what you see next*. Run it over a whole population and you get a shape — a
+manifold in recommendation-space: dense where millions of people's paths
+overlap, thin and hard to see where only a few people ever get sent. The
+questions everyone actually wants answered — what is being pushed hardest, where
+do people get funnelled, what shows up in the tail — are questions about the
+shape of that manifold. Keel is a way to measure it directly, from the user's own
+screen, without asking the platform's permission.
+
+**Why existing audits do not settle it**
+
+There is no shortage of studies. Each one does one slice, and none of them give
+the person being measured anything back:
+
+- **Bot / sockpuppet audits** (the TikTok and YouTube radicalisation studies) run
+  scripted accounts and watch what the feed serves. They are centralised,
+  one-shot, and — per Mosnar et al., SIGIR 2025 — their findings often fail to
+  reproduce weeks later, because the algorithm and the content both move.
+- **Data donations** (e.g. Zannettou et al., CHI 2024) collect real users' feeds
+  into a researcher's dataset. The user gets a paper, not a tool, and the data
+  sits with the researchers.
+- **Platform enclaves** (the Christchurch Call / LinkedIn / Dailymotion audit,
+  using PySyft + OpenDP) only work because the platform agrees to be studied. A
+  platform that cooperates in its own audit can fake the data or throttle itself
+  during the test. That is a compliance exercise, not evidence you can trust.
+- **Crowdsourced tools** (Mozilla's YouTube Regrets, NYU's Ad Observer) install on
+  real browsers but send raw observations to a central research server.
+
+What Keel does differently is the combination, not any one part:
+
+1. **Raw observation never leaves the device.** You get personal value first —
+   search your own recommendations, see which video led to which. The recording
+   is yours.
+2. **Sharing is opt-in and threshold-encrypted (STAR).** You can contribute to a
+   global count without any server learning your trail, and without the platform
+   ever being involved.
+3. **No platform cooperation required.** The measurement is taken from the page
+   you actually see, so it cannot be gamed from the server side the way an
+   enclave audit can.
+4. **Publication is decentralised** (the swarm), not a central research database.
+
+**What is already known, and what is not**
+
+The phenomenon is real. Twitter's own 2021 study and Huszár et al. (PNAS 2022)
+both found the algorithmic timeline amplifies political content. Haroon et al.
+(2022) found YouTube's watch-next pushes right-leaning users toward increasingly
+extreme content. The Christchurch Call audit measured that on Dailymotion the top
+10% of videos receive 75% of all recommendations — a real concentration skew. The
+Facebook Papers show the algorithm was explicitly tuned to reward outrage.
+
+What is *not* settled: the universal "filter bubble" claim is contested, and
+TikTok's radicalisation in particular is currently underproven — the SIGIR 2025
+paper could not reproduce earlier TikTok audit findings at all. So the bulk of
+the manifold is mapped; the tail is not.
+
+**The honest limit of the method**
+
+STAR only resolves the manifold where at least K people (≥50) report an identical
+measurement — it sees the dense regions and is structurally blind to the rare
+pathways, which are exactly the ones that matter most. Reaching the tail needs
+Prio + differential privacy (OpenDP), which is designed-for but deferred until the
+population is large enough that the noise does not drown the signal. So Keel
+measures the bulk now and the tail later; it does not pretend the bulk describes
+the tail.
+
+**For researchers**
+
+At v0.1.0 the motivated early adopters are people who want to measure this, not
+casual users. If that is you: install it, run it against your own YouTube, and
+the per-person record is the raw material. When enough independent corpora exist,
+the aggregate is the empirical density estimate of the population manifold —
+publishable, reproducible, and resistant to the one-shot decay that sinks the
+sockpuppet studies, because the pipeline re-runs continuously rather than once.
+The design is in `DESIGN_v2.md` (§6 for the aggregation, §6.3 for cohort rules);
+the contribution levels are in `handoff/WO-051`. An install that breaks on your
+machine is a bug report we want.
+
 ## Repository layout
 
 | Path | Purpose |
