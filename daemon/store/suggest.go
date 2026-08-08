@@ -649,6 +649,20 @@ func (s *Store) videoMeta(idList []string) (map[string]*vmeta, error) {
 SELECT video_id, MAX(title), MAX(channel_id), MAX(view_count), MAX(duration_s), MAX(published_at), COUNT(*) AS seen
 FROM impressions GROUP BY video_id
 UNION ALL
+-- Videos known only as something the user watched.
+--
+-- They are graph nodes — every recommendation hangs off one — so the walk can
+-- surface them as candidates, but they have no row of their own unless they
+-- were themselves recommended somewhere Keel captured. On a live corpus nine
+-- videos were in this position, including the four watched longest. Without
+-- this they render as "Untitled".
+SELECT context_video_id, MAX(context_title), NULL, NULL, NULL, NULL, 0 AS seen
+FROM impressions
+WHERE context_video_id IS NOT NULL AND context_video_id != ''
+  AND context_title IS NOT NULL AND context_title != ''
+  AND context_video_id NOT IN (SELECT video_id FROM impressions)
+GROUP BY context_video_id
+UNION ALL
 SELECT video_id, title, channel_id, view_count, duration_s, published_at, 0 AS seen
 FROM peer_catalogue
 WHERE video_id NOT IN (SELECT video_id FROM impressions)`)
