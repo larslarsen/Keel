@@ -174,6 +174,7 @@ function selectTab(name) {
   if (name === "live") {
     el.liveQ.focus();
     loadLive().catch(() => {});
+    startLiveRefresh();
   }
   if (name === "analysis") loadAnalysis().catch(() => {});
 }
@@ -219,9 +220,11 @@ export function renderLive(res) {
       : "No streams reported yet. The feed fills as other nodes see livestreams.";
     return;
   }
+  const at = new Date().toLocaleTimeString();
   el.liveMeta.textContent =
     `${streams.length} stream${streams.length === 1 ? "" : "s"}` +
-    (res.indexed ? ` of ${res.indexed} known` : "");
+    (res.indexed ? ` of ${res.indexed} known` : "") +
+    ` · updated ${at}`;
   if (table) table.hidden = false;
 
   // One table across platforms rather than a tab per platform.
@@ -291,6 +294,39 @@ async function loadLive() {
     el.liveMeta.textContent = String(err?.message || err);
   }
 }
+
+/**
+ * Keep the live feed live.
+ *
+ * It used to load when the tab was opened and never again, so a page left open
+ * showed streams that had ended hours earlier — indistinguishable from the
+ * daemon reporting stale data, and the cause of several bug reports that were
+ * really a page nobody had refreshed. A feed whose entire subject is "right
+ * now" cannot be a snapshot.
+ *
+ * Only while the tab is on screen: polling a hidden tab spends the daemon's
+ * time to update something nobody is looking at.
+ */
+const LIVE_REFRESH_MS = 30_000;
+let liveRefreshTimer = null;
+
+function liveTabVisible() {
+  const view = document.getElementById("view-live");
+  return Boolean(view && !view.hidden && document.visibilityState === "visible");
+}
+
+function startLiveRefresh() {
+  if (liveRefreshTimer) return;
+  liveRefreshTimer = setInterval(() => {
+    if (liveTabVisible()) loadLive().catch(() => {});
+  }, LIVE_REFRESH_MS);
+}
+
+document.addEventListener("visibilitychange", () => {
+  // Coming back to the tab should show current data, not what was true when it
+  // was hidden.
+  if (liveTabVisible()) loadLive().catch(() => {});
+});
 
 let liveTimer = null;
 el.liveQ.addEventListener("input", () => {
