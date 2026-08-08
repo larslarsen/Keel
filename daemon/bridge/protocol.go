@@ -67,10 +67,17 @@ type Impression struct {
 	Surface          string  `json:"surface"`
 	ContextVideoID   *string `json:"context_video_id"`
 	ContextQueryHash *string `json:"context_query_hash"`
-	SlotIndex        int     `json:"slot_index"`
-	VideoID          string  `json:"video_id"`
-	ChannelID        *string `json:"channel_id"` // null when DOM omits channel links
-	ChannelUnknown   bool    `json:"channel_unknown"`
+	// ContextTitle is the title of the video being watched.
+	//
+	// Its id is already recorded as ContextVideoID, so this adds no disclosure
+	// — it is a public fact about an id already held. Without it the interface
+	// can only name the current video if it happened to be recommended
+	// elsewhere first, which is often not the case.
+	ContextTitle   *string `json:"context_title"`
+	SlotIndex      int     `json:"slot_index"`
+	VideoID        string  `json:"video_id"`
+	ChannelID      *string `json:"channel_id"` // null when DOM omits channel links
+	ChannelUnknown bool    `json:"channel_unknown"`
 	// ChannelName is the display name the extension read off the card (may be
 	// an @handle or a plain name). Nullable — the DOM often omits it.
 	ChannelName *string  `json:"channel_name"`

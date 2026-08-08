@@ -32,7 +32,7 @@ videos being **recommended to you**:
 
 - Video ID, title, channel, duration, view count and published date
 - Which position the recommendation appeared in, and on which surface
-- Which video it appeared beside — the id of the video you had open
+- Which video it appeared beside — the id and title of the video you had open
 - When it was observed
 
 That is the whole of it.
@@ -42,7 +42,7 @@ That is the whole of it.
 Worth stating outright rather than leaving to be inferred. Every recommendation
 is recorded against the video it appeared beside, and that video is one you had
 open — so the file on your computer contains, in effect, a list of the videos you
-watched on pages where recommendations were captured.
+watched on pages where recommendations were captured, by id and by title.
 
 It has to. A recommendation with no source is not a recommendation, and the
 entire point of Keel is showing *what leads to what*.

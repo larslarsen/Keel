@@ -105,6 +105,19 @@ async function send(type, payload) {
   }
 }
 
+/**
+ * The watch page's own title, from the tab title.
+ *
+ * `document.title` is "Video name - YouTube", which is the same string the user
+ * sees. Read from the rendered page like everything else — no API call, no
+ * player state, nothing about playback.
+ */
+function watchTitle() {
+  const t = (document.title || "").replace(/\s*-\s*YouTube\s*$/, "").trim();
+  if (!t || t === "YouTube") return null;
+  return t.slice(0, 300);
+}
+
 function buildCtx() {
   // A scan queued before an SPA navigation can run after the URL has already
   // changed but before onNavigate has processed it. Building a context then
@@ -124,6 +137,15 @@ function buildCtx() {
       observed_at: Date.now(),
       surface: "WATCH_NEXT",
       context_video_id,
+      // The title of the video being watched.
+      //
+      // Its id is already recorded — it is what every recommendation hangs off
+      // — so the title is no further disclosure, just a public fact about an id
+      // we hold. Without it the panel can only name the current video when it
+      // happened to be recommended elsewhere first, which is not always: the
+      // videos watched longest turn out to be the ones least likely to have
+      // been captured in a rail.
+      context_title: watchTitle(),
       context_query_hash: null,
     };
   }

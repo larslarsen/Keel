@@ -165,6 +165,17 @@ func defaultDir() (string, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// addColumnIfMissing extends a table in place. SQLite has no IF NOT EXISTS for
+// columns, so presence is checked first.
+func (s *Store) addColumnIfMissing(table, column, decl string) {
+	var n int
+	_ = s.db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+	if n == 0 {
+		_, _ = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
+	}
+}
+
 func (s *Store) migrate() error {
 	// Schema v2: PK (page_load_id, surface, video_id); nullable channel_id + channel_unknown.
 	_, err := s.db.Exec(`
@@ -174,6 +185,7 @@ CREATE TABLE IF NOT EXISTS impressions (
   surface TEXT NOT NULL,
   context_video_id TEXT,
   context_query_hash TEXT,
+  context_title TEXT,
   slot_index INTEGER NOT NULL,
   video_id TEXT NOT NULL,
   channel_id TEXT,
@@ -266,6 +278,7 @@ CREATE TABLE IF NOT EXISTS peer_catalogue (
 	if err := s.migrateToV2IfNeeded(); err != nil {
 		return err
 	}
+	s.addColumnIfMissing("impressions", "context_title", "TEXT")
 	// WO-016: apply known channel_ids across page loads for the same video_id.
 	if _, err := s.BackfillChannelsFromCatalogue(); err != nil {
 		return err
@@ -301,6 +314,7 @@ func (s *Store) migrateToV2IfNeeded() error {
   surface TEXT NOT NULL,
   context_video_id TEXT,
   context_query_hash TEXT,
+  context_title TEXT,
   slot_index INTEGER NOT NULL,
   video_id TEXT NOT NULL,
   channel_id TEXT,
@@ -371,8 +385,9 @@ func (s *Store) PutImpressions(list []bridge.Impression) (inserted int, err erro
 	stmt, err := tx.Prepare(`
 INSERT INTO impressions (
   page_load_id, observed_at, surface, context_video_id, context_query_hash,
-  slot_index, video_id, channel_id, channel_unknown, title, duration_s, view_count, published_at, badges_json
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  slot_index, video_id, channel_id, channel_unknown, title, duration_s, view_count, published_at, badges_json,
+  context_title
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(page_load_id, surface, video_id) DO UPDATE SET
   title=excluded.title,
   channel_id=COALESCE(excluded.channel_id, impressions.channel_id),
@@ -383,7 +398,8 @@ ON CONFLICT(page_load_id, surface, video_id) DO UPDATE SET
   duration_s=COALESCE(excluded.duration_s, impressions.duration_s),
   view_count=COALESCE(excluded.view_count, impressions.view_count),
   published_at=COALESCE(excluded.published_at, impressions.published_at),
-  badges_json=excluded.badges_json
+  badges_json=excluded.badges_json,
+  context_title=COALESCE(excluded.context_title, impressions.context_title)
   -- slot_index intentionally NOT updated: keep first-observed slot
 `)
 	if err != nil {
@@ -428,6 +444,7 @@ ON CONFLICT(channel_id) DO UPDATE SET name=excluded.name, updated_at=excluded.up
 			imp.ContextVideoID, imp.ContextQueryHash,
 			imp.SlotIndex, imp.VideoID, imp.ChannelID, unk, imp.Title,
 			imp.DurationS, imp.ViewCount, imp.PublishedAt, string(badges),
+			imp.ContextTitle,
 		)
 		if err != nil {
 			return inserted, err
@@ -565,10 +582,13 @@ func (s *Store) titleForVideo(videoID string) *string {
 	var t sql.NullString
 	err := s.db.QueryRow(`
 SELECT title FROM (
+  SELECT context_title AS title FROM impressions
+    WHERE context_video_id = ? AND context_title IS NOT NULL AND context_title != ''
+  UNION ALL
   SELECT title FROM impressions WHERE video_id = ? AND title != ''
   UNION ALL
   SELECT title FROM peer_catalogue WHERE video_id = ? AND title != ''
-) LIMIT 1`, videoID, videoID).Scan(&t)
+) LIMIT 1`, videoID, videoID, videoID).Scan(&t)
 	if err != nil || !t.Valid || t.String == "" {
 		return nil
 	}
