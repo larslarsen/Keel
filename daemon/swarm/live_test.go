@@ -566,6 +566,44 @@ func TestDeadStreamRetiredDespiteReannounce(t *testing.T) {
 	}
 }
 
+// TestDeadStreamByStartedAt is the regression for the actually-reported bug:
+// the UI shows "17+ hours" from StartedAt, but the node re-observes the stream
+// every few minutes so firstSeen stays fresh. The earlier firstSeen-based fix
+// missed it. The cap must key off StartedAt (the stream's own start time),
+// which survives re-publishing.
+func TestDeadStreamByStartedAt(t *testing.T) {
+	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
+	now := time.Now()
+	key := "yt:deadstreamX"
+
+	// A stream that started 17h ago (StartedAt), but this node keeps
+	// re-observing it so firstSeen keeps resetting to "now".
+	li.entries[key] = &liveEntry{
+		rec: LiveRecord{
+			VideoID:   "deadstreamX",
+			Title:     "Quick Friday Stream",
+			SeenAt:    now.Add(-24 * time.Minute).UnixMilli(),
+			StartedAt: now.Add(-17 * time.Hour).UnixMilli(),
+		},
+		firstSeen: now.Add(-24 * time.Minute),
+	}
+
+	// The node re-observes it repeatedly with a fresh SeenAt (firstSeen would
+	// reset on re-insert, but here it already exists so firstSeen holds).
+	for i := 0; i < 4; i++ {
+		li.merge(LiveRecord{
+			VideoID:   "deadstreamX",
+			Title:     "Quick Friday Stream",
+			SeenAt:    now.Add(-20 * time.Minute).UnixMilli(),
+			StartedAt: now.Add(-17 * time.Hour).UnixMilli(),
+		})
+	}
+
+	if hasVideoID(li.Search("", 100), "deadstreamX") {
+		t.Fatalf("17h-old stream (StartedAt) still appears despite repeated re-observation")
+	}
+}
+
 // TestDeadStreamTombstoneBlocksResurrection reproduces the failure of the first
 // fix attempt: freezing set lastSeen = firstSeen so the sweep deleted the entry,
 // but a subsequent peer re-announcement re-inserted it fresh (firstSeen = now),

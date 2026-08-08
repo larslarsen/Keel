@@ -494,22 +494,25 @@ func (li *LiveIndex) merge(r LiveRecord) {
 	// unrelated streams into one entry.
 	key := r.Platform + ":" + r.VideoID
 	e := li.entries[key]
-	// An existing entry whose first sighting is older than maxLiveAge cannot
-	// still be live — even a marathon stream ends. Peers re-announcing it keep
-	// bumping SeenAt to "now" (so the LiveRecency freeze and the 12h sweep
-	// never fire), which is exactly how a finished stream lingers in the feed
-	// showing an impossible "17+ hours" duration.
-	//
-	// Do NOT delete the entry here: a subsequent re-announcement would
-	// re-seed it with firstSeen = now, resurrecting the dead stream. Instead
-	// freeze it — stop accepting SeenAt bumps and age its lastSeen to its
-	// firstSeen so the periodic sweep retires it — tombstone the key so later
-	// merges refuse to re-admit it, and let Search skip it by age (below).
-	// The entry stays in the map, so later merges find it already frozen and
-	// cannot revive it.
-	if e != nil && now.Sub(e.firstSeen) > maxLiveAge {
-		li.retire(key, now)
-		e.lastSeen = e.firstSeen
+	// A stream whose start time is older than maxLiveAge cannot still be live
+	// — even a marathon ends. Use StartedAt (the stream's own start, which
+	// survives re-publishing) when present; fall back to firstSeen. Keying off
+	// firstSeen alone misses streams a node keeps re-observing: each local
+	// sighting refreshes firstSeen, so the entry never ages out and a 17h-old
+	// stream shows forever (the "17+ hours / 24 min ago" bug).
+	startMs := r.StartedAt
+	if startMs <= 0 {
+		if e != nil {
+			startMs = e.firstSeen.UnixMilli()
+		} else {
+			startMs = now.UnixMilli()
+		}
+	}
+	if now.UnixMilli()-startMs > maxLiveAge.Milliseconds() {
+		if e != nil {
+			li.retire(key, now)
+			e.lastSeen = e.firstSeen
+		}
 		return
 	}
 	if e == nil {
@@ -676,11 +679,16 @@ func (li *LiveIndex) Search(query string, limit int) []LiveEntry {
 		if e.rec.SeenAt < cutoff {
 			continue
 		}
-		// Skip streams whose first sighting is older than maxLiveAge: they
-		// cannot still be live (a finished stream lingers only because peers
-		// keep re-announcing it). Hidden from the feed immediately; the sweep
-		// retires the entry from memory.
-		if e.firstSeen.Before(maxAgeCutoff) {
+		// Skip streams whose start time is older than maxLiveAge: they cannot
+		// still be live (a finished stream lingers only because peers keep
+		// re-announcing it, and a node re-observing it refreshes firstSeen).
+		// Key off StartedAt when present, else firstSeen. Hidden from the feed
+		// immediately; the sweep retires the entry from memory.
+		startMs := e.rec.StartedAt
+		if startMs <= 0 {
+			startMs = e.firstSeen.UnixMilli()
+		}
+		if startMs < maxAgeCutoff.UnixMilli() {
 			continue
 		}
 		if len(terms) > 0 {
