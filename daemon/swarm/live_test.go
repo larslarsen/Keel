@@ -565,3 +565,50 @@ func TestDeadStreamRetiredDespiteReannounce(t *testing.T) {
 		t.Errorf("a fresh stream was wrongly hidden from Search")
 	}
 }
+
+// TestDeadStreamTombstoneBlocksResurrection reproduces the failure of the first
+// fix attempt: freezing set lastSeen = firstSeen so the sweep deleted the entry,
+// but a subsequent peer re-announcement re-inserted it fresh (firstSeen = now),
+// and it reappeared in the feed. The tombstone must refuse re-admission even
+// after the entry has been swept away.
+func TestDeadStreamTombstoneBlocksResurrection(t *testing.T) {
+	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
+	now := time.Now()
+	key := "yt:deadstreamX"
+
+	li.entries[key] = &liveEntry{
+		rec:       LiveRecord{VideoID: "deadstreamX", Title: "Quick Friday Stream", SeenAt: now.Add(-17 * time.Hour).UnixMilli()},
+		firstSeen: now.Add(-17 * time.Hour),
+	}
+
+	// Freeze it (as a gossip re-announcement would).
+	li.merge(LiveRecord{VideoID: "deadstreamX", SeenAt: now.Add(-5 * time.Minute).UnixMilli()})
+	if hasVideoID(li.Search("", 100), "deadstreamX") {
+		t.Fatalf("dead stream visible immediately after freeze")
+	}
+
+	// Simulate the sweep deleting the frozen entry (lastSeen aged to firstSeen).
+	delete(li.entries, key)
+
+	// Peers re-announce it repeatedly — this used to resurrect it.
+	for i := 0; i < 5; i++ {
+		li.merge(LiveRecord{VideoID: "deadstreamX", SeenAt: now.Add(-5 * time.Minute).UnixMilli()})
+	}
+
+	if _, ok := li.entries[key]; ok {
+		t.Errorf("tombstoned stream was re-inserted after sweep")
+	}
+	if hasVideoID(li.Search("", 100), "deadstreamX") {
+		t.Fatalf("tombstoned stream reappeared in the feed after re-announcements")
+	}
+}
+
+// hasVideoID reports whether a Search result set contains the given video id.
+func hasVideoID(hits []LiveEntry, id string) bool {
+	for _, h := range hits {
+		if h.VideoID == id {
+			return true
+		}
+	}
+	return false
+}

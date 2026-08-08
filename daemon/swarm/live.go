@@ -170,6 +170,14 @@ type LiveIndex struct {
 	mu          sync.RWMutex
 	entries     map[string]*liveEntry
 	localSeenAt map[string]int64
+	// retired holds keys we have decided are dead (firstSeen older than
+	// maxLiveAge) along with when the tombstone expires. A dead stream must not
+	// be re-admitted by a peer re-announcement: without it, the sweep deletes
+	// the frozen entry and the next gossip re-inserts it fresh (firstSeen =
+	// now), resurrecting the very stream we just retired. The tombstone refuses
+	// re-admission for maxLiveAge, after which a genuinely-still-live stream may
+	// return.
+	retired map[string]time.Time
 
 	topic *pubsub.Topic
 	sub   *pubsub.Subscription
@@ -436,6 +444,28 @@ func (li *LiveIndex) consume(ctx context.Context) {
 	}
 }
 
+// retire marks a key as a dead stream for maxLiveAge, so peer re-announcements
+// cannot re-admit it (see the retired field note).
+func (li *LiveIndex) retire(key string, now time.Time) {
+	if li.retired == nil {
+		li.retired = map[string]time.Time{}
+	}
+	li.retired[key] = now.Add(maxLiveAge)
+}
+
+// isRetired reports whether key is currently tombstoned.
+func (li *LiveIndex) isRetired(key string, now time.Time) bool {
+	exp, ok := li.retired[key]
+	if !ok {
+		return false
+	}
+	if now.After(exp) {
+		delete(li.retired, key) // tombstone expired; let it return if live
+		return false
+	}
+	return true
+}
+
 // merge folds one report into the index.
 //
 // There is no publisher to record: messages are authorless by design, and the
@@ -473,18 +503,22 @@ func (li *LiveIndex) merge(r LiveRecord) {
 	// Do NOT delete the entry here: a subsequent re-announcement would
 	// re-seed it with firstSeen = now, resurrecting the dead stream. Instead
 	// freeze it — stop accepting SeenAt bumps and age its lastSeen to its
-	// firstSeen so the periodic sweep retires it — and let Search skip it by
-	// age (below). The entry stays in the map, so later merges find it already
-	// frozen and cannot revive it.
+	// firstSeen so the periodic sweep retires it — tombstone the key so later
+	// merges refuse to re-admit it, and let Search skip it by age (below).
+	// The entry stays in the map, so later merges find it already frozen and
+	// cannot revive it.
 	if e != nil && now.Sub(e.firstSeen) > maxLiveAge {
-		// Freeze: age lastSeen to firstSeen so the periodic sweep retires the
-		// entry. Returning here also skips the SeenAt bump below, so peers
-		// re-announcing it cannot refresh it. The entry stays in the map, so a
-		// later merge finds it already frozen and cannot revive it.
+		li.retire(key, now)
 		e.lastSeen = e.firstSeen
 		return
 	}
 	if e == nil {
+		// Refuse to re-admit a stream we have tombstoned as dead. Without
+		// this, a peer re-announcement after the sweep deletes the frozen
+		// entry would re-insert it fresh and it would reappear in the feed.
+		if li.isRetired(key, now) {
+			return
+		}
 		if len(li.entries) >= maxLiveRecords {
 			return // backstop; sweep will make room
 		}
