@@ -123,13 +123,13 @@ func TestPrefixOfRejectsMalformed(t *testing.T) {
 	bad := []string{
 		"",
 		"no-colon",
-		"abc:deadbeef",       // non-numeric width
-		"0:deadbeef",         // width 0 invalid
-		"99:deadbeef",        // width >64 invalid
-		"12",                 // missing payload
-		":deadbeef",          // missing width
-		"12:",                // empty payload
-		"-3:deadbeef",        // negative
+		"abc:deadbeef", // non-numeric width
+		"0:deadbeef",   // width 0 invalid
+		"99:deadbeef",  // width >64 invalid
+		"12",           // missing payload
+		":deadbeef",    // missing width
+		"12:",          // empty payload
+		"-3:deadbeef",  // negative
 	}
 	for _, b := range bad {
 		if bits, ok := PrefixOf(b); ok {

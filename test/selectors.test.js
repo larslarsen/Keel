@@ -223,3 +223,69 @@ describe("vocabulary is data, patterns are not", () => {
     assert.equal(escapeToken("a.*b"), "a\\.\\*b");
   });
 });
+
+describe("a second platform runs on the same engine (WO-057)", () => {
+  /**
+   * The fixture is hand-authored from the config, not captured from tiktok.com.
+   * So this proves the engine extracts correctly when driven by a non-YouTube
+   * config — shapes, slot indexing, field readers, badges. It does not prove
+   * the selectors match real TikTok markup. Until a real page is captured, the
+   * TikTok config is a hypothesis and the engine is the thing under test.
+   */
+  const tiktok = JSON.parse(
+    readFileSync(join(fixtures, "..", "..", "daemon", "selectors_tt.json"), "utf8")
+  );
+
+  it("the shipped TikTok config is valid", () => {
+    assert.ok(validateSelectorConfig(tiktok));
+  });
+
+  it("extracts clips using only the TikTok config", () => {
+    const doc = loadHtml("tiktok_feed.html");
+    const out = extractFromContainer(doc.body, {
+      page_load_id: "11111111-1111-4111-8111-111111111111",
+      observed_at: 1_700_000_000_000,
+      platform: "tt",
+      surface: "WATCH_NEXT",
+      context_video_id: "7300000000000000000",
+    }, tiktok);
+
+    assert.equal(out.impressions.length, 3, "three clips in the fixture");
+    assert.deepEqual(
+      out.impressions.map((i) => i.video_id),
+      [
+        "7300000000000000001",
+        "7300000000000000002",
+        "7300000000000000003",
+      ]
+    );
+    assert.ok(
+      out.impressions.every((i) => i.platform === "tt"),
+      "every record must carry the platform it came from"
+    );
+    assert.ok(
+      out.impressions.every((i) => i.title && i.title.length > 0),
+      "titles come from the configured field"
+    );
+    assert.ok(
+      out.impressions[2].badges.includes("LIVE"),
+      "the live room should be badged"
+    );
+  });
+
+  it("the YouTube config finds nothing in a TikTok page", () => {
+    const doc = loadHtml("tiktok_feed.html");
+    const out = extractFromContainer(doc.body, {
+      page_load_id: "11111111-1111-4111-8111-111111111111",
+      observed_at: 1,
+      platform: "tt",
+      surface: "WATCH_NEXT",
+      context_video_id: "7300000000000000000",
+    });
+    assert.equal(
+      out.impressions.length,
+      0,
+      "platforms must not silently extract each other's pages"
+    );
+  });
+});

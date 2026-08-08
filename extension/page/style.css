@@ -150,3 +150,32 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
   opacity: 0.75;
   max-width: 52ch;
 }
+
+/* Live table — one row per stream, platforms distinguished by a column
+   rather than by separate tabs (WO-057). */
+#live-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+#live-table th,
+#live-table td {
+  text-align: left;
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  vertical-align: top;
+}
+#live-table th {
+  font-weight: 600;
+  opacity: 0.7;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+#live-table td.live-where {
+  white-space: nowrap;
+  opacity: 0.8;
+}
+#live-table .r-sub {
+  opacity: 0.7;
+}

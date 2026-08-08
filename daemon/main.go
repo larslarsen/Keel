@@ -494,7 +494,7 @@ func handleSuggest(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 		st.SetLiveVideos(ids)
 	}
 
-	res, err := st.Suggest(p.SeedVideoID, p.Entropy, p.Limit)
+	res, err := st.SuggestOn(p.Platform, p.SeedVideoID, p.Entropy, p.Limit)
 	if err != nil {
 		return replyErr(out, env.ID, err)
 	}

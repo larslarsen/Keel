@@ -12,6 +12,7 @@ import {
   extractFromContainer,
   extractFromYtInitialData,
   parseYtInitialDataFromDom,
+  platformFromUrl,
   surfaceFromUrl,
 } from "./extract.js";
 import { browser } from "../lib/browser.js";
@@ -107,12 +108,17 @@ function shutdown(reason) {
 let selectors = DEFAULT_SELECTORS;
 
 async function loadSelectors() {
+  const platform = platformFromUrl(location.href);
+  if (!platform) return;
   try {
-    const r = await browser.runtime.sendMessage({ type: "GET_SELECTORS" });
+    const r = await browser.runtime.sendMessage({
+      type: "GET_SELECTORS",
+      payload: { platform },
+    });
     const cfg = validateSelectorConfig(r?.ok ? r.selectors?.selectors : null);
     if (cfg) {
       selectors = cfg;
-      console.info(LOG, `selectors v${cfg.version} from daemon`);
+      console.info(LOG, `selectors v${cfg.version} for ${cfg.platform} from daemon`);
     } else if (r?.ok) {
       console.warn(LOG, "daemon selectors rejected; using the bundled set");
     }
@@ -160,12 +166,13 @@ function buildCtx() {
   // belongs to a page that is already gone. Dropping it costs nothing — the
   // navigation about to be processed will scan the new page properly.
   if (location.href !== lastHref) return null;
-  const { surface, context_video_id } = surfaceFromUrl(location.href);
+  const { platform, surface, context_video_id } = surfaceFromUrl(location.href);
   if (surface === "WATCH_NEXT") {
     if (!context_video_id) return null;
     return {
       page_load_id: pageLoadId,
       observed_at: Date.now(),
+      platform,
       surface: "WATCH_NEXT",
       context_video_id,
       // The title of the video being watched.
@@ -184,6 +191,7 @@ function buildCtx() {
     return {
       page_load_id: pageLoadId,
       observed_at: Date.now(),
+      platform,
       surface: "HOME",
       context_video_id: null,
       context_query_hash: null,
@@ -423,6 +431,7 @@ async function onNavigate({ force = false } = {}) {
 
   const ctx = buildCtx();
   await send("PAGE_CONTEXT", {
+    platform: platformFromUrl(href),
     surface: ctx?.surface ?? null,
     pageLoadId,
     href,
@@ -536,7 +545,12 @@ async function start() {
     //
     // This reports the page as off-surface and observes nothing. Enabling a
     // surface is not collecting data.
-    await send("PAGE_CONTEXT", { surface: null, pageLoadId: null, href: location.href });
+    await send("PAGE_CONTEXT", {
+      platform: platformFromUrl(location.href),
+      surface: null,
+      pageLoadId: null,
+      href: location.href,
+    });
     browser.runtime.onMessage.addListener((msg) => {
       if (msg?.type === "CONSENT_CHANGED" && consentGranted(msg.payload?.consent)) {
         armed = false;

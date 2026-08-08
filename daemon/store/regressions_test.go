@@ -144,6 +144,7 @@ func TestPropertyStringless(t *testing.T) {
 		t.Errorf("block key = %q, want video id %q", blk.Key, vid)
 	}
 }
+
 // ---- test helpers ----
 
 func countImpressions(st *Store, videoID string) int {

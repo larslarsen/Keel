@@ -127,6 +127,9 @@ type LiveRecord struct {
 	ChannelID string `json:"c,omitempty"`
 	// SeenAt is when the publisher observed it, in unix milliseconds.
 	SeenAt int64 `json:"s"`
+	// Platform the stream is on: "yt", "tt". Absent means YouTube, so records
+	// from older nodes still merge correctly.
+	Platform string `json:"p,omitempty"`
 	// StartedAt is the earliest anyone reporting this stream saw it live.
 	//
 	// A lower bound on how long it has been running. "Seen live just now" is
@@ -257,9 +260,9 @@ func (n *Node) seedLiveFromLocal() {
 	for _, v := range seen {
 		n.live.merge(LiveRecord{
 			VideoID: v.VideoID, Title: v.Title, ChannelID: v.ChannelID,
-			SeenAt: v.SeenAt, StartedAt: v.StartedAt,
+			SeenAt: v.SeenAt, StartedAt: v.StartedAt, Platform: v.Platform,
 		})
-		n.live.setLocalSeenAt(v.VideoID, v.SeenAt)
+		n.live.setLocalSeenAt(v.Platform, v.VideoID, v.SeenAt)
 	}
 	n.logf("live index seeded with %d local sightings", len(seen))
 }
@@ -353,7 +356,7 @@ func validateLiveMessage(_ context.Context, _ peer.ID, msg *pubsub.Message) bool
 	if err := json.Unmarshal(msg.Data, &r); err != nil {
 		return false
 	}
-	if len(r.VideoID) != 11 || len(r.Title) > 300 {
+	if !validVideoID(r.Platform, r.VideoID) || len(r.Title) > 300 {
 		return false
 	}
 	// A record with no observation time cannot be ranked or filtered honestly —
@@ -369,6 +372,44 @@ func validateLiveMessage(_ context.Context, _ peer.ID, msg *pubsub.Message) bool
 		return false
 	}
 	return true
+}
+
+// validVideoID checks an id against the platform that claims it.
+//
+// YouTube ids are exactly 11 characters from a known alphabet. TikTok ids are
+// numeric and longer, and vary in length, so the old blanket length check would
+// have rejected every TikTok stream. An unknown platform is refused outright
+// rather than waved through — a record naming a platform this build does not
+// understand cannot be displayed or acted on, and accepting it would put
+// unusable entries in everyone's index.
+func validVideoID(platform, id string) bool {
+	switch platform {
+	case "", "yt":
+		if len(id) != 11 {
+			return false
+		}
+		for _, c := range id {
+			if !(c == '-' || c == '_' ||
+				(c >= '0' && c <= '9') ||
+				(c >= 'a' && c <= 'z') ||
+				(c >= 'A' && c <= 'Z')) {
+				return false
+			}
+		}
+		return true
+	case "tt":
+		if len(id) < 15 || len(id) > 25 {
+			return false
+		}
+		for _, c := range id {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func (li *LiveIndex) consume(ctx context.Context) {
@@ -390,14 +431,21 @@ func (li *LiveIndex) consume(ctx context.Context) {
 // There is no publisher to record: messages are authorless by design, and the
 // index is a set of streams rather than a tally of who saw what.
 func (li *LiveIndex) merge(r LiveRecord) {
-	if r.VideoID == "" || r.SeenAt <= 0 {
+	if r.SeenAt <= 0 || !validVideoID(r.Platform, r.VideoID) {
 		return // unplaceable: see validateLiveMessage
+	}
+	if r.Platform == "" {
+		r.Platform = "yt"
 	}
 	now := time.Now()
 	li.mu.Lock()
 	defer li.mu.Unlock()
 
-	e := li.entries[r.VideoID]
+	// Keyed by platform and id together. Nothing guarantees TikTok and YouTube
+	// will never mint the same string, and one colliding id would merge two
+	// unrelated streams into one entry.
+	key := r.Platform + ":" + r.VideoID
+	e := li.entries[key]
 	if e == nil {
 		if len(li.entries) >= maxLiveRecords {
 			return // backstop; sweep will make room
@@ -408,7 +456,7 @@ func (li *LiveIndex) merge(r LiveRecord) {
 		// it end) is not credible. If we have no local observation, accept the
 		// peer's claim — the long-tail tradeoff for unsigned gossip.
 		initialSeenAt := r.SeenAt
-		if localSeenAt, ok := li.localSeenAt[r.VideoID]; ok {
+		if localSeenAt, ok := li.localSeenAt[key]; ok {
 			if r.SeenAt > localSeenAt+store.LiveRecency.Milliseconds() {
 				// Peer claims stream live long after our local sighting ended.
 				// Not credible — keep our true observation time.
@@ -418,8 +466,14 @@ func (li *LiveIndex) merge(r LiveRecord) {
 				initialSeenAt = localSeenAt
 			}
 		}
-		e = &liveEntry{rec: LiveRecord{VideoID: r.VideoID, Title: r.Title, ChannelID: r.ChannelID, SeenAt: initialSeenAt}, firstSeen: now}
-		li.entries[r.VideoID] = e
+		// Copy the record and override only what the guard decided. Listing
+		// fields by hand here silently dropped Platform and StartedAt when they
+		// were added — a constructor that has to be updated for every new field
+		// will eventually not be.
+		rec := r
+		rec.SeenAt = initialSeenAt
+		e = &liveEntry{rec: rec, firstSeen: now}
+		li.entries[key] = e
 	}
 	// Keep the richest version seen: a later report may carry a title an
 	// earlier one lacked.
@@ -443,7 +497,7 @@ func (li *LiveIndex) merge(r LiveRecord) {
 	// prevents re-gossip from resurrecting dead streams, regardless of whether
 	// the entry was created via first-insert or already existed.
 	acceptSeenAtBump := true
-	if localSeenAt, ok := li.localSeenAt[r.VideoID]; ok {
+	if localSeenAt, ok := li.localSeenAt[key]; ok {
 		// Our last local observation is the ground truth. If it's older than
 		// LiveRecency, the stream ended — don't let peer claims revive it.
 		if now.UnixMilli()-localSeenAt > store.LiveRecency.Milliseconds() {
@@ -490,10 +544,13 @@ func (li *LiveIndex) sweep(ctx context.Context) {
 // id and stop propagating — but originating one still costs a round of mesh
 // traffic. A node announces a stream it has not heard of, or one whose record is
 // ageing, so suppression cannot quietly let a still-running stream expire.
-func (li *LiveIndex) shouldPublish(videoID string) bool {
+func (li *LiveIndex) shouldPublish(platform, videoID string) bool {
+	if platform == "" {
+		platform = "yt"
+	}
 	li.mu.RLock()
 	defer li.mu.RUnlock()
-	e := li.entries[videoID]
+	e := li.entries[platform+":"+videoID]
 	if e == nil {
 		return true
 	}
@@ -593,15 +650,23 @@ func (li *LiveIndex) Size() int {
 
 // setLocalSeenAt records this node's own local observation time for a video.
 // Called from seedLiveFromLocal (startup) and PublishLive (live observation).
-func (li *LiveIndex) setLocalSeenAt(videoID string, seenAt int64) {
+//
+// Keyed by platform and id together, matching `entries` — the resurrection
+// guard reads this map, and a collision between platforms would let one
+// platform's sighting vouch for another's stream.
+func (li *LiveIndex) setLocalSeenAt(platform, videoID string, seenAt int64) {
+	if platform == "" {
+		platform = "yt"
+	}
+	key := platform + ":" + videoID
 	li.mu.Lock()
 	defer li.mu.Unlock()
 	if li.localSeenAt == nil {
 		li.localSeenAt = map[string]int64{}
 	}
 	// Keep the most recent local observation.
-	if seenAt > li.localSeenAt[videoID] {
-		li.localSeenAt[videoID] = seenAt
+	if seenAt > li.localSeenAt[key] {
+		li.localSeenAt[key] = seenAt
 	}
 }
 
@@ -618,12 +683,12 @@ func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
 		return
 	}
 	// Track our local observation so merge can corroborate peer claims.
-	n.live.setLocalSeenAt(r.VideoID, r.SeenAt)
+	n.live.setLocalSeenAt(r.Platform, r.VideoID, r.SeenAt)
 	// Always refresh our own index from our own observation, so the panel's
 	// "seen live" time reflects when we actually saw it — independent of whether
 	// we gossip it. Gossip to peers stays gated on shouldPublish below.
 	n.live.merge(r)
-	if !n.live.shouldPublish(r.VideoID) {
+	if !n.live.shouldPublish(r.Platform, r.VideoID) {
 		return
 	}
 	if err := n.live.Publish(ctx, r); err != nil {

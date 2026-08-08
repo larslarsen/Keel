@@ -90,10 +90,12 @@ describe("parse helpers", () => {
       "WATCH_NEXT"
     );
     assert.deepEqual(surfaceFromUrl("https://www.youtube.com/"), {
+      platform: "yt",
       surface: "HOME",
       context_video_id: null,
     });
     assert.deepEqual(surfaceFromUrl("https://www.youtube.com"), {
+      platform: "yt",
       surface: "HOME",
       context_video_id: null,
     });
@@ -537,5 +539,43 @@ describe("stale ytInitialData is refused (WO-054 follow-up)", () => {
     );
     assert.equal(afterNavigating.impressions.length, 0);
     assert.equal(afterNavigating.stale, true);
+  });
+});
+
+describe("TikTok surfaces (WO-057)", () => {
+  it("recognises TikTok pages and keeps them apart from YouTube", () => {
+    const clip = surfaceFromUrl(
+      "https://www.tiktok.com/@someone/video/7300000000000000000"
+    );
+    assert.deepEqual(clip, {
+      platform: "tt",
+      surface: "WATCH_NEXT",
+      context_video_id: "7300000000000000000",
+    });
+
+    // The For You feed is the same kind of object as YouTube's homepage: what
+    // the recommender serves unasked. That comparison is the point of the
+    // project, so it gets the same surface name.
+    assert.equal(surfaceFromUrl("https://www.tiktok.com/").surface, "HOME");
+    assert.equal(surfaceFromUrl("https://www.tiktok.com/foryou").surface, "HOME");
+
+    // A live room reads as a watch page with no clip id of its own.
+    const live = surfaceFromUrl("https://www.tiktok.com/@someone/live");
+    assert.equal(live.platform, "tt");
+    assert.equal(live.surface, "WATCH_NEXT");
+
+    // A profile is not a surface Keel records, same as a YouTube channel page.
+    assert.equal(surfaceFromUrl("https://www.tiktok.com/@someone").surface, null);
+  });
+
+  it("refuses to claim a site Keel does not run on", () => {
+    const off = surfaceFromUrl("https://example.com/@someone/video/7300000000000000000");
+    assert.equal(off.platform, null);
+    assert.equal(off.surface, null);
+  });
+
+  it("a YouTube id is not accepted as a TikTok clip id", () => {
+    const r = surfaceFromUrl("https://www.tiktok.com/@someone/video/dQw4w9WgXcQ");
+    assert.equal(r.surface, null, "TikTok clip ids are long and numeric");
   });
 });

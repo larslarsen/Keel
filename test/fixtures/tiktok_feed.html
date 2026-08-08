@@ -1,0 +1,47 @@
+<!--
+  Hand-authored TikTok feed fixture (WO-057).
+
+  IMPORTANT: this was written from the selector config, not captured from
+  tiktok.com. It proves the extraction engine drives correctly off a non-YouTube
+  config — the shapes, the slot indexing, the field readers. It does NOT prove
+  the selectors match real TikTok markup, because nothing here came from TikTok.
+
+  Until someone captures a real logged-out page, treat the TikTok selectors as
+  unverified. The engine is tested; the config is a hypothesis.
+-->
+<div data-e2e="recommend-list-item-container">
+  <a href="/@firstcreator/video/7300000000000000001">
+    <img alt="A clip about bread" />
+  </a>
+  <div class="DivInfoContainer">
+    <div data-e2e="video-desc">A clip about bread</div>
+    <a href="/@firstcreator">@firstcreator</a>
+    <strong data-e2e="video-views">12.4K</strong>
+  </div>
+  <div class="DivTimeTag">00:32</div>
+</div>
+
+<div data-e2e="recommend-list-item-container">
+  <a href="/@secondcreator/video/7300000000000000002">
+    <img alt="Someone repairing a bicycle" />
+  </a>
+  <div class="DivInfoContainer">
+    <div data-e2e="video-desc">Someone repairing a bicycle</div>
+    <a href="/@secondcreator">@secondcreator</a>
+    <strong data-e2e="video-views">903</strong>
+  </div>
+  <div class="DivTimeTag">01:05</div>
+</div>
+
+<!-- A live room: no duration, carries a live tag. -->
+<div data-e2e="recommend-list-item-container">
+  <a href="/@thirdcreator/video/7300000000000000003">
+    <img alt="Late night radio" />
+  </a>
+  <div class="DivInfoContainer">
+    <div data-e2e="video-desc">Late night radio</div>
+    <a href="/@thirdcreator">@thirdcreator</a>
+    <strong data-e2e="video-views">2.1K watching</strong>
+  </div>
+  <div class="DivTag Badge">LIVE</div>
+</div>

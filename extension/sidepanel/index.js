@@ -238,7 +238,7 @@ function makeSuggestionLi(s) {
   const thumbBox = chan
     ? `<div class="thumb-wrap">${thumb}<span class="chan">${escapeHtml(chan)}</span></div>`
     : thumb;
-  const href = `https://www.youtube.com/watch?v=${encodeURIComponent(s.video_id)}`;
+  const href = watchUrl(s.video_id, lastPageCache?.platform);
   // Age rather than how many times Keel saw it. "2w ago" is what people read a
   // video's age from everywhere else, so it needs no explaining; the
   // observation count meant something only to us.
@@ -363,6 +363,15 @@ function currentSeed() {
   return "";
 }
 
+/** Where a video lives, per platform. */
+function watchUrl(videoID, platform) {
+  const id = encodeURIComponent(videoID);
+  // TikTok needs an author handle for a canonical clip URL and the panel does
+  // not have one, so the id is handed to TikTok's own resolver.
+  if (platform === "tt") return `https://www.tiktok.com/video/${id}`;
+  return `https://www.youtube.com/watch?v=${id}`;
+}
+
 function renderSuggestions(res, seed) {
   const list = (res && res.suggestions) || [];
   if (!list.length) {
@@ -397,12 +406,16 @@ function renderSuggestions(res, seed) {
 async function refreshSuggestions({ force = false } = {}) {
   const seed = currentSeed();
   const pageId = lastPageCache?.pageLoadId ?? "";
-  const key = `${pageId}|${seed}|${entropy}`;
+  const key = `${lastPageCache?.platform || "yt"}|${pageId}|${seed}|${entropy}`;
   if (!force && key === lastSuggestKey) return;
   lastSuggestKey = key;
   el.meta.textContent = "Walking the graph…";
   try {
     const r = await rpc("SUGGEST", {
+      // Scoped, never blended: a TikTok clip is not an answer to "what next"
+      // after a YouTube video, and the two graphs are built by different
+      // systems (WO-057).
+      platform: lastPageCache?.platform || "yt",
       seed_video_id: seed,
       entropy,
       limit: 25,
@@ -471,6 +484,11 @@ function bumpCounts(inserted) {
  * a web URL, so the active tab is repointed via tabs.update (host permission
  * covers youtube.com; no "tabs" permission needed).
  */
+/** Sites Keel runs on. Kept beside the navigation helpers that guard on it. */
+function isSupportedSite(url) {
+  return /^https:\/\/www\.(youtube|tiktok)\.com\//.test(String(url || ""));
+}
+
 async function openVideoInActiveTab(href) {
   if (!browser.tabs?.query || !browser.tabs?.update) return;
   let tab;
@@ -479,8 +497,7 @@ async function openVideoInActiveTab(href) {
   } catch {
     return;
   }
-  const url = tab?.url || "";
-  if (!/^https:\/\/www\.youtube\.com\//.test(url)) return;
+  if (!isSupportedSite(tab?.url)) return;
   await browser.tabs.update(tab.id, { url: href });
 }
 
@@ -505,7 +522,7 @@ async function goBackInActiveTab() {
   } catch {
     return;
   }
-  if (!/^https:\/\/www\.youtube\.com\//.test(tab?.url || "")) return;
+  if (!isSupportedSite(tab?.url)) return;
   try {
     await browser.tabs.sendMessage(tab.id, { type: "GO_BACK" });
   } catch {

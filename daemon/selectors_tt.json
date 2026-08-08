@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "platform": "tt",
+  "cards": "[data-e2e=\"recommend-list-item-container\"], [data-e2e=\"video-card\"], div[class*=\"DivItemContainer\"]",
+  "homeItems": "[data-e2e=\"recommend-list-item-container\"], div[class*=\"DivItemContainer\"]",
+  "shapes": {
+    "compact": {
+      "match": "[data-e2e=\"video-card\"]",
+      "href": [
+        "a[href*=\"/video/\"]",
+        "a[href*=\"/live\"]"
+      ],
+      "title": [
+        "[data-e2e=\"video-desc\"]",
+        "img[alt]",
+        "a[title]"
+      ],
+      "channelLink": [
+        "a[href^=\"/@\"]",
+        "[data-e2e=\"video-author-uniqueid\"]"
+      ],
+      "duration": [
+        "[class*=\"DivTimeTag\"]",
+        "[class*=\"video-time\"]"
+      ],
+      "metadata": [
+        "[data-e2e=\"video-views\"]",
+        "strong[title]",
+        "[class*=\"StrongVideoCount\"]"
+      ]
+    },
+    "lockup": {
+      "match": "[data-e2e=\"recommend-list-item-container\"], div[class*=\"DivItemContainer\"]",
+      "links": [
+        "a[href*=\"/video/\"]",
+        "a[href*=\"/live\"]",
+        "a[href^=\"/@\"]"
+      ],
+      "title": [
+        "[data-e2e=\"video-desc\"]",
+        "h1",
+        "img[alt]"
+      ],
+      "metadataRow": [
+        "[class*=\"DivInfoContainer\"]",
+        "[class*=\"DivContentContainer\"]"
+      ],
+      "leadingIcon": [
+        "svg",
+        "[class*=\"Icon\"]"
+      ],
+      "duration": [
+        "[class*=\"DivTimeTag\"]"
+      ],
+      "durationScan": [
+        "[class*=\"DivTimeTag\"]",
+        "span"
+      ],
+      "metadata": [
+        "[data-e2e=\"video-views\"]",
+        "[class*=\"StrongVideoCount\"]",
+        "strong[title]"
+      ]
+    }
+  },
+  "containers": {
+    "watch": [
+      "[data-e2e=\"recommend-list-item-container\"]",
+      "div[class*=\"DivRecommendContainer\"]",
+      "main"
+    ],
+    "home": [
+      "[data-e2e=\"recommend-list-item-container\"]",
+      "div[class*=\"DivVideoFeed\"]",
+      "main"
+    ]
+  },
+  "rendererKeys": [
+    "itemStruct"
+  ],
+  "vocabulary": {
+    "ago": [
+      "ago"
+    ],
+    "views": [
+      "views",
+      "view",
+      "watching",
+      "likes"
+    ],
+    "live": [
+      "live"
+    ],
+    "verified": [
+      "verified"
+    ],
+    "sponsored": [
+      "sponsored",
+      "ad",
+      "promoted"
+    ],
+    "ageGated": [
+      "age",
+      "18+"
+    ],
+    "broadcast": [
+      "streamed",
+      "premiered"
+    ],
+    "magnitudes": [
+      "k",
+      "m",
+      "b"
+    ]
+  },
+  "badges": {
+    "containers": [
+      "[class*=\"Badge\"]",
+      "[data-e2e*=\"live\"]",
+      "[class*=\"DivTag\"]"
+    ],
+    "overlay": [
+      "[class*=\"DivTimeTag\"]",
+      "[class*=\"Badge\"]"
+    ]
+  }
+}

@@ -203,21 +203,21 @@ func TestPublishSuppressionScales(t *testing.T) {
 	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
 
 	// Unknown stream: announce it.
-	if !li.shouldPublish("dQw4w9WgXcQ") {
+	if !li.shouldPublish("yt", "dQw4w9WgXcQ") {
 		t.Error("refused to announce a stream nobody has reported")
 	}
 
 	// Already known and fresh: stay quiet.
 	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ", SeenAt: time.Now().UnixMilli()})
-	if li.shouldPublish("dQw4w9WgXcQ") {
+	if li.shouldPublish("yt", "dQw4w9WgXcQ") {
 		t.Error("re-announced a stream already in the index")
 	}
 
 	// Ageing: announce again, so suppression cannot let a live stream expire.
 	li.mu.Lock()
-	li.entries["dQw4w9WgXcQ"].lastSeen = time.Now().Add(-liveRefreshAfter - time.Minute)
+	li.entries["yt:dQw4w9WgXcQ"].lastSeen = time.Now().Add(-liveRefreshAfter - time.Minute)
 	li.mu.Unlock()
-	if !li.shouldPublish("dQw4w9WgXcQ") {
+	if !li.shouldPublish("yt", "dQw4w9WgXcQ") {
 		t.Error("suppression would let an ageing record expire out of the index")
 	}
 }
@@ -295,7 +295,7 @@ func TestStaleStreamIsNotPromoted(t *testing.T) {
 	})
 
 	for _, id := range []string{"staleaaaaaa", "freshbbbbbb"} {
-		if li.entries[id].lastSeen.Before(now.Add(-time.Minute)) {
+		if li.entries["yt:"+id].lastSeen.Before(now.Add(-time.Minute)) {
 			t.Fatalf("%s: fixture does not reproduce a warm lastSeen", id)
 		}
 	}
@@ -345,7 +345,7 @@ func TestFirstInsertResurrectionGuard(t *testing.T) {
 
 	// Simulate local observation from yesterday (seeded from impressions at startup).
 	yesterday := now.Add(-24 * time.Hour).UnixMilli()
-	li.setLocalSeenAt("deadstream1", yesterday)
+	li.setLocalSeenAt("yt", "deadstream1", yesterday)
 
 	// Peer gossips a claim that the stream was live 1 minute ago.
 	peerClaim := now.Add(-1 * time.Minute).UnixMilli()
@@ -357,7 +357,7 @@ func TestFirstInsertResurrectionGuard(t *testing.T) {
 
 	// The stored SeenAt should stay at yesterday (our local truth),
 	// not the peer's incredible claim.
-	e := li.entries["deadstream1"]
+	e := li.entries["yt:deadstream1"]
 	if e == nil {
 		t.Fatal("entry not created")
 	}
@@ -381,13 +381,13 @@ func TestFirstInsertNoLocalObservationAcceptsPeer(t *testing.T) {
 	// No local observation for this video.
 	peerClaim := now.Add(-10 * time.Minute).UnixMilli()
 	li.merge(LiveRecord{
-		VideoID: "longtailstream",
+		VideoID: "longtailstr",
 		Title:   "Long tail stream",
 		SeenAt:  peerClaim,
 	})
 
 	// Should accept peer's claim since we have no local knowledge to contradict it.
-	e := li.entries["longtailstream"]
+	e := li.entries["yt:longtailstr"]
 	if e == nil {
 		t.Fatal("entry not created")
 	}
@@ -408,18 +408,18 @@ func TestFirstInsertLocalMoreRecentKeepsLocal(t *testing.T) {
 
 	// Local observation 5 minutes ago.
 	localSeen := now.Add(-5 * time.Minute).UnixMilli()
-	li.setLocalSeenAt("recentstream", localSeen)
+	li.setLocalSeenAt("yt", "recentstrm1", localSeen)
 
 	// Peer claims 10 minutes ago (older than our local).
 	peerClaim := now.Add(-10 * time.Minute).UnixMilli()
 	li.merge(LiveRecord{
-		VideoID: "recentstream",
+		VideoID: "recentstrm1",
 		Title:   "Recent stream",
 		SeenAt:  peerClaim,
 	})
 
 	// Should keep our more recent local observation.
-	e := li.entries["recentstream"]
+	e := li.entries["yt:recentstrm1"]
 	if e == nil {
 		t.Fatal("entry not created")
 	}
@@ -441,22 +441,68 @@ func TestFirstInsertPeerWithinWindowAccepted(t *testing.T) {
 
 	// Local observation 30 minutes ago (within LiveRecency = 1 hour).
 	localSeen := now.Add(-30 * time.Minute).UnixMilli()
-	li.setLocalSeenAt("runningstream", localSeen)
+	li.setLocalSeenAt("yt", "runningstrm", localSeen)
 
 	// Peer claims 10 minutes ago (more recent, but within LiveRecency of local).
 	peerClaim := now.Add(-10 * time.Minute).UnixMilli()
 	li.merge(LiveRecord{
-		VideoID: "runningstream",
+		VideoID: "runningstrm",
 		Title:   "Running stream",
 		SeenAt:  peerClaim,
 	})
 
 	// Should accept peer's more recent claim since stream might still be live.
-	e := li.entries["runningstream"]
+	e := li.entries["yt:runningstrm"]
 	if e == nil {
 		t.Fatal("entry not created")
 	}
 	if e.rec.SeenAt != peerClaim {
 		t.Errorf("stored SeenAt=%d, want peer's %d", e.rec.SeenAt, peerClaim)
+	}
+}
+
+// TestPlatformAwareIDs — WO-057. The live index used to require exactly eleven
+// characters, which is a YouTube id and nothing else. TikTok ids are numeric and
+// longer, so every TikTok stream would have been discarded at the door.
+func TestPlatformAwareIDs(t *testing.T) {
+	cases := []struct {
+		platform, id string
+		ok           bool
+		why          string
+	}{
+		{"yt", "dQw4w9WgXcQ", true, "a real YouTube id"},
+		{"", "dQw4w9WgXcQ", true, "absent platform means YouTube, for older nodes"},
+		{"yt", "7300000000000000000", false, "a TikTok id is not a YouTube id"},
+		{"tt", "7300000000000000000", true, "a real TikTok id"},
+		{"tt", "dQw4w9WgXcQ", false, "TikTok ids are numeric"},
+		{"tt", "73000", false, "too short to be a TikTok id"},
+		{"xx", "dQw4w9WgXcQ", false, "an unknown platform cannot be displayed, so is refused"},
+	}
+	for _, c := range cases {
+		if got := validVideoID(c.platform, c.id); got != c.ok {
+			t.Errorf("validVideoID(%q, %q) = %v, want %v — %s", c.platform, c.id, got, c.ok, c.why)
+		}
+	}
+}
+
+// TestPlatformsDoNotCollide — entries are keyed by platform and id together.
+// Nothing guarantees two platforms never mint the same string, and one
+// collision would merge unrelated streams into a single entry.
+func TestPlatformsDoNotCollide(t *testing.T) {
+	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
+	now := time.Now().UnixMilli()
+	li.merge(LiveRecord{Platform: "yt", VideoID: "dQw4w9WgXcQ", Title: "A YouTube stream", SeenAt: now})
+	li.merge(LiveRecord{Platform: "tt", VideoID: "7300000000000000000", Title: "A TikTok stream", SeenAt: now})
+
+	if got := li.Size(); got != 2 {
+		t.Fatalf("index holds %d entries, want 2", got)
+	}
+	hits := li.Search("stream", 10)
+	seen := map[string]string{}
+	for _, h := range hits {
+		seen[h.Platform] = h.Title
+	}
+	if seen["yt"] != "A YouTube stream" || seen["tt"] != "A TikTok stream" {
+		t.Errorf("platforms did not stay distinct: %+v", seen)
 	}
 }

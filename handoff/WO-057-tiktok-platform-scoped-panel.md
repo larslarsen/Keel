@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Engineer (Sr Dev lane) / reviewer |
-| **Status** | **Open** (blocked on WO-056) |
+| **Status** | **Built 2026-08-08 — selectors unverified against live TikTok** |
 | **Date** | 2026-08-07 |
 | **Source** | Lars, 2026-08-07 — wants TikTok support; panel must be platform-scoped (show YouTube suggestions on youtube.com, TikTok suggestions on tiktok.com, never a blended feed). Live fullpage shows all platforms in one table. |
 
@@ -83,3 +83,60 @@ stable AND payloads small AND web-store compliant.
       feed. Live fullpage = one table, all platforms, platform column.
 - [ ] `host_permissions` includes tiktok.com; AGENTS.md records the exception.
 - [ ] `go test ./daemon/...` and `npm run test` pass.
+
+---
+
+## Engineer response — 2026-08-08
+
+All four work items are built, and one carries a caveat worth reading before
+anyone trusts it.
+
+**Platform dimension.** `impressions.platform`, `LiveRecord.Platform`, and the
+suggestion walk are all scoped. Defaulted rather than nullable: every row
+predating this is a YouTube row, and a NULL would drop silently out of every
+scoped query. `validateLiveMessage` no longer assumes eleven characters — ids are
+checked against the platform claiming them, and an unknown platform is refused
+outright rather than defaulted, since a record naming a platform this build
+cannot display would only put unusable entries in everyone's index.
+
+Live entries and local sightings are keyed by platform *and* id. Nothing
+guarantees two platforms never mint the same string, and one collision would
+merge unrelated streams.
+
+**Selector config.** `daemon/selectors_tt.json`, served per platform. Asking for
+an unknown platform is an error rather than a YouTube fallback — silently
+handing back the wrong selectors would produce extraction failures that look
+like bugs in the engine.
+
+**Panel scoping.** The side panel asks for its own platform's graph and links
+with that platform's URL shape. The live page is one table across platforms with
+a Where column, as specified: it opens with no site behind it, and "what is live
+now" is a question that spans platforms.
+
+**Permissions.** `*://www.tiktok.com/*` added to both manifests; AGENTS.md
+records the exception and why the old absolute rule was wrong — the danger is
+broad or growing permissions, not a second named site.
+
+### The caveat
+
+**The TikTok selectors are unverified.** The fixture is hand-authored from the
+config, not captured from tiktok.com, so the tests prove the *engine* extracts
+correctly when driven by a non-YouTube config — shapes, slot indexing, field
+readers, badges, and that YouTube's config finds nothing in a TikTok page. They
+prove nothing about whether those selectors match real TikTok markup.
+
+TikTok hashes and rotates its class names, so the config leans on `data-e2e`
+attributes, which are more stable. Whether they are the *right* ones needs a
+capture from a logged-out session, exactly as `test/README.md` requires for
+YouTube.
+
+Until then: the platform machinery is real and tested; the TikTok config is a
+hypothesis.
+
+Also made id parsing platform-aware, which the ticket did not mention and
+without which nothing worked — `videoIdFromHref` looked for an eleven-character
+`v=` parameter, so no TikTok link resolved at all. Kept compiled rather than
+configured: an id's shape is a fact about a platform, and a daemon able to
+redefine it could have the extension record arbitrary strings as video ids.
+
+`npm test`: 48 pass. `go test ./daemon/...`: pass.

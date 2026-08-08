@@ -43,6 +43,8 @@ type LiveSighting struct {
 	Title     string
 	ChannelID string
 	SeenAt    int64
+	// Platform the sighting was on.
+	Platform string
 	// StartedAt is the earliest this node saw the stream carrying a LIVE badge.
 	// A lower bound on how long it has been running, and the only evidence
 	// available — YouTube does not put a start time on a rail card.
@@ -58,10 +60,10 @@ type LiveSighting struct {
 // was not already kept.
 func (s *Store) RecentLiveSightings(cutoff int64) ([]LiveSighting, error) {
 	rows, err := s.db.Query(`
-SELECT video_id, MAX(title), MAX(channel_id), MAX(observed_at), MIN(observed_at)
+SELECT video_id, MAX(title), MAX(channel_id), MAX(observed_at), MIN(observed_at), platform
 FROM impressions
 WHERE badges_json LIKE '%LIVE%'
-GROUP BY video_id
+GROUP BY platform, video_id
 HAVING MAX(observed_at) >= ?`, cutoff)
 	if err != nil {
 		return nil, err
@@ -71,7 +73,7 @@ HAVING MAX(observed_at) >= ?`, cutoff)
 	for rows.Next() {
 		var v LiveSighting
 		var title, ch sql.NullString
-		if err := rows.Scan(&v.VideoID, &title, &ch, &v.SeenAt, &v.StartedAt); err != nil {
+		if err := rows.Scan(&v.VideoID, &title, &ch, &v.SeenAt, &v.StartedAt, &v.Platform); err != nil {
 			return nil, err
 		}
 		v.Title, v.ChannelID = title.String, ch.String
@@ -103,7 +105,7 @@ func (s *Store) SetLiveVideos(ids []string) {
 // The local half matters most today, because it works with no peers at all: a
 // stream this user was shown in the last few hours is very likely still running,
 // and that is the only evidence available before the network has any.
-func (s *Store) currentlyLive() (map[string]bool, error) {
+func (s *Store) currentlyLive(platform string) (map[string]bool, error) {
 	out := map[string]bool{}
 	s.liveMu.RLock()
 	for id := range s.liveNow {
@@ -114,7 +116,7 @@ func (s *Store) currentlyLive() (map[string]bool, error) {
 	cutoff := time.Now().Add(-LiveRecency).UnixMilli()
 	rows, err := s.db.Query(`
 SELECT DISTINCT video_id FROM impressions
-WHERE observed_at >= ? AND badges_json LIKE '%LIVE%'`, cutoff)
+WHERE observed_at >= ? AND badges_json LIKE '%LIVE%' AND platform = ?`, cutoff, platform)
 	if err != nil {
 		return out, nil // a failure here must not break suggestions
 	}
@@ -172,6 +174,15 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // addColumnIfMissing extends a table in place. SQLite has no IF NOT EXISTS for
 // columns, so presence is checked first.
+// platformOf defaults an absent platform to YouTube and refuses one this build
+// does not know — an unrecognised value would drop out of every scoped query.
+func platformOf(p string) string {
+	if p == "" || !bridge.KnownPlatforms[p] {
+		return bridge.PlatformYouTube
+	}
+	return p
+}
+
 func (s *Store) addColumnIfMissing(table, column, decl string) {
 	var n int
 	_ = s.db.QueryRow(
@@ -191,6 +202,10 @@ CREATE TABLE IF NOT EXISTS impressions (
   context_video_id TEXT,
   context_query_hash TEXT,
   context_title TEXT,
+  -- Which platform this was observed on. Defaulted rather than nullable: every
+  -- row predating TikTok is a YouTube row, and a NULL here would fall out of
+  -- every platform-scoped query silently.
+  platform TEXT NOT NULL DEFAULT 'yt',
   slot_index INTEGER NOT NULL,
   video_id TEXT NOT NULL,
   channel_id TEXT,
@@ -284,6 +299,7 @@ CREATE TABLE IF NOT EXISTS peer_catalogue (
 		return err
 	}
 	s.addColumnIfMissing("impressions", "context_title", "TEXT")
+	s.addColumnIfMissing("impressions", "platform", "TEXT NOT NULL DEFAULT 'yt'")
 	// WO-016: apply known channel_ids across page loads for the same video_id.
 	if _, err := s.BackfillChannelsFromCatalogue(); err != nil {
 		return err
@@ -320,6 +336,10 @@ func (s *Store) migrateToV2IfNeeded() error {
   context_video_id TEXT,
   context_query_hash TEXT,
   context_title TEXT,
+  -- Which platform this was observed on. Defaulted rather than nullable: every
+  -- row predating TikTok is a YouTube row, and a NULL here would fall out of
+  -- every platform-scoped query silently.
+  platform TEXT NOT NULL DEFAULT 'yt',
   slot_index INTEGER NOT NULL,
   video_id TEXT NOT NULL,
   channel_id TEXT,
@@ -391,8 +411,8 @@ func (s *Store) PutImpressions(list []bridge.Impression) (inserted int, err erro
 INSERT INTO impressions (
   page_load_id, observed_at, surface, context_video_id, context_query_hash,
   slot_index, video_id, channel_id, channel_unknown, title, duration_s, view_count, published_at, badges_json,
-  context_title
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  context_title, platform
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(page_load_id, surface, video_id) DO UPDATE SET
   title=excluded.title,
   channel_id=COALESCE(excluded.channel_id, impressions.channel_id),
@@ -449,7 +469,7 @@ ON CONFLICT(channel_id) DO UPDATE SET name=excluded.name, updated_at=excluded.up
 			imp.ContextVideoID, imp.ContextQueryHash,
 			imp.SlotIndex, imp.VideoID, imp.ChannelID, unk, imp.Title,
 			imp.DurationS, imp.ViewCount, imp.PublishedAt, string(badges),
-			imp.ContextTitle,
+			imp.ContextTitle, platformOf(imp.Platform),
 		)
 		if err != nil {
 			return inserted, err

@@ -21,14 +21,35 @@ const BUFFER_MAX = 200;
  * daemon link, and re-injects the observer into already-open YouTube tabs.
  * Match is site-wide (WO-010); the observer idles off HOME/WATCH_NEXT. */
 const WATCHDOG_ALARM = "keel-watchdog";
-const YT_URL = "*://www.youtube.com/*";
+/**
+ * Every site Keel runs on (WO-057).
+ *
+ * A single YouTube pattern was fine while YouTube was the only platform; with
+ * two it becomes a silent filter that drops the other one. Listed once here so
+ * adding a platform is one edit rather than a hunt through call sites.
+ */
+const SITE_URLS = ["*://www.youtube.com/*", "*://www.tiktok.com/*"];
+
+/** Which platform a tab URL belongs to, or null if Keel does not run there. */
+function platformForUrl(url) {
+  const u = String(url || "");
+  if (/^https:\/\/www\.youtube\.com\//.test(u)) return "yt";
+  if (/^https:\/\/www\.tiktok\.com\//.test(u)) return "tt";
+  return null;
+}
 /** Port name used by the SidePanel to signal open/close (WO-009). */
 const SIDEPANEL_PORT = "keel-sidepanel";
 
 /** @type {object[]} */
 let buffer = [];
 /** Live page proof (memory only). generation = rail replacement counter. */
-let lastPage = { pageLoadId: null, impressions: [], failures: 0, generation: null };
+let lastPage = {
+  platform: "yt",
+  pageLoadId: null,
+  impressions: [],
+  failures: 0,
+  generation: null,
+};
 let connected = false;
 /** Open SidePanel documents (one port each). In-memory only. */
 let sidePanelPorts = 0;
@@ -47,7 +68,7 @@ async function broadcastToYoutubeTabs(msg) {
   if (!browser.tabs?.query || !browser.tabs?.sendMessage) return;
   let tabs;
   try {
-    tabs = await browser.tabs.query({ url: YT_URL });
+    tabs = await browser.tabs.query({ url: SITE_URLS });
   } catch (err) {
     console.warn(LOG, "broadcast tabs.query", err?.message || err);
     return;
@@ -201,8 +222,10 @@ async function handle(message, sender) {
 
   switch (message.type) {
     case "PAGE_CONTEXT": {
+      if (message.payload?.platform) lastPage.platform = message.payload.platform;
       if (message.payload?.pageLoadId) {
         lastPage = {
+          platform: message.payload.platform || lastPage.platform || "yt",
           pageLoadId: message.payload.pageLoadId,
           impressions: [],
           failures: 0,
@@ -393,6 +416,7 @@ async function handle(message, sender) {
     case "SUGGEST": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
       const env = await bridge.request("SUGGEST", {
+        platform: String(message.payload?.platform || "yt"),
         seed_video_id: String(message.payload?.seed_video_id || ""),
         entropy: Number(message.payload?.entropy) || 0,
         limit: Number(message.payload?.limit) || 25,
@@ -552,7 +576,7 @@ async function rearmYoutubeTabs() {
   if (!browser.scripting?.executeScript || !browser.tabs?.query) return;
   let tabs;
   try {
-    tabs = await browser.tabs.query({ url: YT_URL });
+    tabs = await browser.tabs.query({ url: SITE_URLS });
   } catch (err) {
     console.warn(LOG, "rearm scan", err?.message || err);
     return;

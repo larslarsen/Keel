@@ -55,3 +55,25 @@ the project, not just the code. If one seems wrong, say so and cite the section 
 - Decisions live in documents, not chat. New decisions get a work order in `handoff/`.
 - Don't widen scope. If something seems to need a later phase, that's a scope error — raise it.
 - `DESIGN_INCENTIVES.md` — what each contribution level earns, and why Level 4 earns nothing.
+
+## Host permissions — the TikTok exception (WO-057, 2026-08-08)
+
+The hard rule was "no match patterns outside `youtube.com`". `*://www.tiktok.com/*`
+is now in `host_permissions` and `content_scripts.matches`, deliberately.
+
+Keel's claim is about recommender systems, not about one company. A second
+platform is what turns "here is what YouTube shows you" into a comparison, and
+the whole distribution argument — that the corpus is worth something to
+researchers — is weaker with a single source.
+
+What has **not** changed, and must not:
+
+- No `tabs` permission, no optional permissions, no MAIN-world script.
+- No new capability on YouTube. TikTok gets exactly what YouTube gets: read the
+  rendered page, report structured records to the daemon.
+- Adding a third platform is the same deliberate edit, not a wildcard. There is
+  no `*://*/*` and there never should be — the permission a user grants should
+  name the sites it covers.
+
+The rule this replaces was right about the risk and wrong to be absolute: the
+danger is broad or growing permissions, not a second named site.

@@ -124,12 +124,26 @@ export function parseViewCount(text, cfg = DEFAULT_SELECTORS) {
 }
 
 /** @param {string | null | undefined} href */
-export function videoIdFromHref(href) {
+/**
+ * The id a link points at, for one platform.
+ *
+ * Compiled rather than configured: an id's *shape* is a fact about the
+ * platform, not a place to look, and a daemon able to redefine it could make
+ * the extension record arbitrary strings as video ids.
+ *
+ * @param {string | null | undefined} href
+ * @param {string} [platform] "yt" (default) or "tt"
+ */
+export function videoIdFromHref(href, platform = "yt") {
   if (!href) return null;
+  const base = platform === "tt" ? "https://www.tiktok.com" : "https://www.youtube.com";
+  if (platform === "tt") {
+    // /@author/video/<digits>, and the id-only form the panel links to.
+    const m = String(href).match(/\/video\/(\d{15,25})(?:[/?#]|$)/);
+    return m ? m[1] : null;
+  }
   try {
-    const u = href.startsWith("http")
-      ? new URL(href)
-      : new URL(href, "https://www.youtube.com");
+    const u = href.startsWith("http") ? new URL(href) : new URL(href, base);
     if (u.pathname === "/watch") {
       const v = u.searchParams.get("v");
       if (v && /^[\w-]{11}$/.test(v)) return v;
@@ -142,8 +156,23 @@ export function videoIdFromHref(href) {
 }
 
 /** @param {string | null | undefined} href */
-export function channelIdFromHref(href) {
+/**
+ * The channel or author a link points at.
+ *
+ * TikTok has only handles, so the `/@name` branch already covers it — but the
+ * YouTube-only `/channel/UC…` and `/user/` forms must not fire on a TikTok URL
+ * that happens to contain them.
+ *
+ * @param {string | null | undefined} href
+ * @param {string} [platform]
+ */
+export function channelIdFromHref(href, platform = "yt") {
   if (!href) return null;
+  if (platform === "tt") {
+    const h = String(href).match(/^\/?@([\w.-]+)/) ||
+      String(href).match(/tiktok\.com\/@([\w.-]+)/);
+    return h ? `@${h[1]}` : null;
+  }
   try {
     const u = href.startsWith("http")
       ? new URL(href)
@@ -161,24 +190,71 @@ export function channelIdFromHref(href) {
 }
 
 /** @param {string} href */
+/**
+ * Which platform a URL belongs to.
+ *
+ * Compiled in rather than configured, like the surface rules below: knowing
+ * that tiktok.com is TikTok is not a selector, and a daemon that could redefine
+ * it could point the extension at a site the user never agreed to.
+ */
+export function platformFromUrl(href) {
+  try {
+    const h = new URL(href, "https://www.youtube.com").hostname;
+    if (/(^|\.)youtube\.com$/.test(h)) return "yt";
+    if (/(^|\.)tiktok\.com$/.test(h)) return "tt";
+  } catch {
+    /* not a URL we can read */
+  }
+  return null;
+}
+
+/**
+ * Which surface a URL is, per platform.
+ *
+ * WATCH_NEXT means "a single item with recommendations beside it", HOME means
+ * "an unprompted feed". The names are YouTube's but the ideas are not: TikTok's
+ * For You page is the same kind of object as YouTube's homepage — what the
+ * recommender serves you unasked — and that is the comparison the whole project
+ * exists to make.
+ */
 export function surfaceFromUrl(href) {
+  const platform = platformFromUrl(href);
   try {
     const u = new URL(href, "https://www.youtube.com");
-    if (u.pathname === "/watch") {
-      const v = u.searchParams.get("v");
-      return {
-        surface: "WATCH_NEXT",
-        context_video_id: v && /^[\w-]{11}$/.test(v) ? v : null,
-      };
+    if (platform === "yt") {
+      if (u.pathname === "/watch") {
+        const v = u.searchParams.get("v");
+        return {
+          platform,
+          surface: "WATCH_NEXT",
+          context_video_id: v && /^[\w-]{11}$/.test(v) ? v : null,
+        };
+      }
+      // HOME only at the exact root (WO-010). /feed/*, /@*, /results* stay idle.
+      if (u.pathname === "/" || u.pathname === "") {
+        return { platform, surface: "HOME", context_video_id: null };
+      }
     }
-    // HOME only at the exact root (WO-010). /feed/*, /@*, /results* stay idle.
-    if (u.pathname === "/" || u.pathname === "") {
-      return { surface: "HOME", context_video_id: null };
+    if (platform === "tt") {
+      // /@author/video/<id> is a single clip with a recommendation column.
+      const m = u.pathname.match(/^\/@[^/]+\/video\/(\d{15,25})$/);
+      if (m) {
+        return { platform, surface: "WATCH_NEXT", context_video_id: m[1] };
+      }
+      // A live room reads as a watch page whose id is the room.
+      const live = u.pathname.match(/^\/@[^/]+\/live$/);
+      if (live) {
+        return { platform, surface: "WATCH_NEXT", context_video_id: null };
+      }
+      // The For You feed, and the explicit /foryou path.
+      if (u.pathname === "/" || u.pathname === "" || u.pathname === "/foryou") {
+        return { platform, surface: "HOME", context_video_id: null };
+      }
     }
   } catch {
     /* ignore */
   }
-  return { surface: null, context_video_id: null };
+  return { platform, surface: null, context_video_id: null };
 }
 
 /**
@@ -225,7 +301,7 @@ export function extractBadges(el, cfg = DEFAULT_SELECTORS) {
 function readCompactFields(el, cfg = DEFAULT_SELECTORS) {
   const c = cfg.shapes.compact;
   const thumb = pick(el, c.href);
-  const video_id = videoIdFromHref(thumb?.getAttribute("href"));
+  const video_id = videoIdFromHref(thumb?.getAttribute("href"), cfg.platform);
   if (!video_id) return null;
 
   const titleEl = pick(el, c.title);
@@ -240,7 +316,7 @@ function readCompactFields(el, cfg = DEFAULT_SELECTORS) {
   if (!title) return null;
 
   const chA = pick(el, c.channelLink);
-  const channel_id = channelIdFromHref(chA?.getAttribute("href"));
+  const channel_id = channelIdFromHref(chA?.getAttribute("href"), cfg.platform);
   const channel_name =
     (chA?.textContent || "").replace(/\s+/g, " ").trim() || null;
   // Live cards may omit channel links; null is ok (channel_unknown).
@@ -279,7 +355,7 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
   let video_id = null;
   let title = "";
   for (const a of pickAll(el, c.links)) {
-    const id = videoIdFromHref(a.getAttribute("href"));
+    const id = videoIdFromHref(a.getAttribute("href"), cfg.platform);
     if (!id) continue;
     if (!video_id) video_id = id;
     const t = (a.getAttribute("title") || a.textContent || "")
@@ -303,7 +379,7 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
   for (const a of pickAll(el, c.links)) {
     const href = a.getAttribute("href") || "";
     if (href.includes("watch?v=")) continue;
-    const id = channelIdFromHref(href);
+    const id = channelIdFromHref(href, cfg.platform);
     if (id) {
       channel_id = id;
       channel_name = (a.textContent || "").replace(/\s+/g, " ").trim() || null;
@@ -420,6 +496,7 @@ export function extractFromElement(el, ctx, fields = undefined, cfg = DEFAULT_SE
     surface: ctx.surface,
     context_video_id: ctx.context_video_id ?? null,
     context_title: ctx.context_title ?? null,
+    platform: ctx.platform ?? "yt",
     context_query_hash: null,
     slot_index: ctx.slot_index,
     video_id: f.video_id,

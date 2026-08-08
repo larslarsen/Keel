@@ -73,7 +73,10 @@ type Impression struct {
 	// — it is a public fact about an id already held. Without it the interface
 	// can only name the current video if it happened to be recommended
 	// elsewhere first, which is often not the case.
-	ContextTitle   *string `json:"context_title"`
+	ContextTitle *string `json:"context_title"`
+	// Platform this was observed on: "yt", "tt". Absent means YouTube, which is
+	// every row written before TikTok existed.
+	Platform       string  `json:"platform,omitempty"`
 	SlotIndex      int     `json:"slot_index"`
 	VideoID        string  `json:"video_id"`
 	ChannelID      *string `json:"channel_id"` // null when DOM omits channel links
@@ -252,6 +255,8 @@ type SearchResultPayload struct {
 // restarts often and stays near the seed; high entropy wanders further and
 // prefers less-viewed nodes.
 type SuggestPayload struct {
+	// Platform to walk. Empty means YouTube.
+	Platform    string `json:"platform"`
 	SeedVideoID string `json:"seed_video_id"`
 	Entropy     int    `json:"entropy"`
 	Limit       int    `json:"limit"`
@@ -280,6 +285,14 @@ type Suggestion struct {
 }
 
 // SuggestResultPayload is SUGGEST_RESULT body.
+// PlatformYouTube is the default for anything that does not say otherwise.
+const PlatformYouTube = "yt"
+
+// KnownPlatforms are the platforms this build understands. A record naming
+// anything else is rejected rather than stored — an unknown platform would
+// silently escape every platform-scoped query.
+var KnownPlatforms = map[string]bool{"yt": true, "tt": true}
+
 type SuggestResultPayload struct {
 	SeedVideoID string       `json:"seed_video_id"`
 	SeedTitle   *string      `json:"seed_title"`

@@ -97,7 +97,7 @@ func alphaForEntropy(entropy int) float64 {
 // Weight combines how often the pair was seen with how high B sat in A's rail:
 // a video repeatedly at slot 0 is a stronger signal than one glimpsed once at
 // slot 18. Slot weight decays gently so a deep-but-frequent pair still counts.
-func (s *Store) loadGraph() (map[string][]edge, int, error) {
+func (s *Store) loadGraph(platform string) (map[string][]edge, int, error) {
 	// Both surfaces, not only watch pages.
 	//
 	// This used to be WATCH_NEXT only, which silently excluded every homepage
@@ -119,8 +119,9 @@ SELECT COALESCE(NULLIF(context_video_id, ''), ?) AS from_id,
        video_id, COUNT(*) AS n, AVG(slot_index) AS avg_slot
 FROM impressions
 WHERE surface IN ('WATCH_NEXT', 'HOME')
+  AND platform = ?
   AND COALESCE(NULLIF(context_video_id, ''), ?) != video_id
-GROUP BY from_id, video_id`, HomeFrom, HomeFrom)
+GROUP BY from_id, video_id`, HomeFrom, platform, HomeFrom)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -166,7 +167,19 @@ GROUP BY from_id, video_id`, HomeFrom, HomeFrom)
 //
 // If seed is empty the walk starts from the most recently observed context
 // video, so the page has something useful to show without being asked.
+// Suggest walks the YouTube graph. Kept for callers that predate platforms.
 func (s *Store) Suggest(seed string, entropy, limit int) (*bridge.SuggestResultPayload, error) {
+	return s.SuggestOn(bridge.PlatformYouTube, seed, entropy, limit)
+}
+
+// SuggestOn walks one platform's graph.
+//
+// Scoped rather than blended, and that is a product decision not a technical
+// one: a TikTok clip is not a reasonable answer to "what should I watch after
+// this YouTube video". The recommendation graphs are different objects built by
+// different systems, and mixing them would produce a feed belonging to neither.
+func (s *Store) SuggestOn(platform, seed string, entropy, limit int) (*bridge.SuggestResultPayload, error) {
+	platform = platformOf(platform)
 	if limit <= 0 || limit > maxSuggestions {
 		limit = maxSuggestions
 	}
@@ -190,7 +203,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	}
 	out.SeedTitle = s.titleForVideo(seed)
 
-	g, edgeCount, err := s.loadGraph()
+	g, edgeCount, err := s.loadGraph(platform)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +238,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// Blending keeps both properties: the seed dominates, so suggestions change
 	// as you move, and there is always enough mass elsewhere to fill the list.
 	restart := map[string]float64{seed: seedRestartShare}
-	if roots, err := s.watchedRoots(); err == nil {
+	if roots, err := s.watchedRoots(platform); err == nil {
 		for k, v := range roots {
 			restart[k] += v * (1 - seedRestartShare)
 		}
@@ -248,7 +261,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// The rail is how the walk travels, not what it recommends. Excluding the
 	// destination while keeping the path forces suggestions at least two hops
 	// out, which is where anything the user has not just been offered lives.
-	seen, err := s.railFor(seed)
+	seen, err := s.railFor(platform, seed)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +269,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// A running livestream is the one thing worth keeping from the rail, and it
 	// is exempt from the demotion below: its value expires, so "you were already
 	// shown this" is not a reason to bury it.
-	live, err := s.currentlyLive()
+	live, err := s.currentlyLive(platform)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +295,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 		}
 	}
 
-	meta, err := s.videoMeta(ids(ranked))
+	meta, err := s.videoMeta(platform, ids(ranked))
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +319,7 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// the graph at all makes them rank like any other video, so they filled the
 	// panel. Penalised rather than removed — a past stream can still be the
 	// right answer, it just should not lead.
-	pastLive, err := s.everLive()
+	pastLive, err := s.everLive(platform)
 	if err != nil {
 		return nil, err
 	}
@@ -534,12 +547,12 @@ func walkFrom(g map[string][]edge, restart map[string]float64, alpha float64) (m
 //
 // Weighting by observation count says the obvious thing instead: suggestions
 // should lean where the user's recommendations actually came from.
-func (s *Store) watchedRoots() (map[string]float64, error) {
+func (s *Store) watchedRoots(platform string) (map[string]float64, error) {
 	rows, err := s.db.Query(`
 SELECT COALESCE(NULLIF(context_video_id, ''), ?) AS root, COUNT(*) AS n
 FROM impressions
-WHERE surface IN ('WATCH_NEXT', 'HOME')
-GROUP BY root`, HomeFrom)
+WHERE surface IN ('WATCH_NEXT', 'HOME') AND platform = ?
+GROUP BY root`, HomeFrom, platform)
 	if err != nil {
 		return nil, err
 	}
@@ -598,9 +611,10 @@ func leadWithNovel(ranked []scored, n int) []scored {
 //
 // Distinct from currentlyLive, which is about right now. This is "was a stream",
 // and a stream that is over ranks poorly — see the penalty in Suggest.
-func (s *Store) everLive() (map[string]bool, error) {
+func (s *Store) everLive(platform string) (map[string]bool, error) {
 	rows, err := s.db.Query(
-		`SELECT DISTINCT video_id FROM impressions WHERE badges_json LIKE '%LIVE%'`)
+		`SELECT DISTINCT video_id FROM impressions WHERE badges_json LIKE '%LIVE%' AND platform = ?`,
+		platform)
 	if err != nil {
 		return map[string]bool{}, nil
 	}
@@ -619,9 +633,10 @@ func (s *Store) everLive() (map[string]bool, error) {
 //
 // These are the seed's own out-edges: what YouTube offered on that page. They
 // drive the walk and are excluded from its output — see Suggest.
-func (s *Store) railFor(seed string) (map[string]bool, error) {
+func (s *Store) railFor(platform, seed string) (map[string]bool, error) {
 	rows, err := s.db.Query(
-		`SELECT DISTINCT video_id FROM impressions WHERE context_video_id = ?`, seed)
+		`SELECT DISTINCT video_id FROM impressions WHERE context_video_id = ? AND platform = ?`,
+		seed, platform)
 	if err != nil {
 		return nil, err
 	}
@@ -637,7 +652,7 @@ func (s *Store) railFor(seed string) (map[string]bool, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) videoMeta(idList []string) (map[string]*vmeta, error) {
+func (s *Store) videoMeta(platform string, idList []string) (map[string]*vmeta, error) {
 	out := map[string]*vmeta{}
 	if len(idList) == 0 {
 		return out, nil
@@ -647,7 +662,7 @@ func (s *Store) videoMeta(idList []string) (map[string]*vmeta, error) {
 	// wins where both exist, since it was observed here.
 	rows, err := s.db.Query(`
 SELECT video_id, MAX(title), MAX(channel_id), MAX(view_count), MAX(duration_s), MAX(published_at), COUNT(*) AS seen
-FROM impressions GROUP BY video_id
+FROM impressions WHERE platform = ? GROUP BY video_id
 UNION ALL
 -- Videos known only as something the user watched.
 --
@@ -658,14 +673,15 @@ UNION ALL
 -- this they render as "Untitled".
 SELECT context_video_id, MAX(context_title), NULL, NULL, NULL, NULL, 0 AS seen
 FROM impressions
-WHERE context_video_id IS NOT NULL AND context_video_id != ''
+WHERE platform = ? AND context_video_id IS NOT NULL AND context_video_id != ''
   AND context_title IS NOT NULL AND context_title != ''
-  AND context_video_id NOT IN (SELECT video_id FROM impressions)
+  AND context_video_id NOT IN (SELECT video_id FROM impressions WHERE platform = ?)
 GROUP BY context_video_id
 UNION ALL
 SELECT video_id, title, channel_id, view_count, duration_s, published_at, 0 AS seen
 FROM peer_catalogue
-WHERE video_id NOT IN (SELECT video_id FROM impressions)`)
+WHERE video_id NOT IN (SELECT video_id FROM impressions WHERE platform = ?)`,
+		platform, platform, platform, platform)
 	if err != nil {
 		return nil, err
 	}

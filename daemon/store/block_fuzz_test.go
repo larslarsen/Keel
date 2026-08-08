@@ -27,14 +27,14 @@ func FuzzImportBlock(f *testing.F) {
 		SchemaVersion: blockSchemaVersion,
 		Key:           "12:abc",
 		Cohort:        "GB-en",
-		Edges: []bridge.EdgeObservation{{To: "video2", Count: 1}},
+		Edges:         []bridge.EdgeObservation{{To: "video2", Count: 1}},
 	}
 	if raw, err := good.Encode(); err == nil {
 		f.Add(raw)
 	}
 	f.Add([]byte{})
 	f.Add([]byte("not json"))
-	f.Add([]byte(`{"key":"12:abc"}`))            // no signature
+	f.Add([]byte(`{"key":"12:abc"}`)) // no signature
 	f.Add([]byte(`{"schema_version":2,"key":"12:abc","signature":"deadbeef","public_key":"x"}`))
 	f.Add([]byte(`{"schema_version":999,"key":"12:abc"}`))
 
@@ -112,4 +112,3 @@ func TestImportBlockRejectsForged(t *testing.T) {
 		}
 	}
 }
-

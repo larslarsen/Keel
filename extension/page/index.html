@@ -83,7 +83,17 @@
           />
         </label>
         <p class="meta" id="live-meta"></p>
-        <ol id="live-list"></ol>
+        <table id="live-table" hidden>
+          <thead>
+            <tr>
+              <th scope="col">Where</th>
+              <th scope="col">Stream</th>
+              <th scope="col">Live for</th>
+              <th scope="col">Seen</th>
+            </tr>
+          </thead>
+          <tbody id="live-list"></tbody>
+        </table>
         <p class="note">
           Streams other people running Keel have seen live recently. Times are
           when a stream was last reported, not a guarantee it is still running —

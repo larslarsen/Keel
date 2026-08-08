@@ -10,12 +10,14 @@
     "scripting"
   ],
   "host_permissions": [
-    "*://www.youtube.com/*"
+    "*://www.youtube.com/*",
+    "*://www.tiktok.com/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "*://www.youtube.com/*"
+        "*://www.youtube.com/*",
+        "*://www.tiktok.com/*"
       ],
       "js": [
         "content/bootstrap.js"
@@ -36,7 +38,8 @@
         "lib/protocol.js"
       ],
       "matches": [
-        "*://www.youtube.com/*"
+        "*://www.youtube.com/*",
+        "*://www.tiktok.com/*"
       ]
     }
   ],

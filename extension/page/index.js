@@ -203,30 +203,11 @@ function fmtAgo(ms) {
   return `${Math.floor(hrs / 24)} day${hrs < 48 ? "" : "s"} ago`;
 }
 
-/**
- * How long a stream has been running, which is what a viewer can act on.
- *
- * "Seen live just now" is true of a stream that started eleven hours ago and
- * tells nobody anything — YouTube keeps showing the card, so the last sighting
- * is always recent. The useful fact is the span between the first time anyone
- * saw it live and the last: an hour old is a different proposition from
- * half a day old, whatever the badge says right now.
- */
-function liveAge(s) {
-  const seen = s.s ?? s.last_seen;
-  const began = s.b || s.first_seen || seen;
-  const mins = Math.max(0, Math.round((seen - began) / 60000));
-  if (mins >= 60) {
-    const hrs = Math.floor(mins / 60);
-    return `live for ${hrs}+ hour${hrs === 1 ? "" : "s"} · seen ${fmtAgo(seen)}`;
-  }
-  if (mins >= 5) return `live for ${mins}+ min · seen ${fmtAgo(seen)}`;
-  return `seen live ${fmtAgo(seen)}`;
-}
-
 function renderLive(res) {
   el.liveList.replaceChildren();
+  const table = document.getElementById("live-table");
   const streams = res?.streams || [];
+  if (table) table.hidden = true;
 
   if (res && res.available === false) {
     el.liveMeta.textContent = res.reason || "Not connected to the network yet.";
@@ -241,20 +222,58 @@ function renderLive(res) {
   el.liveMeta.textContent =
     `${streams.length} stream${streams.length === 1 ? "" : "s"}` +
     (res.indexed ? ` of ${res.indexed} known` : "");
+  if (table) table.hidden = false;
 
+  // One table across platforms rather than a tab per platform.
+  //
+  // The side panel is scoped to the site you are on, because a suggestion has
+  // to belong to somewhere. This page is different: it is opened on its own,
+  // with no site behind it, and "what is live right now" is a question that
+  // spans platforms. A column keeps them distinguishable without a click.
   for (const s of streams) {
-    const li = document.createElement("li");
-    li.innerHTML =
-      `<div class="row-main">${thumbHtml(s.v)}<div class="row-text">` +
-      `<p class="r-title"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(s.v)}"` +
-      ` target="_blank" rel="noreferrer">${escapeHtml(s.t || s.v)}</a></p>` +
-      `<p class="r-sub">${escapeHtml(liveAge(s))}` +
-      (s.c ? ` · ${escapeHtml(s.c)}` : "") +
-      `</p></div></div>`;
-    el.liveList.appendChild(li);
-    const im = li.querySelector("img.thumb[data-vid]");
-    if (im) fillThumb(im, decodeURIComponent(im.dataset.vid || ""));
+    const tr = document.createElement("tr");
+    const platform = s.p || "yt";
+    tr.innerHTML =
+      `<td class="live-where">${escapeHtml(platformLabel(platform))}</td>` +
+      `<td><a href="${escapeHtml(liveUrl(s.v, platform))}" target="_blank" rel="noreferrer">` +
+      `${escapeHtml(s.t || s.v)}</a>` +
+      (s.c ? `<span class="r-sub"> · ${escapeHtml(s.c)}</span>` : "") +
+      `</td>` +
+      `<td>${escapeHtml(liveFor(s))}</td>` +
+      `<td>${escapeHtml(fmtAgo(s.s ?? s.last_seen))}</td>`;
+    el.liveList.appendChild(tr);
   }
+}
+
+/** Human name for a platform code. */
+function platformLabel(p) {
+  return p === "tt" ? "TikTok" : "YouTube";
+}
+
+/** Where a live stream lives, per platform. */
+function liveUrl(id, platform) {
+  const v = encodeURIComponent(id);
+  if (platform === "tt") return `https://www.tiktok.com/video/${v}`;
+  return `https://www.youtube.com/watch?v=${v}`;
+}
+
+/**
+ * How long it has been running — the fact a viewer can act on.
+ *
+ * "Seen just now" is true of a stream that started this morning, because
+ * whoever is watching keeps reporting it. The span between first and last
+ * sighting is what distinguishes a fresh stream from an all-day one.
+ */
+function liveFor(s) {
+  const seen = s.s ?? s.last_seen;
+  const began = s.b || s.first_seen || seen;
+  const mins = Math.max(0, Math.round((seen - began) / 60000));
+  if (mins >= 60) {
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}+ hour${hrs === 1 ? "" : "s"}`;
+  }
+  if (mins >= 5) return `${mins}+ min`;
+  return "just started";
 }
 
 async function loadLive() {
