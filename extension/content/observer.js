@@ -476,6 +476,35 @@ browser.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "GO_BACK") history.back();
 });
 
+/**
+ * Scan immediately when a recommendation is clicked.
+ *
+ * Scans are throttled to THROTTLE_MS, and YouTube's rail loads lazily as you
+ * scroll. A card that appears and is clicked inside that window is never
+ * scanned — so the recommendation the user actually *took* is the one most
+ * likely to be missing. Measured on a live corpus: nine videos were watched but
+ * never captured as recommendations, and the four watched longest were among
+ * them. Those are precisely the ones clicked promptly.
+ *
+ * pointerdown rather than click, because it fires before navigation starts.
+ * The extraction is synchronous DOM work; only the send is async, and it is
+ * fire-and-forget.
+ *
+ * This records the whole rail, not just the clicked card, so slot indices stay
+ * consistent with every other scan.
+ */
+document.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (orphaned || e.button !== 0) return;
+    const t = e.target;
+    if (!t || typeof t.closest !== "function") return;
+    if (!t.closest('a[href*="/watch?v="]')) return;
+    observeDom().catch(() => {});
+  },
+  true,
+);
+
 async function start() {
   if (armed) return;
   armed = true;

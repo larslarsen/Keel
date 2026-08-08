@@ -364,6 +364,7 @@ export function extractFromElement(el, ctx, fields = undefined) {
     observed_at: ctx.observed_at ?? Date.now(),
     surface: ctx.surface,
     context_video_id: ctx.context_video_id ?? null,
+    context_title: ctx.context_title ?? null,
     context_query_hash: null,
     slot_index: ctx.slot_index,
     video_id: f.video_id,
