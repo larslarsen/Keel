@@ -76,3 +76,4 @@ log has not been made — it will drift out from under whoever is implementing i
 | 058 | Peer graph empty at v0.1.0: no seed, no auto peer data | Sr Dev | **Open** |
 | 059 | Distributed search over peer data via multi-peer superset fetch + local intersection (user-invented) | Sr Dev | **Open** (proposal) |
 | 060 | Protocol versioning for deterministic, node-agreeing constants (tokenizer k, bucket params) | Sr Dev | **Open** |
+| 061 | Version negotiation, compatibility policy, update UX (connect-if-compatible, warn/auto-update if behind) | Sr Dev | **Open** |
