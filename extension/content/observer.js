@@ -17,6 +17,7 @@ import {
 import { browser } from "../lib/browser.js";
 import {
   DEFAULT_SELECTORS,
+  pick,
   validateSelectorConfig,
 } from "../lib/selectors.js";
 import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
@@ -191,33 +192,14 @@ function buildCtx() {
   return null;
 }
 
-/** Watch-next rail container. */
+/** Watch-next rail container — first configured selector that matches. */
 function containerWatch() {
-  return (
-    document.querySelector(
-      "#related ytd-watch-next-secondary-results-renderer #items"
-    ) ||
-    document.querySelector("#related #items") ||
-    document.querySelector("#related") ||
-    document.querySelector("ytd-watch-next-secondary-results-renderer") ||
-    document.querySelector("#secondary-inner #related") ||
-    document.querySelector("#secondary-inner") ||
-    null
-  );
+  return pick(document, selectors.containers.watch);
 }
 
 /** Home feed grid container — separate chain from the watch rail (WO-010). */
 function containerHome() {
-  return (
-    document.querySelector(
-      "ytd-browse[page-subtype='home'] ytd-rich-grid-renderer #contents"
-    ) ||
-    document.querySelector("ytd-rich-grid-renderer > #contents") ||
-    document.querySelector("ytd-rich-grid-renderer #contents") ||
-    document.querySelector("ytd-browse[page-subtype='home'] #contents") ||
-    document.querySelector("ytd-rich-grid-renderer") ||
-    null
-  );
+  return pick(document, selectors.containers.home);
 }
 
 /** Resolve observation root per surface — never documentElement. */
@@ -301,7 +283,7 @@ async function observeInitial() {
   if (!ctx || ctx.surface !== "WATCH_NEXT") return;
   const data = parseYtInitialDataFromDom(document);
   if (!data) return;
-  const { impressions, failures } = extractFromYtInitialData(data, ctx);
+  const { impressions, failures } = extractFromYtInitialData(data, ctx, selectors);
   channelByVideo = new Map();
   for (const imp of impressions) {
     if (imp.channel_id && !imp.channel_unknown) {

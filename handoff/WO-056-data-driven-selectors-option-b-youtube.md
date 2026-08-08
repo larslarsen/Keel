@@ -123,7 +123,31 @@ collection.
 
 `npm test`: 35 pass. `go test ./daemon/...`: pass.
 
-### Not done here
-Container selectors (`#secondary`, the home grid root) are still compiled in.
-They break far less often than card selectors and widening the config to cover
-them is a second bite, per the ticket's "minimal first" framing.
+### Second bite — 2026-08-08
+
+Lars asked whether the rest could move the same way. Almost all of it could, and
+has: container selectors for both surfaces (11 across two ordered chains) and the
+`ytInitialData` renderer keys are now config. Every selector the extension uses
+to find YouTube's content comes from the daemon.
+
+**What cannot move, and why it is not a limitation to fix later.** 28 parsing
+sites in `extract.js` interpret the text once it is found — durations, view
+counts, ages, badge labels. Those are regexes, and a daemon-supplied regex is
+logic: it decides behaviour rather than location. Shipping one would be exactly
+the thing DESIGN_BOOTSTRAP forbids and the Web Store asks about.
+
+The line that falls out is worth stating because it settles future cases without
+re-arguing them:
+
+> **Where to look is data. How to read what you find is logic.**
+
+If YouTube changes its wording rather than its markup — "1h ago" becoming "1 hour
+ago" — that is a parser change and needs a republish. The vocabulary inside those
+parsers (unit words, separators) could become data later without crossing the
+line, if that turns out to be where breakage actually happens. It has not been
+yet.
+
+Also fixed while moving the containers: the validator rejected `>`, the CSS child
+combinator, because the forbidden-character check was written to catch `=>`.
+`ytd-rich-grid-renderer > #contents` is a legitimate selector and would have been
+refused. `=>` is still rejected explicitly.

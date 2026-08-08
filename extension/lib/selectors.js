@@ -30,6 +30,8 @@ const STRING_FIELDS = new Set(["cards", "homeItems", "match"]);
 
 /** Fields whose value is an ordered list of candidate selectors. */
 const LIST_FIELDS = new Set([
+  "watch",
+  "home",
   "href",
   "title",
   "channelLink",
@@ -104,6 +106,30 @@ export const DEFAULT_SELECTORS = Object.freeze({
     },
   },
 
+  // Where each surface's cards live. Ordered: the first that matches wins, so
+  // the most specific comes first and the loosest is the last resort.
+  containers: {
+    watch: [
+      "#related ytd-watch-next-secondary-results-renderer #items",
+      "#related #items",
+      "#related",
+      "ytd-watch-next-secondary-results-renderer",
+      "#secondary-inner #related",
+      "#secondary-inner",
+    ],
+    home: [
+      "ytd-browse[page-subtype='home'] ytd-rich-grid-renderer #contents",
+      "ytd-rich-grid-renderer > #contents",
+      "ytd-rich-grid-renderer #contents",
+      "ytd-browse[page-subtype='home'] #contents",
+      "ytd-rich-grid-renderer",
+    ],
+  },
+
+  // Keys naming a card inside ytInitialData. Names in a JSON document, so data
+  // in the same sense as a selector — they say where to look, not what to do.
+  rendererKeys: ["compactVideoRenderer", "videoRenderer", "lockupViewModel"],
+
   badges: {
     containers: [
       "ytd-badge-supported-renderer",
@@ -152,7 +178,9 @@ function validSelector(v) {
   if (!s || s.length > MAX_SELECTOR_LEN) return false;
   // Reject anything that is not a selector. A config carrying a URL, a script
   // or an expression is not a config we asked for, whatever it claims.
-  if (/[<>{}]|javascript:|https?:|=>|\bfunction\b/i.test(s)) return false;
+  // `>` is the child combinator and has to be allowed; `=>` is still rejected
+  // explicitly below. `<` and braces have no meaning in a selector at all.
+  if (/[<{}]|javascript:|https?:|=>|\bfunction\b/i.test(s)) return false;
   if (!balanced(s)) return false;
   if (typeof document !== "undefined" && document.createDocumentFragment) {
     try {
@@ -211,6 +239,21 @@ export function validateSelectorConfig(cfg) {
     if (!validFieldSet(shape)) return null;
   }
   if (!cfg.badges || !validFieldSet(cfg.badges)) return null;
+  if (!cfg.containers || !validFieldSet(cfg.containers)) return null;
+  if (!cfg.containers.watch || !cfg.containers.home) return null;
+
+  // Renderer keys are JSON property names, not selectors: plain identifiers,
+  // bounded, and never anything that could be read as an expression.
+  if (
+    !Array.isArray(cfg.rendererKeys) ||
+    cfg.rendererKeys.length === 0 ||
+    cfg.rendererKeys.length > MAX_LIST_LEN ||
+    !cfg.rendererKeys.every(
+      (k) => typeof k === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(k),
+    )
+  ) {
+    return null;
+  }
 
   // Every shape the engine knows how to read must be present. A config missing
   // one would silently stop extracting that card type.

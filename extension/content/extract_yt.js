@@ -325,7 +325,7 @@ function fieldsFromFound(item) {
  * @param {object} data
  * @param {object} ctx
  */
-export function extractFromYtInitialData(data, ctx) {
+export function extractFromYtInitialData(data, ctx, cfg = undefined) {
   if (!data || typeof data !== "object") {
     return { impressions: [], failures: 0, candidates: 0 };
   }
@@ -361,12 +361,18 @@ export function extractFromYtInitialData(data, ctx) {
     data?.contents?.twoColumnWatchNextResults?.secondaryResults ||
     null;
 
+  // Which JSON keys name a card is configuration, like a selector (WO-056).
+  const keys =
+    Array.isArray(cfg?.rendererKeys) && cfg.rendererKeys.length
+      ? cfg.rendererKeys
+      : RENDERER_KEYS;
+
   let { found, truncated } = seed
-    ? collectRenderers(seed, RENDERER_KEYS)
+    ? collectRenderers(seed, keys)
     : { found: [], truncated: false };
 
   if (!found.length) {
-    const full = collectRenderers(data, RENDERER_KEYS);
+    const full = collectRenderers(data, keys);
     found = full.found;
     truncated = full.truncated;
     if (truncated) {

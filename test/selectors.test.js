@@ -148,3 +148,32 @@ describe("validation keeps config to data", () => {
     assert.equal(validateSelectorConfig(cfg), null);
   });
 });
+
+describe("containers and renderer keys are config too", () => {
+  it("the child combinator is a selector, not an expression", () => {
+    const cfg = cloneDefault();
+    cfg.cards = "ytd-rich-grid-renderer > #contents";
+    assert.ok(validateSelectorConfig(cfg), "`>` must be allowed");
+
+    cfg.cards = "() => fetch('/x')";
+    assert.equal(validateSelectorConfig(cfg), null, "`=>` must still be refused");
+  });
+
+  it("refuses a renderer key that is not a plain identifier", () => {
+    for (const bad of ["a.b", "key with space", "__proto__.x", "a[0]", ""]) {
+      const cfg = cloneDefault();
+      cfg.rendererKeys = [bad];
+      assert.equal(
+        validateSelectorConfig(cfg),
+        null,
+        `should have refused ${JSON.stringify(bad)}`
+      );
+    }
+  });
+
+  it("refuses a config with no container chain for a surface", () => {
+    const cfg = cloneDefault();
+    delete cfg.containers.home;
+    assert.equal(validateSelectorConfig(cfg), null);
+  });
+});
