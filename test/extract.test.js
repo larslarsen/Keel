@@ -497,3 +497,45 @@ describe("purity / channel_id", () => {
     assert.equal(impressions[0].channel_unknown, true);
   });
 });
+
+describe("stale ytInitialData is refused (WO-054 follow-up)", () => {
+  it("ignores data built for a different video", () => {
+    // window.ytInitialData is written once at document load and never refreshed
+    // by in-page navigation, so after browsing it describes the *first* page.
+    // Re-parsing it records those videos again with the current timestamp — how
+    // a stream that ended eleven hours earlier kept being reported live "now".
+    const data = {
+      currentVideoEndpoint: { watchEndpoint: { videoId: "oldPageVid1" } },
+      contents: {
+        twoColumnWatchNextResults: {
+          secondaryResults: {
+            secondaryResults: {
+              results: [
+                {
+                  compactVideoRenderer: {
+                    videoId: "staleVideo1",
+                    title: { simpleText: "From the page we already left" },
+                    badges: [{ metadataBadgeRenderer: { label: "LIVE" } }],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const onOldPage = extractFromYtInitialData(data, ctx({ context_video_id: "oldPageVid1" }));
+    assert.ok(
+      onOldPage.impressions.length > 0,
+      "data matching the open video should still be used"
+    );
+
+    const afterNavigating = extractFromYtInitialData(
+      data,
+      ctx({ context_video_id: "newPageVid2" })
+    );
+    assert.equal(afterNavigating.impressions.length, 0);
+    assert.equal(afterNavigating.stale, true);
+  });
+});

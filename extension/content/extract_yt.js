@@ -330,6 +330,31 @@ export function extractFromYtInitialData(data, ctx) {
     return { impressions: [], failures: 0, candidates: 0 };
   }
 
+  // Refuse data that describes a different page than the one we are on.
+  //
+  // `window.ytInitialData` is written once when the document loads and is never
+  // refreshed by YouTube's in-page navigation. So after an hour of clicking
+  // around one tab, this still holds the *first* page's rail — and re-parsing it
+  // on every navigation records those videos again, stamped with the current
+  // time, in the current slots.
+  //
+  // Measured on a live corpus: eight videos appeared in twelve consecutive page
+  // loads spanning eleven hours, one of them carrying a LIVE badge the whole
+  // time. That is how a stream that ended half a day ago kept being reported as
+  // live "just now".
+  //
+  // The endpoint below is the video this data was built for. If it disagrees
+  // with the video actually open, the data is stale and the DOM scan — which
+  // always reflects the real page — is the only honest source.
+  const builtFor =
+    data?.currentVideoEndpoint?.watchEndpoint?.videoId ||
+    data?.playerOverlays?.playerOverlayRenderer?.videoDetails
+      ?.playerOverlayVideoDetailsRenderer?.videoId ||
+    null;
+  if (builtFor && ctx?.context_video_id && builtFor !== ctx.context_video_id) {
+    return { impressions: [], failures: 0, candidates: 0, stale: true };
+  }
+
   let seed =
     data?.contents?.twoColumnWatchNextResults?.secondaryResults
       ?.secondaryResults?.results ||

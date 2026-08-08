@@ -203,6 +203,27 @@ function fmtAgo(ms) {
   return `${Math.floor(hrs / 24)} day${hrs < 48 ? "" : "s"} ago`;
 }
 
+/**
+ * How long a stream has been running, which is what a viewer can act on.
+ *
+ * "Seen live just now" is true of a stream that started eleven hours ago and
+ * tells nobody anything — YouTube keeps showing the card, so the last sighting
+ * is always recent. The useful fact is the span between the first time anyone
+ * saw it live and the last: an hour old is a different proposition from
+ * half a day old, whatever the badge says right now.
+ */
+function liveAge(s) {
+  const seen = s.s ?? s.last_seen;
+  const began = s.b || s.first_seen || seen;
+  const mins = Math.max(0, Math.round((seen - began) / 60000));
+  if (mins >= 60) {
+    const hrs = Math.floor(mins / 60);
+    return `live for ${hrs}+ hour${hrs === 1 ? "" : "s"} · seen ${fmtAgo(seen)}`;
+  }
+  if (mins >= 5) return `live for ${mins}+ min · seen ${fmtAgo(seen)}`;
+  return `seen live ${fmtAgo(seen)}`;
+}
+
 function renderLive(res) {
   el.liveList.replaceChildren();
   const streams = res?.streams || [];
@@ -227,7 +248,7 @@ function renderLive(res) {
       `<div class="row-main">${thumbHtml(s.v)}<div class="row-text">` +
       `<p class="r-title"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(s.v)}"` +
       ` target="_blank" rel="noreferrer">${escapeHtml(s.t || s.v)}</a></p>` +
-      `<p class="r-sub">seen live ${escapeHtml(fmtAgo(s.s ?? s.last_seen))}` +
+      `<p class="r-sub">${escapeHtml(liveAge(s))}` +
       (s.c ? ` · ${escapeHtml(s.c)}` : "") +
       `</p></div></div>`;
     el.liveList.appendChild(li);

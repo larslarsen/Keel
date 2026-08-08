@@ -127,6 +127,13 @@ type LiveRecord struct {
 	ChannelID string `json:"c,omitempty"`
 	// SeenAt is when the publisher observed it, in unix milliseconds.
 	SeenAt int64 `json:"s"`
+	// StartedAt is the earliest anyone reporting this stream saw it live.
+	//
+	// A lower bound on how long it has been running. "Seen live just now" is
+	// true of a stream that has been going for eleven hours and tells a user
+	// nothing they can act on; how long it has been live tells them what kind
+	// of thing it is.
+	StartedAt int64 `json:"b,omitempty"`
 }
 
 // LiveEntry is the merged view of one stream across every node that reported it.
@@ -249,7 +256,8 @@ func (n *Node) seedLiveFromLocal() {
 	}
 	for _, v := range seen {
 		n.live.merge(LiveRecord{
-			VideoID: v.VideoID, Title: v.Title, ChannelID: v.ChannelID, SeenAt: v.SeenAt,
+			VideoID: v.VideoID, Title: v.Title, ChannelID: v.ChannelID,
+			SeenAt: v.SeenAt, StartedAt: v.StartedAt,
 		})
 		n.live.setLocalSeenAt(v.VideoID, v.SeenAt)
 	}

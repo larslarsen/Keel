@@ -43,6 +43,10 @@ type LiveSighting struct {
 	Title     string
 	ChannelID string
 	SeenAt    int64
+	// StartedAt is the earliest this node saw the stream carrying a LIVE badge.
+	// A lower bound on how long it has been running, and the only evidence
+	// available — YouTube does not put a start time on a rail card.
+	StartedAt int64
 }
 
 // RecentLiveSightings returns streams this node saw live since cutoff.
@@ -54,10 +58,11 @@ type LiveSighting struct {
 // was not already kept.
 func (s *Store) RecentLiveSightings(cutoff int64) ([]LiveSighting, error) {
 	rows, err := s.db.Query(`
-SELECT video_id, MAX(title), MAX(channel_id), MAX(observed_at)
+SELECT video_id, MAX(title), MAX(channel_id), MAX(observed_at), MIN(observed_at)
 FROM impressions
-WHERE observed_at >= ? AND badges_json LIKE '%LIVE%'
-GROUP BY video_id`, cutoff)
+WHERE badges_json LIKE '%LIVE%'
+GROUP BY video_id
+HAVING MAX(observed_at) >= ?`, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +71,7 @@ GROUP BY video_id`, cutoff)
 	for rows.Next() {
 		var v LiveSighting
 		var title, ch sql.NullString
-		if err := rows.Scan(&v.VideoID, &title, &ch, &v.SeenAt); err != nil {
+		if err := rows.Scan(&v.VideoID, &title, &ch, &v.SeenAt, &v.StartedAt); err != nil {
 			return nil, err
 		}
 		v.Title, v.ChannelID = title.String, ch.String
