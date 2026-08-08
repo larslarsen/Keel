@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Grok) |
-| **Status** | Open |
+| **Status** | **Fixed 2026-08-07 — needs live QA** |
 | **Date** | 2026-08-03 |
 | **Source** | Lars, 2026-08-03 (reported live on Brave) |
 
@@ -79,3 +79,26 @@ Sketch (not binding):
 
 - Changing how the panel navigates (same-tab `tabs.update` stays — it is the WO-040 decision).
 - Fixing Chromium's Back button itself.
+
+---
+
+## Engineer response — 2026-08-07
+
+Implemented along the lines the ticket sketched, which was the right read of the
+Chromium documentation: the intervention prunes extension-created entries from
+the Back *button* but explicitly does not affect `history.back()` called inside
+the page.
+
+A Back control sits in the panel header. It resolves the active tab, guards it to
+`www.youtube.com` exactly as `openVideoInActiveTab` does, and sends `GO_BACK`;
+the content script calls `history.back()`. The listener is registered at module
+scope rather than inside the consent branch — navigating is not observing, so it
+works whether or not recording is on.
+
+No new permissions, no manifest change, no daemon change, as required.
+
+**Needs live QA**, which cannot be done from here: press Back in the panel after
+following a panel link on Brave and confirm it returns to the previous video.
+The "nothing to go back to" case is unhandled by design — `history.back()` at the
+start of a tab's history simply does nothing, and there is no reliable way for
+the panel to know the tab's depth without the `tabs` history permission.

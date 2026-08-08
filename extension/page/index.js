@@ -415,14 +415,33 @@ function renderSwarm(sw) {
       "machine has no route out.";
     return;
   }
-  const peers = Number(sw.peers) || 0;
+  // Headline the count of other Keel installs, never the raw libp2p figure.
+  //
+  // Joining the public IPFS DHT connects you to dozens of strangers who are not
+  // running this software, and that number churns — 53 one minute, 11 the next.
+  // Shown as "peers" it reads as a busy network of people that does not exist.
+  const keel = Number(sw.keel_peers) || 0;
+  const dht = Number(sw.peers) || 0;
   const live = Number(sw.live_indexed) || 0;
-  row.textContent =
-    (peers === 0
-      ? "On the network, but no peers connected yet — nobody else is reachable right now."
-      : `Connected to ${peers} peer${peers === 1 ? "" : "s"}.`) +
-    (live ? ` ${live} livestream${live === 1 ? "" : "s"} known.` : "") +
-    (sw.id ? ` This node: ${String(sw.id).slice(-8)}` : "");
+
+  const parts = [
+    keel === 0
+      ? "No other Keel users connected."
+      : `Connected to ${keel} other Keel user${keel === 1 ? "" : "s"}.`,
+  ];
+  if (live) {
+    // With no Keel peers the index can only hold this machine's own sightings,
+    // so saying "known" without qualification would overstate it.
+    parts.push(
+      keel === 0
+        ? `${live} livestream${live === 1 ? "" : "s"} indexed, all from your own browsing.`
+        : `${live} livestream${live === 1 ? "" : "s"} known.`,
+    );
+  }
+  // Kept for diagnosis, named for what it is: routing traffic, not people.
+  parts.push(`${dht} DHT connection${dht === 1 ? "" : "s"} (network plumbing).`);
+  if (sw.id) parts.push(`This node: ${String(sw.id).slice(-8)}`);
+  row.textContent = parts.join(" ");
 }
 
 async function refreshConsent() {

@@ -196,9 +196,13 @@ func swarmStatus() map[string]any {
 	}
 	out := map[string]any{
 		"up": true,
-		// Everyone on the DHT, most of whom are not running Keel.
+		// Everyone on the DHT, most of whom are not running Keel. Diagnostic
+		// only — it is guaranteed non-zero once the node joins and it churns as
+		// the DHT pads and prunes connections, so presenting it as a count of
+		// people is actively misleading (WO-055).
 		"peers": swarmNode.Peers(),
-		// Peers that speak our protocol — actual other installs.
+		// Peers that speak our protocol: actual other installs. This is the
+		// number a person should be shown.
 		"keel_peers": swarmNode.KeelPeers(),
 		"id":         swarmNode.ID().String(),
 	}

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Grok) |
-| **Status** | Open — design pending |
+| **Status** | **Mostly resolved — visual judgement outstanding** |
 | **Date** | 2026-08-03 |
 | **Source** | Lars, 2026-08-03 |
 
@@ -62,3 +62,19 @@ YouTube Data API and must not add network fetches (§3.2, §4.1).
 - Adding new fields to extraction / protocol / daemon storage.
 - The full page (`extension/page/`) — it has the same hash display; revisit in a
   separate order if Lars wants it.
+
+---
+
+## Engineer response — 2026-08-07
+
+Complaint 3 is resolved: the panel no longer shows the raw `video_id`, the `UC…`
+channel key, or the truncated page-load hash. The page-load id survives only as
+an internal cache key for deciding when to re-run the walk, and is never
+rendered.
+
+Complaints 1 and 2 — general clutter, and the vertical space taken by per-row
+action buttons — are visual judgements that need Lars looking at the panel rather
+than an engineer guessing at a layout. The panel has changed substantially since
+this was filed (suggestions replaced the impressions list, thumbnails and ages
+were added), so the right next step is a fresh look rather than acting on the
+2026-08-03 description.

@@ -56,15 +56,18 @@ log has not been made — it will drift out from under whoever is implementing i
 | 025 | Pre-publication sweep | Claude | Done |
 | 039 | **Panel thumbnails + clickable titles** | Sr Dev (Grok) | **Done** |
 | 040 | Panel auto-opens on full-page video link click; panel links navigate in place | Jr Dev (opencode) | **Done** |
-| 041 | Side panel declutter — design owned by reviewer | Sr Dev (Grok) | Open — design pending |
-| 042 | Panel back navigation — browser Back skips `tabs.update` entries | Sr Dev (Grok) | Open — design pending |
+| 041 | Side panel declutter — design owned by reviewer | Sr Dev (Grok) | **Mostly resolved — visual call outstanding** |
+| 042 | Panel back navigation — browser Back skips `tabs.update` entries | Sr Dev (Grok) | **Fixed — needs live QA** |
 | 043 | Hiding must follow the panel, not be permanent | Anyone | **Done** |
 | 044 | Channel display name under panel thumbnails | Jr Dev (opencode) | **Done** |
 | 045 | LIVE pill on panel thumbnails | Jr Dev (opencode) | **Done** |
 | 046 | **Panel must show our suggestions, not YouTube's** | Anyone | **Done — pending live QA** |
 | 047 | **Remove person-to-person sharing UX** | Anyone | **Done** |
-| 048 | **Privacy policy** | Anyone | **Open — blocks store submission** |
-| 049 | **In-extension consent screen** | Anyone | **Open — blocks store submission** |
+| 048 | **Privacy policy** | Anyone | **Done** |
+| 049 | **In-extension consent screen** | Anyone | **Done** |
 | 050 | **Recapture fixtures logged out** | Jr Dev | **Done — LIVE via Portland Andy splice (see ticket)** |
-| 051 | **Contribution level control** | Anyone | **Open — blocks store submission** |
-| 052 | **Level 2: catalogue sharing over the swarm** | Sr Dev | **Open — current** |
+| 051 | **Contribution level control** | Anyone | **Done** |
+| 052 | **Level 2: catalogue sharing over the swarm** | Sr Dev | **Built — awaiting two-machine test** |
+| 053 | Dependency-squatting / name-hijack audit | Engineer | **Done — toolchain pinned, CI reporting** |
+| 054 | Live promotion ignored the 1-hour rule | Engineer | **Fixed** |
+| 055 | Swarm status showed DHT noise as peers | Engineer | **Fixed** |

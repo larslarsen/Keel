@@ -446,6 +446,14 @@ async function consented() {
   }
 }
 
+// The panel's Back control. Chromium prunes extension-created history entries
+// from the Back button, but not from history.back() called inside the page —
+// see WO-042. Registered at module scope so it works regardless of consent:
+// navigating is not observing.
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "GO_BACK") history.back();
+});
+
 async function start() {
   if (armed) return;
   armed = true;

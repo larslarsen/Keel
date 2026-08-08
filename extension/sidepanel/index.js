@@ -18,6 +18,7 @@ const SIDEPANEL_PORT = "keel-sidepanel";
 const el = {
   banner: document.getElementById("daemon-banner"),
   consentBanner: document.getElementById("consent-banner"),
+  back: document.getElementById("btn-back"),
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
@@ -468,6 +469,41 @@ async function openVideoInActiveTab(href) {
   const url = tab?.url || "";
   if (!/^https:\/\/www\.youtube\.com\//.test(url)) return;
   await browser.tabs.update(tab.id, { url: href });
+}
+
+/**
+ * Ask the watched page to go back.
+ *
+ * The browser's own Back button does not work after a panel link: Chromium's
+ * history manipulation intervention prunes entries created without user
+ * activation, and an extension navigation counts as none. That was hardened
+ * further in Chrome 142, so it will not come back.
+ *
+ * The carve-out is documented — the intervention "only impacts the browser
+ * back/forward buttons and not the history.back()/forward() APIs" — so asking
+ * the page to do it from inside traverses the real history, extension entries
+ * included. tabs.goBack() is not usable: it behaves like the pruned button.
+ */
+async function goBackInActiveTab() {
+  if (!browser.tabs?.query || !browser.tabs?.sendMessage) return;
+  let tab;
+  try {
+    [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  } catch {
+    return;
+  }
+  if (!/^https:\/\/www\.youtube\.com\//.test(tab?.url || "")) return;
+  try {
+    await browser.tabs.sendMessage(tab.id, { type: "GO_BACK" });
+  } catch {
+    // No content script on that tab yet; nothing to go back through either.
+  }
+}
+
+if (el.back) {
+  el.back.addEventListener("click", () => {
+    goBackInActiveTab().catch(() => {});
+  });
 }
 
 el.list.addEventListener("click", (e) => {

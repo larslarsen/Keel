@@ -95,6 +95,75 @@ it live within the last hour, not merely if gossip about it is still warm.
       above recently-observed ones.
 - [ ] `go test ./daemon/...` passes.
 
+---
+
+# Part 2 — displayed "last seen" is not refreshed by your own observation
+
+**Symptom (Lars, 2026-08-06):** scrolled youtube.com, saw two livestreams that
+were already on the panel list — but one showed "last seen 1 hr ago" even though
+he had just seen it live. It should say "just now".
+
+**Root cause.** The panel's live list renders `fmtAgo(s.last_seen)`
+(extension/page/index.js:230), reading `LastSeen` from the swarm index
+(`LiveIndex.Search` → `e.lastSeen`, live.go:509). `LastSeen` is only advanced
+inside `merge()` (live.go:371), and `merge` runs when a record is published or
+received via gossip.
+
+A local live observation flows through `announceLive` →
+`swarmNode.PublishLive` (swarm_runtime.go:111-135). But `PublishLive`
+(live.go:547-557) returns early when `!shouldPublish(videoID)`
+(live.go:551). `shouldPublish` (live.go:402) returns **false** whenever the
+record already exists and `time.Since(e.lastSeen) <= liveRefreshAfter` (3h). So
+a stream already in the index with `lastSeen` ~1h ago — exactly the backfilled
+entry Lars saw — fails `shouldPublish`, `PublishLive` bails, `merge` never runs,
+and `lastSeen` is never refreshed to now. The displayed "1 hr ago" is the
+*peer's* sighting time from backfill, not Lars's just-now observation.
+
+**Why this is a distinct defect from Part 1.** Part 1 was about *promotion*
+keying off `LastSeen`. This is about the *displayed timestamp* not reflecting a
+local observation. The suppression's intent is to save network traffic (don't
+re-gossip a stream that is already hot) — but it also suppresses the **local**
+`merge`, which refreshes the on-device timestamp and costs nothing locally. The
+fix decouples "update my own index" from "gossip to peers".
+
+**Fix.** In `PublishLive` (live.go:547), always call `merge(r)` locally, and
+gate only the `topic.Publish` (gossip) on `shouldPublish`:
+
+```go
+func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
+    if n.live == nil {
+        return
+    }
+    n.live.merge(r) // always refresh local index timestamp from our own sighting
+    if !n.live.shouldPublish(r.VideoID) {
+        return // but only gossip when due
+    }
+    if err := n.live.Publish(ctx, r); err != nil {
+        n.logf("live publish %s: %v", r.VideoID, err)
+    }
+}
+```
+
+`merge` is idempotent (Publish also calls it at live.go:429), so the extra call
+is harmless. `merge(r)` uses the unrounded `SeenAt` from the caller
+(`imp.ObservedAt`, swarm_runtime.go:129), so the local index gets the accurate
+observation time, and `lastSeen`/display update to "just now" immediately. No
+privacy change: at Level 1 nothing is *published* (gossip still gated), but the
+node's own view of what it just saw is now correct — which `currentlyLive()`
+(local `impressions`) already provided; this just makes the swarm-index display
+consistent with it.
+
+**Acceptance (Part 2).**
+- [ ] A node at any level that locally observes a LIVE badge refreshes that
+      stream's `lastSeen` in its own index, so the panel shows "just now"
+      (within 90s, per `fmtAgo`), even when `shouldPublish` would suppress
+      gossip.
+- [ ] Regression test: seed index with `lastSeen = now - 1h`, call
+      `PublishLive` with a fresh `SeenAt = now` for the same video, assert
+      `LastSeen` advanced to ~now (not still 1h ago), but assert `topic.Publish`
+      was NOT called (gossip still suppressed).
+- [ ] `go test ./daemon/...` passes.
+
 
 ---
 
