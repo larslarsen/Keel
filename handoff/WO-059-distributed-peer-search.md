@@ -281,18 +281,45 @@ serving peer "you searched one of these 3," k=3, no privacy. This is unavoidable
 at launch (coupled to WO-058: empty peer graph). The honest move is to surface it,
 not pretend.
 
-### Token-bucket population reporting (Lars, 2026-08-08)
+### Token-bucket population reporting — CORE, not overkill (Lars, 2026-08-08)
 
 Each node already builds its token → videoID inverted index locally (Construction
 B, server side). So it knows, per token, exactly how many videos are in that
 bucket. Reporting the COUNT costs nothing extra — the table exists; expose the
 size per token.
 
-- **What it buys:** a querying node learns the population of each token bucket
-  across the network — not the contents, just "token 'rec' = 4,200 videos,
-  token 'xyz' = 3." A count reveals nothing about which video YOU want, so it has
-  zero privacy cost. Big counts are harmless to broadcast; small counts ARE the
-  warning. Self-protecting.
+This is NOT overengineering. It is required for two independent reasons — privacy
+AND correctness:
+
+**Privacy.** A count reveals nothing about which video YOU want (zero privacy
+cost). Big counts are harmless to broadcast; small counts ARE the warning.
+Self-protecting. (Covered below as the warning signal.)
+
+**Correctness — partial peer slices break the intersection.** The search
+reconstructs the result by intersecting token-buckets fetched from several peers.
+For a target video V (matching query Q's tokens t1..tn) to survive the
+intersection, V must appear in EVERY token's bucket from the peers you query. But
+no peer holds the whole corpus — each holds a SLICE (its own corpus + mirrored,
+per WO-058). So peer P may have V in its t1-bucket but NOT its t2-bucket. When
+you intersect P's t1-reply (has V) with P's t2-reply (missing V), V drops out.
+Result: **a single peer with incomplete coverage silently deletes your search
+result.** And if a peer returns a 1-element set for a token, intersecting with it
+can yield at most 1 result — your multi-video search collapses to ≤1 hit. The
+multi-peer fetch only reconstructs the FULL result set if each peer returns a
+SUFFICIENTLY COMPLETE bucket.
+
+This is why the global count is mandatory, not optional:
+- Without it, you cannot tell whether a peer's 1-video reply means "token 'xyz'
+  has 1 video globally (rare, legit)" vs "this peer only holds 1 of the ~50
+  global matches (thin slice)." In the second case you've lost 49 results and
+  don't know it.
+- The global count tells the client "expected ≈50, got 1 from this peer → fetch
+  from MORE peers to complete the union." Completion requires knowing the target
+  size. Suppressing the 1-element reply does NOT help — you still lack t2's
+  contribution and V is dropped; you need COMPLETION (more peers), which needs
+  the global size. Same conclusion: global counts are necessary for correctness,
+  independent of privacy.
+
 - **How to aggregate:** extend the existing HLL sketch infra (sketch.go:214
   `Intersection`) from "how big is the network" to "how big is each token bucket"
   — a per-token cardinality union across peers. (Brute-force alternative: fetch
@@ -319,7 +346,42 @@ size per token.
   for. This improves as more people join." Gradient by bucket size.
 
 Couples to WO-059 vector 3 (bucket-population inference — same signal used
-benevolently as a warning) and WO-058 (empty graph is the root cause).
+benevolently as a warning) and WO-058 (empty graph is the root cause). The
+correctness dependency makes the count-reporting subsystem required at ANY
+network size, not just small — so it is core, not deferred.
+
+## Empirical tokenizer evaluation (on Lars's local corpus, 2026-08-08)
+
+Measured against 3,796 distinct real YouTube titles from the live Keel DB
+(`.config/keel/keel.sqlite`, `impressions` table — note: 22,537 raw rows
+collapse to 3,796 unique titles after DISTINCT). Tokens deduplicated per title
+(so a title counts once per bucket). Bucket size = number of titles containing
+the token.
+
+| Scheme | Distinct tokens | Median bucket | % tokens k=1 (leak) | % tokens ≤5 (risk) |
+|---|---|---|---|---|
+| k=3 raw (spaces+punct) | 11,287 | 2 | 44% | 72% |
+| k=2 raw | 3,098 | 3 | 36% | 63% |
+| **k=2 letters-only** | **1,029** | **19** | **14%** | **33%** |
+| k=3 letters-only | 6,476 | 4 | 28% | 55% |
+
+Conclusion: **k=2, letters-only, space-anchored is the best scheme** — largest
+median bucket (19), fewest k=1 tokens (14%), and FEWEST tokens per query (so
+cheapest bandwidth). Stripping punctuation/numbers is the dominant win: the rare
+tail was mostly junk tokens (" f's", " 672", " rn.").
+
+**Direction of k as the network grows is opposite to intuition.** k=2 is already
+cheaper AND more private than k=3 locally. As peers join, each token's NETWORK
+bucket = union of local slices, so k grows automatically (median 19 locally →
+≈190 at 10 peers, ≈950 at 50). So we do NOT move to k=3 later — if anything we
+could move to SHORTER tokens (k=1) at scale to cut token-count/bandwidth. Stay at
+k=2.
+
+**Caveat — these are LOCAL numbers.** The scheme's privacy is a function of
+network size (union across peers). The 14% k=1 locally becomes network-wide
+k≈10–50 at modest peer counts. This is exactly why the global count-reporting
+(see above) is required: locally a peer sees few matches; the client needs the
+global population to know if a reply is complete.
 
 ## Acceptance (when built)
 
@@ -333,5 +395,10 @@ benevolently as a warning) and WO-058 (empty graph is the root cause).
       without revealing bucket contents.
 - [ ] Network-wide per-token counts aggregated via HLL sketch (sketch.go),
       MIN-across-peers for attack resistance.
+- [ ] Client uses global per-token count to detect truncated/partial bucket
+      replies from thin-slice peers and fetches additional peers to COMPLETE the
+      union (correctness: a 1-element reply must not collapse the result set).
 - [ ] Search UI shows a gradient warning driven by aggregate bucket population
       (threshold ≈ STAR K of 50); copy states the small-network limit honestly.
+- [ ] Tokenizer ships as k=2, letters-only, space-anchored (empirically best on
+      real corpus); not BPE/WordPiece; identical scheme on all nodes.
