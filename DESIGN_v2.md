@@ -864,6 +864,33 @@ and OTF (§11) fund exactly this class of infrastructure.
 
 ---
 
+## 2.4a What an impression means
+
+Recorded 2026-08-07, after a wrong turn worth not repeating.
+
+**An impression means: YouTube offered this video to this person, in this
+position, at this time.** It does not mean the person saw it, and the corpus
+must not try to say whether they did.
+
+The distinction came up twice in one day and both times the answer is the same.
+A watch page open in a background tab is still a recommendation made to that
+user at that moment, so it is recorded normally. And a card further down a page
+the user never scrolled to was still offered — nobody scrolls to everything that
+loads, and a corpus that only counted what crossed someone's retina would be
+measuring attention rather than the recommender.
+
+A `tab_visible` flag was briefly added and removed. It was solving a problem the
+project does not have, and it imported a notion of "seen" that is both
+unmeasurable and beside the point. Lars: *"what matters is that it WAS suggested
+to that individual at that time."*
+
+**What does matter is that the labelling is right.** Every row must carry the
+surface it really came from and the page load it really belonged to, because
+those are the axes everything downstream slices on. That is why the SPA
+navigation race — a scan running after the URL changed but before the observer
+noticed, filing homepage rows under a watch page — was a real bug where
+visibility was not.
+
 ## 7.3a The query-privacy ladder — the rule that decides every dataset
 
 Every time this system fetches something, it risks disclosing what the user is

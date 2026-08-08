@@ -195,9 +195,12 @@ func swarmStatus() map[string]any {
 		return map[string]any{"up": false}
 	}
 	out := map[string]any{
-		"up":    true,
+		"up": true,
+		// Everyone on the DHT, most of whom are not running Keel.
 		"peers": swarmNode.Peers(),
-		"id":    swarmNode.ID().String(),
+		// Peers that speak our protocol — actual other installs.
+		"keel_peers": swarmNode.KeelPeers(),
+		"id":         swarmNode.ID().String(),
 	}
 	if li := swarmNode.Live(); li != nil {
 		out["live_indexed"] = li.Size()

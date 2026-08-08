@@ -256,8 +256,29 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 // ID is this node's libp2p peer id.
 func (n *Node) ID() peer.ID { return n.host.ID() }
 
-// Peers is the count of currently connected peers.
+// Peers is the count of currently connected libp2p peers.
+//
+// Most of these are not running Keel. Joining the public IPFS DHT means
+// connecting to whoever else is on it, so this number goes above zero as soon
+// as the node starts and says nothing about whether anyone else uses this
+// software. KeelPeers is the number that answers that.
 func (n *Node) Peers() int { return len(n.host.Network().Peers()) }
+
+// KeelPeers counts connected peers that speak the Keel block protocol.
+//
+// This is the one worth showing a person: another node that supports this
+// protocol is another install, where a bare peer count is mostly strangers
+// routing DHT traffic.
+func (n *Node) KeelPeers() int {
+	count := 0
+	for _, p := range n.host.Network().Peers() {
+		got, err := n.host.Peerstore().SupportsProtocols(p, BlockProtocol)
+		if err == nil && len(got) > 0 {
+			count++
+		}
+	}
+	return count
+}
 
 // Close shuts the node down.
 func (n *Node) Close() error {
