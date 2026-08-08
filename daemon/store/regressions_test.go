@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,58 @@ func TestRegressionNoDuplicateRowsOnRerender(t *testing.T) {
 
 // Bug WO-055 — see daemon/swarm/regressions_test.go (needs a live Node, which
 // lives in the swarm package). Kept here only as a pointer.
+
+// ============================================================================
+// Property tests — invariants that must ALWAYS hold (TESTING.md §2). These
+// encode intent as a machine-checkable law, catching regressions nobody wrote a
+// specific test for.
+// ============================================================================
+
+// Property: stringless. No watched title ever appears in a block key or an
+// advertised prefix (DESIGN_v2: blocks are keyed by video id, titles travel in
+// the separate catalogue). A regression that keys a block by title, or lets a
+// title leak into an advertised prefix, would expose a user's watch history.
+// This test seeds a distinctive title and asserts it never appears in any key
+// or prefix the node emits.
+func TestPropertyStringless(t *testing.T) {
+	st := openStore(t, "stringless.sqlite")
+	// A title no substring of which can appear in a video id or prefix.
+	title := "SECRETwatchedTITLE-9f3a"
+	seedEdge(t, st, "watchedvidX1", "targetaaaa1", 0)
+	// Inject the title as the watched video's title via a direct impression.
+	vid := "watchedvidX1"
+	if _, err := st.PutImpressions([]bridge.Impression{{
+		PageLoadID: "pl-sl", ObservedAt: time.Now().UnixMilli(), Surface: "WATCH_NEXT",
+		ContextVideoID: &vid, VideoID: vid, Title: title, SlotIndex: 0,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Block key for the watched video must be the video id, never the title.
+	blk, err := st.buildBlock(vid, "GB-en", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(blk.Key, title) || strings.Contains(blk.Key, "SECRET") {
+		t.Errorf("block key leaks title: %q", blk.Key)
+	}
+
+	// Advertised prefixes must never contain the title.
+	prefixes, err := st.LocalPrefixes(DefaultPrefixBits, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range prefixes {
+		if strings.Contains(p, title) || strings.Contains(p, "SECRET") {
+			t.Fatalf("advertised prefix leaks watched title: %q", p)
+		}
+	}
+
+	// The key must equal the video id exactly — the canonical invariant.
+	if blk.Key != vid {
+		t.Errorf("block key = %q, want video id %q", blk.Key, vid)
+	}
+}
 // ---- test helpers ----
 
 func countImpressions(st *Store, videoID string) int {
