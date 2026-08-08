@@ -102,7 +102,7 @@ const (
 	// never fire) while firstSeen stays anchored in the past — so the UI shows
 	// "17+ hours" live with a "5 min ago" last-seen. maxLiveAge lets us retire
 	// such dead entries outright, regardless of peer re-claims.
-	maxLiveAge = 6 * time.Hour
+	maxLiveAge = 12 * time.Hour
 
 	// maxLiveRecords bounds memory against a flood. Gossipsub's peer scoring is
 	// the first defence; this is the backstop.

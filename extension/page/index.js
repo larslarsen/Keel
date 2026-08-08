@@ -271,9 +271,12 @@ function liveUrl(id, platform) {
  * sighting is what distinguishes a fresh stream from an all-day one.
  */
 function liveFor(s) {
-  const seen = s.s ?? s.last_seen;
-  const began = s.b || s.first_seen || seen;
-  const mins = Math.max(0, Math.round((seen - began) / 60000));
+  // Duration the stream has been live: from when it started (StartedAt if the
+  // peer reported it, else our first sighting) to NOW. Measuring to last_seen
+  // instead collapses to ~0 for a stream we saw only once (first_seen ==
+  // last_seen), which reads as "just started" next to a "seen 3h ago" column.
+  const began = s.b || s.first_seen || Date.now();
+  const mins = Math.max(0, Math.round((Date.now() - began) / 60000));
   if (mins >= 60) {
     const hrs = Math.floor(mins / 60);
     return `${hrs}+ hour${hrs === 1 ? "" : "s"}`;
