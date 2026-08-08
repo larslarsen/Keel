@@ -370,12 +370,18 @@ median bucket (19), fewest k=1 tokens (14%), and FEWEST tokens per query (so
 cheapest bandwidth). Stripping punctuation/numbers is the dominant win: the rare
 tail was mostly junk tokens (" f's", " 672", " rn.").
 
-**Direction of k as the network grows is opposite to intuition.** k=2 is already
-cheaper AND more private than k=3 locally. As peers join, each token's NETWORK
-bucket = union of local slices, so k grows automatically (median 19 locally →
-≈190 at 10 peers, ≈950 at 50). So we do NOT move to k=3 later — if anything we
-could move to SHORTER tokens (k=1) at scale to cut token-count/bandwidth. Stay at
-k=2.
+**k-step is a developer release, not network-driven.** k=2 is the right choice
+while the network is sparse (privacy-bound: local buckets must be large). As the
+network densifies, every token's bucket becomes huge from the union across peers
+regardless of k, so k=2's only remaining trait is "more tokens per query =
+more bandwidth." At that point stepping to k=3 loses no privacy and saves
+bandwidth. BUT this step is a PROTOCOL VERSION BUMP shipped by developers (see
+WO-060) — it is NOT triggered by global bucket-population estimates. Those
+estimates are eventually-consistent and can differ between nodes; using them to
+flip a hard deterministic parameter would let nodes disagree on tokenization and
+partition the network (would need blockchain/consensus, which Keel does not
+build). So: k is a compile-time constant; any change is a release, applied
+uniformly because it is compiled in.
 
 **Caveat — these are LOCAL numbers.** The scheme's privacy is a function of
 network size (union across peers). The 14% k=1 locally becomes network-wide
@@ -401,4 +407,6 @@ global population to know if a reply is complete.
 - [ ] Search UI shows a gradient warning driven by aggregate bucket population
       (threshold ≈ STAR K of 50); copy states the small-network limit honestly.
 - [ ] Tokenizer ships as k=2, letters-only, space-anchored (empirically best on
-      real corpus); not BPE/WordPiece; identical scheme on all nodes.
+      real corpus); not BPE/WordPiece; COMPILE-TIME constant, identical on all
+      nodes, versioned per WO-060. Any k change is a developer release, never
+      network-driven.
