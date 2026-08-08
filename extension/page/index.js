@@ -448,6 +448,21 @@ const LEVELS = [
  * A peer-to-peer feature that silently connects to nobody looks exactly like
  * one that works, so this is the first question anyone will have.
  */
+/**
+ * Which build is answering.
+ *
+ * The browser keeps the desktop app alive across extension reloads, so a
+ * freshly built binary is not necessarily the one running. Without this, the
+ * only way to tell was to notice that a fixed bug was still happening.
+ */
+function renderDaemon(d) {
+  const row = document.getElementById("daemon-build");
+  if (!row) return;
+  row.textContent = d?.built_at
+    ? `Desktop app ${d.version || ""} · built ${d.built_at}`
+    : "";
+}
+
 function renderSwarm(sw) {
   const row = document.getElementById("swarm-row");
   if (!row) return;
@@ -726,6 +741,7 @@ async function refreshStats() {
     const s = st.stats;
     if (!s) return;
     renderSwarm(s.swarm);
+    renderDaemon(s.daemon);
     el.total.textContent = String(s.total ?? 0);
     el.watch.textContent = String(s.by_surface?.WATCH_NEXT ?? 0);
     el.home.textContent = String(s.by_surface?.HOME ?? 0);
