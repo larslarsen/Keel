@@ -83,6 +83,12 @@ func PrefixOf(prefix string) (int, bool) {
 	if bits <= 0 || bits > 64 {
 		return 0, false
 	}
+	// A prefix with no payload is malformed: it names no bucket. Reject it so an
+	// invalid key is never treated as a real bucket (WO-060: nodes must agree
+	// on what constitutes a valid key).
+	if parts[1] == "" {
+		return 0, false
+	}
 	return bits, true
 }
 
