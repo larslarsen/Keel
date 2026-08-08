@@ -227,7 +227,7 @@ function renderLive(res) {
       `<div class="row-main">${thumbHtml(s.v)}<div class="row-text">` +
       `<p class="r-title"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(s.v)}"` +
       ` target="_blank" rel="noreferrer">${escapeHtml(s.t || s.v)}</a></p>` +
-      `<p class="r-sub">seen live ${escapeHtml(fmtAgo(s.last_seen))}` +
+      `<p class="r-sub">seen live ${escapeHtml(fmtAgo(s.s ?? s.last_seen))}` +
       (s.c ? ` · ${escapeHtml(s.c)}` : "") +
       `</p></div></div>`;
     el.liveList.appendChild(li);

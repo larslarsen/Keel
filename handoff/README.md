@@ -71,3 +71,5 @@ log has not been made — it will drift out from under whoever is implementing i
 | 053 | Dependency-squatting / name-hijack audit | Engineer | **Done — toolchain pinned, CI reporting** |
 | 054 | Live promotion ignored the 1-hour rule | Engineer | **Fixed** |
 | 055 | Swarm status showed DHT noise as peers | Engineer | **Fixed** |
+| 056 | Implement Option B (data-driven selectors) for YouTube — minimal first bite | Sr Dev | **Open** |
+| 057 | TikTok surface + platform-scoped panel (depends on 056) | Sr Dev | **Open** (blocked on 056) |

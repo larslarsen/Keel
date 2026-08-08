@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "platform": "yt",
+  "cards": "ytd-compact-video-renderer, yt-lockup-view-model, ytd-rich-grid-media",
+  "homeItems": "ytd-rich-item-renderer, ytd-rich-section-renderer, ytd-rich-shelf-renderer",
+  "shapes": {
+    "compact": {
+      "match": "ytd-compact-video-renderer",
+      "href": [
+        "a#thumbnail[href]",
+        "a[href*='watch?v=']"
+      ],
+      "title": [
+        "#video-title",
+        "a#video-title-link",
+        "[id='video-title']"
+      ],
+      "channelLink": [
+        "ytd-channel-name a[href]",
+        "#channel-name a[href]",
+        "a[href^='/channel/']",
+        "a[href^='/@']"
+      ],
+      "duration": [
+        "ytd-thumbnail-overlay-time-status-renderer #text",
+        "span.ytd-thumbnail-overlay-time-status-renderer",
+        "#time-status #text",
+        "badge-shape .yt-badge-shape__text"
+      ],
+      "metadata": [
+        "#metadata-line span",
+        "#metadata-line yt-formatted-string"
+      ]
+    },
+    "lockup": {
+      "match": "yt-lockup-view-model, ytd-rich-grid-media",
+      "links": [
+        "a[href]"
+      ],
+      "title": [
+        "h3",
+        ".yt-lockup-metadata-view-model__title",
+        "[class*='metadata-view-model'] a"
+      ],
+      "metadataRow": [
+        ".ytContentMetadataViewModelMetadataRow"
+      ],
+      "leadingIcon": [
+        ".ytContentMetadataViewModelLeadingIcon"
+      ],
+      "duration": [
+        "badge-shape .yt-badge-shape__text",
+        "[class*='badge-shape']",
+        "yt-thumbnail-overlay-badge-view-model"
+      ],
+      "durationScan": [
+        "span",
+        "badge-shape"
+      ],
+      "metadata": [
+        "span",
+        "yt-formatted-string",
+        "[class*='ContentMetadataViewModelMetadataRow']"
+      ]
+    }
+  },
+  "badges": {
+    "containers": [
+      "ytd-badge-supported-renderer",
+      ".badge",
+      "[class*='badge']",
+      "badge-shape"
+    ],
+    "overlay": [
+      "ytd-thumbnail-overlay-time-status-renderer",
+      "#time-status",
+      "badge-shape"
+    ]
+  }
+}

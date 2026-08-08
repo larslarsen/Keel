@@ -53,6 +53,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/keel-app/keel/daemon/store"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -146,8 +147,9 @@ type liveEntry struct {
 // records are worthless within a day, and persisting them would accumulate dead
 // rows in a database whose other tables are durable by design.
 type LiveIndex struct {
-	mu      sync.RWMutex
-	entries map[string]*liveEntry
+	mu          sync.RWMutex
+	entries     map[string]*liveEntry
+	localSeenAt map[string]int64
 
 	topic *pubsub.Topic
 	sub   *pubsub.Subscription
@@ -205,11 +207,12 @@ func (n *Node) startLive(ctx context.Context) error {
 	}
 
 	n.live = &LiveIndex{
-		entries: map[string]*liveEntry{},
-		topic:   topic,
-		sub:     sub,
-		self:    n.host.ID(),
-		logf:    n.logf,
+		entries:     map[string]*liveEntry{},
+		localSeenAt: map[string]int64{},
+		topic:       topic,
+		sub:         sub,
+		self:        n.host.ID(),
+		logf:        n.logf,
 	}
 	// Serve snapshots to other joining nodes. Ungated: the records are what
 	// gossip already broadcast to everyone, so passing them on discloses
@@ -248,6 +251,7 @@ func (n *Node) seedLiveFromLocal() {
 		n.live.merge(LiveRecord{
 			VideoID: v.VideoID, Title: v.Title, ChannelID: v.ChannelID, SeenAt: v.SeenAt,
 		})
+		n.live.setLocalSeenAt(v.VideoID, v.SeenAt)
 	}
 	n.logf("live index seeded with %d local sightings", len(seen))
 }
@@ -390,7 +394,23 @@ func (li *LiveIndex) merge(r LiveRecord) {
 		if len(li.entries) >= maxLiveRecords {
 			return // backstop; sweep will make room
 		}
-		e = &liveEntry{rec: r, firstSeen: now}
+		// First insert: if we have a local observation, use it to guard
+		// against incredible peer claims. A peer claiming SeenAt more recent
+		// than localSeenAt + LiveRecency (i.e., stream live well after we saw
+		// it end) is not credible. If we have no local observation, accept the
+		// peer's claim — the long-tail tradeoff for unsigned gossip.
+		initialSeenAt := r.SeenAt
+		if localSeenAt, ok := li.localSeenAt[r.VideoID]; ok {
+			if r.SeenAt > localSeenAt+store.LiveRecency.Milliseconds() {
+				// Peer claims stream live long after our local sighting ended.
+				// Not credible — keep our true observation time.
+				initialSeenAt = localSeenAt
+			} else if localSeenAt > initialSeenAt {
+				// Our local sighting is more recent than peer's claim.
+				initialSeenAt = localSeenAt
+			}
+		}
+		e = &liveEntry{rec: LiveRecord{VideoID: r.VideoID, Title: r.Title, ChannelID: r.ChannelID, SeenAt: initialSeenAt}, firstSeen: now}
 		li.entries[r.VideoID] = e
 	}
 	// Keep the richest version seen: a later report may carry a title an
@@ -401,7 +421,34 @@ func (li *LiveIndex) merge(r LiveRecord) {
 	if r.ChannelID != "" {
 		e.rec.ChannelID = r.ChannelID
 	}
-	if r.SeenAt > e.rec.SeenAt {
+	// Only accept a newer SeenAt while this stream is still inside the live
+	// window. Once its last observation is older than LiveRecency the stream is
+	// finished; letting re-gossip keep bumping SeenAt would make a dead stream
+	// look fresh forever (a peer re-announcing an old stream pushes SeenAt
+	// forward, and liveRefreshAfter re-announces indefinitely). Freeze the
+	// stored SeenAt once it has aged out, so the display shows the true age and
+	// sweep retires it.
+	//
+	// Use localSeenAt (our own last local observation) as the source of truth.
+	// If we have a local observation and it's > LiveRecency old, the stream is
+	// finished — reject any peer claim that would bump SeenAt forward. This
+	// prevents re-gossip from resurrecting dead streams, regardless of whether
+	// the entry was created via first-insert or already existed.
+	acceptSeenAtBump := true
+	if localSeenAt, ok := li.localSeenAt[r.VideoID]; ok {
+		// Our last local observation is the ground truth. If it's older than
+		// LiveRecency, the stream ended — don't let peer claims revive it.
+		if now.UnixMilli()-localSeenAt > store.LiveRecency.Milliseconds() {
+			acceptSeenAtBump = false
+		}
+	} else {
+		// No local observation: fall back to the existing heuristic (stored
+		// SeenAt within LiveRecency). This is the long-tail tradeoff.
+		if e.rec.SeenAt < now.Add(-store.LiveRecency).UnixMilli() {
+			acceptSeenAtBump = false
+		}
+	}
+	if acceptSeenAtBump && r.SeenAt > e.rec.SeenAt {
 		e.rec.SeenAt = r.SeenAt
 	}
 	e.lastSeen = now
@@ -536,6 +583,20 @@ func (li *LiveIndex) Size() int {
 	return len(li.entries)
 }
 
+// setLocalSeenAt records this node's own local observation time for a video.
+// Called from seedLiveFromLocal (startup) and PublishLive (live observation).
+func (li *LiveIndex) setLocalSeenAt(videoID string, seenAt int64) {
+	li.mu.Lock()
+	defer li.mu.Unlock()
+	if li.localSeenAt == nil {
+		li.localSeenAt = map[string]int64{}
+	}
+	// Keep the most recent local observation.
+	if seenAt > li.localSeenAt[videoID] {
+		li.localSeenAt[videoID] = seenAt
+	}
+}
+
 // Live returns the index, or nil when not subscribed.
 func (n *Node) Live() *LiveIndex { return n.live }
 
@@ -548,6 +609,12 @@ func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
 	if n.live == nil {
 		return
 	}
+	// Track our local observation so merge can corroborate peer claims.
+	n.live.setLocalSeenAt(r.VideoID, r.SeenAt)
+	// Always refresh our own index from our own observation, so the panel's
+	// "seen live" time reflects when we actually saw it — independent of whether
+	// we gossip it. Gossip to peers stays gated on shouldPublish below.
+	n.live.merge(r)
 	if !n.live.shouldPublish(r.VideoID) {
 		return
 	}

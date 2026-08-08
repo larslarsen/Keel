@@ -8,13 +8,17 @@
  * guaranteed to run after a quiet gap of at most THROTTLE_MS once dirty.
  */
 import {
-  MUTATION_CARD_SEL,
+  mutationSel,
   extractFromContainer,
   extractFromYtInitialData,
   parseYtInitialDataFromDom,
   surfaceFromUrl,
 } from "./extract.js";
 import { browser } from "../lib/browser.js";
+import {
+  DEFAULT_SELECTORS,
+  validateSelectorConfig,
+} from "../lib/selectors.js";
 import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
 import { startHide } from "./hide.js";
 
@@ -88,6 +92,32 @@ function shutdown(reason) {
     armRetryTimer = null;
   }
   console.info(LOG, `stopped: ${reason} — reload the page to resume`);
+}
+
+/**
+ * Selectors in use. Starts as the copy shipped with the extension and is
+ * replaced by the daemon's if that one validates (WO-056).
+ *
+ * The bundled default is the fallback rather than the source of truth: it keeps
+ * extraction working before the daemon answers, and survives a daemon offering
+ * something unusable. A config that fails validation is discarded whole — half
+ * a schema is worse than a stale one.
+ */
+let selectors = DEFAULT_SELECTORS;
+
+async function loadSelectors() {
+  try {
+    const r = await browser.runtime.sendMessage({ type: "GET_SELECTORS" });
+    const cfg = validateSelectorConfig(r?.ok ? r.selectors?.selectors : null);
+    if (cfg) {
+      selectors = cfg;
+      console.info(LOG, `selectors v${cfg.version} from daemon`);
+    } else if (r?.ok) {
+      console.warn(LOG, "daemon selectors rejected; using the bundled set");
+    }
+  } catch {
+    // Daemon not up yet. The bundled set is already in place.
+  }
 }
 
 async function send(type, payload) {
@@ -235,7 +265,7 @@ async function observeDom() {
   if (!ctx) return;
   const root = container(ctx.surface);
   if (!root) return;
-  const { impressions, failures } = extractFromContainer(root, ctx);
+  const { impressions, failures } = extractFromContainer(root, ctx, selectors);
 
   // Rail change detection: when an occupied slot now holds a different
   // video, YouTube has replaced the suggestion set (e.g. the ~2s post-load
@@ -320,7 +350,7 @@ function mutationsRelevant(records) {
     for (const n of r.addedNodes) {
       if (n.nodeType !== 1) continue;
       const el = /** @type {Element} */ (n);
-      if (el.matches?.(MUTATION_CARD_SEL)) return true;
+      if (el.matches?.(mutationSel(selectors))) return true;
       if (++examined >= MAX_NODES_PER_BATCH) return true;
     }
   }
@@ -513,6 +543,7 @@ async function start() {
   // home grid; off-surface pages are unaffected. Start before arming so it
   // applies without waiting for the first scan.
   startHide().catch((e) => console.warn(LOG, "hide", e?.message || e));
+  await loadSelectors();
 
   if (!(await consented())) {
     console.info(LOG, "no consent — not recording");

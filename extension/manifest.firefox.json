@@ -30,6 +30,7 @@
         "content/extract.js",
         "content/extract_yt.js",
         "content/hide.js",
+        "lib/selectors.js",
         "lib/prefs.js",
         "lib/browser.js",
         "lib/protocol.js"

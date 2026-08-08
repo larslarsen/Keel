@@ -97,6 +97,38 @@ it live within the last hour, not merely if gossip about it is still warm.
 
 ---
 
+# Part 3 — live list displays gossip `last_seen`, not observation `SeenAt`
+
+**Symptom (Lars, 2026-08-07):** a stream last observed locally 5h ago, with no
+LIVE badge in the last hour, shows "seen live just now" in the panel. The
+display reads `last_seen`, which is **gossip-receipt time** (bumped to `now` on
+every gossip `merge`, live.go:371), not when anyone actually saw it live.
+
+**Root cause.** `renderLive` (extension/page/index.js:230) renders
+`fmtAgo(s.last_seen)`. The daemon's `LiveEntry` already carries `SeenAt` (JSON
+key `s`, live.go:466-470 / LiveRecord `SeenAt json:"s"`) — the real observation
+time — but the extension ignores it and uses `last_seen` (gossip freshness).
+Because peer re-gossip (and `liveRefreshAfter`, live.go:119) keeps `lastSeen`
+hot, a stream ended hours ago still shows "just now."
+
+**Note:** Part 1 fixed *promotion* (Search keys on `SeenAt`) but the *displayed
+label* was left on `last_seen`. Part 2 (local observation refreshing the index)
+is confirmed **not yet applied** (PublishLive still early-returns on
+`!shouldPublish`, live.go:551). Both leave the label wrong.
+
+**Fix.** In `renderLive`, use `s.s` (SeenAt) for the "seen live" label, falling
+back to `last_seen` only if `SeenAt` is absent:
+`fmtAgo(s.s ?? s.last_seen)`. The daemon already sends `s`; no daemon change
+needed for the label itself (Pair 2's local-merge still worth doing so the node's
+own view is correct).
+
+**Acceptance (Part 3).**
+- [ ] The live list's "seen live" time reflects `SeenAt` (observation time), so
+      a stream last seen 5h ago displays "5h ago", not "just now".
+- [ ] Regression test: a record with `SeenAt = now - 5h` but `lastSeen = now`
+      (re-gossiped dead stream) renders "5h ago".
+- [ ] `go test ./daemon/...` and the extension test pass.
+
 # Part 2 — displayed "last seen" is not refreshed by your own observation
 
 **Symptom (Lars, 2026-08-06):** scrolled youtube.com, saw two livestreams that
@@ -196,3 +228,61 @@ ranked correctly. Nothing new is persisted and the index stays in-memory.
 
 Good catch, and the analysis was precise enough to act on directly — the two
 paths, the exact fields, and the reason the local path was innocent.
+
+---
+
+# Part 4 — first-insert resurrection: dead stream still shows "live N min ago" (OPEN, 2026-08-07)
+
+**Symptom (Lars, 2026-08-07):** stream `@lilltuber` ended *yesterday*, but the
+live list shows "seen live 1 min ago" with channel `@lilltuber`. The stock
+stream (5h ago) correctly shows "5h ago" after Parts 1–3, so the *display* fix
+is live; this is a different residual.
+
+**Why Parts 1–3 + the seeding fix don't cover it.** The seeding fix
+(Engineer response, 2026-08-06) seeds the index from `impressions` at startup —
+good, that gives `@lilltuber` a true `SeenAt` of yesterday. The Part 2 merge
+guard (only accept a forward `SeenAt` bump while `e.rec.SeenAt >= now -
+LiveRecency`) freezes an *already-known-stale* entry. But **after a daemon
+restart the index is wiped and re-seeded**, and a peer's gossip arriving
+*before or instead of* our seed can create the entry via the **first-insert**
+branch (`merge`: `e = &liveEntry{rec: r, ...}` at live.go:393) — which stores
+the peer's claimed `SeenAt` directly with **no guard**. So a peer claiming
+`SeenAt = now-1min` for a stream that ended yesterday is trusted on first
+insert. Restart + peer gossip = "1 min ago" for a dead stream.
+
+Also possible without restart: if this node's `impressions` last saw
+`@lilltuber` LIVE at a *recent* time (e.g. a WATCH_NEXT impression today), the
+seed gives a recent `SeenAt` and the guard won't freeze it — but Lars states it
+ended yesterday, so the first-insert path is the likely cause.
+
+**Root cause.** Unsigned gossip has no truth about when a stream ended; a single
+peer can assert any `SeenAt`, and the first-insert branch trusts it
+unconditionally. The design (live.go) rejects authorship/corroboration for
+privacy, so a peer's first claim is trusted by design — but that makes dead
+streams look live whenever one peer re-announces, especially after a restart
+wipes local memory.
+
+**Fix direction (local-corroboration, privacy-safe — no peer trust, no new
+persistence).** Track this node's *own* last local LIVE observation per
+video_id in the live index, set by the existing `announceLive` → `PublishLive`
+path (`SeenAt: imp.ObservedAt`). In `merge`, accept a forward `SeenAt` bump
+(including first insert) only when consistent with local knowledge:
+- If we have a local observation `localSeenAt`: reject a gossip `SeenAt` more
+  recent than `localSeenAt + LiveRecency` (a claim that the stream is still live
+  well past when we saw it end is not credible). Keep our true `SeenAt`.
+- If we have **no** local observation: accept (cannot verify — the accepted
+  tradeoff for the long-tail feed).
+This freezes `@lilltuber` at yesterday using *our own* corpus data, with no
+privacy regression and no per-merge SQLite round-trip (keep `localSeenAt` in a
+`map[string]int64` on `LiveIndex`, set on local publish, read in `merge`).
+
+**Acceptance (Part 4).**
+- [ ] After a daemon restart, a stream whose local corpus last saw it LIVE >
+      `LiveRecency` ago is NOT displayed/promoted as "live N min ago" even if a
+      peer gossips a recent `SeenAt`.
+- [ ] Regression test: seed local observation yesterday for video X, then
+      `merge` a gossip `LiveRecord{SeenAt: now-1min}` for X; assert stored
+      `SeenAt` stays yesterday (not now-1min).
+- [ ] A stream with NO local observation still accepts a peer's recent `SeenAt`
+      (long-tail feed intact).
+- [ ] `go test ./daemon/...` passes.

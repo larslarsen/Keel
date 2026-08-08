@@ -11,21 +11,42 @@ export {
 } from "./extract_yt.js";
 
 /** Video card selectors — keep in sync with RENDERER_KEYS in extract_yt.js */
-export const CARD_SEL =
-  "ytd-compact-video-renderer, yt-lockup-view-model, ytd-rich-grid-media";
+import { DEFAULT_SELECTORS, pick, pickAll } from "../lib/selectors.js";
+
+/**
+ * Selectors are configuration, not constants (WO-056).
+ *
+ * Every reader takes a config and defaults to the one shipped with the
+ * extension, so a caller that has fetched a newer config from the daemon can
+ * pass it and everything else keeps working. Behaviours stay here; the config
+ * only says where to look.
+ */
+export const CARD_SEL = DEFAULT_SELECTORS.cards;
 
 /**
  * HOME grid units that each consume one slot_index (row-major).
  * Non-video units (section/shelf) consume a slot without emitting.
  */
-export const HOME_ITEM_SEL =
-  "ytd-rich-item-renderer, ytd-rich-section-renderer, ytd-rich-shelf-renderer";
+export const HOME_ITEM_SEL = DEFAULT_SELECTORS.homeItems;
 
 /**
  * MutationObserver relevance: cards plus home grid units.
  * O(1) matches() only in the callback — never querySelector a subtree.
  */
 export const MUTATION_CARD_SEL = `${CARD_SEL}, ${HOME_ITEM_SEL}`;
+
+/** Card selector for a given config. */
+export function cardSel(cfg = DEFAULT_SELECTORS) {
+  return cfg.cards;
+}
+/** Home grid unit selector for a given config. */
+export function homeItemSel(cfg = DEFAULT_SELECTORS) {
+  return cfg.homeItems;
+}
+/** What a MutationObserver should consider relevant for a given config. */
+export function mutationSel(cfg = DEFAULT_SELECTORS) {
+  return `${cfg.cards}, ${cfg.homeItems}`;
+}
 
 /** @param {string | null | undefined} text */
 export function parseDuration(text) {
@@ -138,20 +159,16 @@ export function parseAge(text) {
 }
 
 /** @param {Element} el */
-export function extractBadges(el) {
+export function extractBadges(el, cfg = DEFAULT_SELECTORS) {
   const out = new Set();
-  for (const n of el.querySelectorAll(
-    "ytd-badge-supported-renderer, .badge, [class*='badge'], badge-shape"
-  )) {
+  for (const n of pickAll(el, cfg.badges.containers)) {
     const t = (n.textContent || "").toUpperCase();
     if (/\bLIVE\b/.test(t)) out.add("LIVE");
     if (/VERIFIED|OFFICIAL ARTIST/.test(t)) out.add("VERIFIED");
     if (/SPONSORED|PAID|\bAD\b/.test(t)) out.add("SPONSORED");
     if (/AGE|MEMBERS ONLY|18\+/.test(t)) out.add("AGE_GATED");
   }
-  const overlay = el.querySelector(
-    "ytd-thumbnail-overlay-time-status-renderer, #time-status, badge-shape"
-  );
+  const overlay = pick(el, cfg.badges.overlay);
   if (/LIVE/i.test(overlay?.textContent || "")) out.add("LIVE");
   return [...out];
 }
@@ -160,17 +177,13 @@ export function extractBadges(el) {
  * ytd-compact-video-renderer shape (legacy sidebar card).
  * @param {Element} el
  */
-function readCompactFields(el) {
-  const thumb =
-    el.querySelector("a#thumbnail[href]") ||
-    el.querySelector("a[href*='watch?v=']");
+function readCompactFields(el, cfg = DEFAULT_SELECTORS) {
+  const c = cfg.shapes.compact;
+  const thumb = pick(el, c.href);
   const video_id = videoIdFromHref(thumb?.getAttribute("href"));
   if (!video_id) return null;
 
-  const titleEl =
-    el.querySelector("#video-title") ||
-    el.querySelector("a#video-title-link") ||
-    el.querySelector("[id='video-title']");
+  const titleEl = pick(el, c.title);
   const title = (
     titleEl?.getAttribute("title") ||
     titleEl?.textContent ||
@@ -181,26 +194,16 @@ function readCompactFields(el) {
     .trim();
   if (!title) return null;
 
-  const chA =
-    el.querySelector("ytd-channel-name a[href]") ||
-    el.querySelector("#channel-name a[href]") ||
-    el.querySelector("a[href^='/channel/']") ||
-    el.querySelector("a[href^='/@']");
+  const chA = pick(el, c.channelLink);
   const channel_id = channelIdFromHref(chA?.getAttribute("href"));
   const channel_name =
     (chA?.textContent || "").replace(/\s+/g, " ").trim() || null;
   // Live cards may omit channel links; null is ok (channel_unknown).
 
-  const durEl =
-    el.querySelector("ytd-thumbnail-overlay-time-status-renderer #text") ||
-    el.querySelector("span.ytd-thumbnail-overlay-time-status-renderer") ||
-    el.querySelector("#time-status #text") ||
-    el.querySelector("badge-shape .yt-badge-shape__text");
+  const durEl = pick(el, c.duration);
   let view_count = null;
   let published_at = null;
-  for (const span of el.querySelectorAll(
-    "#metadata-line span, #metadata-line yt-formatted-string"
-  )) {
+  for (const span of pickAll(el, c.metadata)) {
     const t = (span.textContent || "").trim();
     if (/view|watching/i.test(t)) view_count = parseViewCount(t);
     else if (published_at == null) published_at = parseAge(t);
@@ -215,7 +218,7 @@ function readCompactFields(el) {
     duration_s: parseDuration(durEl?.textContent),
     view_count,
     published_at,
-    badges: extractBadges(el),
+    badges: extractBadges(el, cfg),
   };
 }
 
@@ -223,11 +226,12 @@ function readCompactFields(el) {
  * yt-lockup-view-model shape (current watch-next cards).
  * @param {Element} el
  */
-function readLockupFields(el) {
+function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
+  const c = cfg.shapes.lockup;
   // Prefer any watch href on the lockup
   let video_id = null;
   let title = "";
-  for (const a of el.querySelectorAll("a[href]")) {
+  for (const a of pickAll(el, c.links)) {
     const id = videoIdFromHref(a.getAttribute("href"));
     if (!id) continue;
     if (!video_id) video_id = id;
@@ -240,9 +244,7 @@ function readLockupFields(el) {
   if (!video_id) return null;
 
   if (!title) {
-    const h = el.querySelector(
-      "h3, .yt-lockup-metadata-view-model__title, [class*='metadata-view-model'] a"
-    );
+    const h = pick(el, c.title);
     title = (h?.getAttribute("title") || h?.textContent || "")
       .replace(/\s+/g, " ")
       .trim();
@@ -251,7 +253,7 @@ function readLockupFields(el) {
 
   let channel_id = null;
   let channel_name = null;
-  for (const a of el.querySelectorAll("a[href]")) {
+  for (const a of pickAll(el, c.links)) {
     const href = a.getAttribute("href") || "";
     if (href.includes("watch?v=")) continue;
     const id = channelIdFromHref(href);
@@ -265,10 +267,8 @@ function readLockupFields(el) {
   // first metadata row with no leading icon (row 2 is "1.2K views · 3 days
   // ago"). Capture it so the panel can show who the video is from.
   if (!channel_name) {
-    for (const row of el.querySelectorAll(
-      ".ytContentMetadataViewModelMetadataRow"
-    )) {
-      if (row.querySelector(".ytContentMetadataViewModelLeadingIcon")) continue;
+    for (const row of pickAll(el, c.metadataRow)) {
+      if (pick(row, c.leadingIcon)) continue;
       const t = (row.textContent || "").replace(/\s+/g, " ").trim();
       // Count/date rows ("578 watching", "21K") are never channel names.
       if (!t || /^[\d.,]+\s*[kmb]?\b/i.test(t)) continue;
@@ -277,14 +277,11 @@ function readLockupFields(el) {
     }
   }
 
-  const durEl =
-    el.querySelector("badge-shape .yt-badge-shape__text") ||
-    el.querySelector("[class*='badge-shape']") ||
-    el.querySelector("yt-thumbnail-overlay-badge-view-model");
+  const durEl = pick(el, c.duration);
   let duration_s = parseDuration(durEl?.textContent);
   // Some lockups put duration in a span with aria or text like "10:32"
   if (duration_s == null) {
-    for (const n of el.querySelectorAll("span, badge-shape")) {
+    for (const n of pickAll(el, c.durationScan)) {
       const d = parseDuration((n.textContent || "").trim());
       if (d != null && d > 0) {
         duration_s = d;
@@ -299,9 +296,7 @@ function readLockupFields(el) {
   // on every non-live card.
   let view_count = null;
   let published_at = null;
-  for (const n of el.querySelectorAll(
-    "span, yt-formatted-string, [class*='ContentMetadataViewModelMetadataRow']"
-  )) {
+  for (const n of pickAll(el, c.metadata)) {
     const t = (n.textContent || "").replace(/\s+/g, " ").trim();
     if (!t || !/view|watching|ago|streamed|premier/i.test(t)) continue;
     if (view_count == null) {
@@ -320,7 +315,7 @@ function readLockupFields(el) {
     duration_s,
     view_count,
     published_at,
-    badges: extractBadges(el),
+    badges: extractBadges(el, cfg),
   };
 }
 
@@ -329,20 +324,33 @@ function readLockupFields(el) {
  * @param {Element} el
  * @returns {object | null}
  */
-export function readCardFields(el) {
+export function readCardFields(el, cfg = DEFAULT_SELECTORS) {
   if (!el) return null;
-  const tag = (el.tagName || "").toLowerCase();
-  if (tag === "yt-lockup-view-model") return readLockupFields(el);
-  if (tag === "ytd-compact-video-renderer" || tag === "ytd-rich-grid-media") {
-    return readCompactFields(el);
-  }
-  // Nested lockup (e.g. inside ytd-rich-item-renderer content)
-  const nestedLockup = el.querySelector?.("yt-lockup-view-model");
-  if (nestedLockup) return readLockupFields(nestedLockup);
-  const nestedMedia = el.querySelector?.("ytd-rich-grid-media");
-  if (nestedMedia) return readCompactFields(nestedMedia);
-  // Fallback: try compact first, then lockup heuristics
-  return readCompactFields(el) || readLockupFields(el);
+  const lockup = cfg.shapes.lockup;
+  const compact = cfg.shapes.compact;
+  // Which shape this is comes from the config's `match` selectors, not from a
+  // hardcoded tag name — that is the whole point of Option B. matches() is
+  // cheap and never walks the subtree.
+  const is = (sel) => {
+    try {
+      return typeof el.matches === "function" && el.matches(sel);
+    } catch {
+      return false;
+    }
+  };
+  if (is(lockup.match)) return readLockupFields(el, cfg);
+  if (is(compact.match)) return readCompactFields(el, cfg);
+
+  // A grid item wraps the real card; look one level in before giving up.
+  const nestedLockup = el.querySelector?.(lockup.match);
+  if (nestedLockup) return readLockupFields(nestedLockup, cfg);
+  const nestedCompact = el.querySelector?.(compact.match);
+  if (nestedCompact) return readCompactFields(nestedCompact, cfg);
+
+  // Neither shape matched. Try both anyway: a card whose wrapper was renamed
+  // still parses if its innards are recognisable, which is the difference
+  // between degraded extraction and none.
+  return readCompactFields(el, cfg) || readLockupFields(el, cfg);
 }
 
 const OBSERVED_SURFACES = new Set(["WATCH_NEXT", "HOME"]);
@@ -352,12 +360,12 @@ const OBSERVED_SURFACES = new Set(["WATCH_NEXT", "HOME"]);
  * @param {object} ctx
  * @param {object | null} [fields] pre-parsed fields (avoid double parse)
  */
-export function extractFromElement(el, ctx, fields = undefined) {
+export function extractFromElement(el, ctx, fields = undefined, cfg = DEFAULT_SELECTORS) {
   if (!el || !ctx || typeof ctx.slot_index !== "number" || ctx.slot_index < 0) {
     return null;
   }
   if (!ctx.page_load_id || !OBSERVED_SURFACES.has(ctx.surface)) return null;
-  const f = fields !== undefined ? fields : readCardFields(el);
+  const f = fields !== undefined ? fields : readCardFields(el, cfg);
   if (!f) return null;
   return {
     page_load_id: ctx.page_load_id,
@@ -389,7 +397,7 @@ export function extractFromElement(el, ctx, fields = undefined) {
  * @param {ParentNode} root
  * @param {object} ctx
  */
-export function extractFromHomeContainer(root, ctx) {
+export function extractFromHomeContainer(root, ctx, cfg = DEFAULT_SELECTORS) {
   // Prefer the rich-grid's own #contents (direct parent of rich-items).
   // An outer ytd-browse #contents also exists and must not be used — it has
   // a single child (the grid) and would collapse every page to one slot.
@@ -436,7 +444,7 @@ export function extractFromHomeContainer(root, ctx) {
   if (contents && contents.children && contents.children.length) {
     items = [...contents.children].filter((n) => n.nodeType === 1);
   } else {
-    items = [...root.querySelectorAll(HOME_ITEM_SEL)];
+    items = [...root.querySelectorAll(cfg.homeItems)];
   }
 
   const impressions = [];
@@ -457,12 +465,12 @@ export function extractFromHomeContainer(root, ctx) {
     }
 
     const card =
-      (item.matches?.(CARD_SEL) ? item : null) ||
-      item.querySelector?.(CARD_SEL) ||
+      (item.matches?.(cfg.cards) ? item : null) ||
+      item.querySelector?.(cfg.cards) ||
       item.querySelector?.("ytd-rich-grid-media") ||
       item;
 
-    const f = readCardFields(card);
+    const f = readCardFields(card, cfg);
     if (!f) {
       // Video-looking card that failed to parse counts as a failure; pure
       // non-video rich-items (channel/playlist tiles) just consume the slot.
@@ -474,7 +482,8 @@ export function extractFromHomeContainer(root, ctx) {
     const imp = extractFromElement(
       card,
       { ...ctx, surface: "HOME", context_video_id: null, slot_index },
-      f
+      f,
+      cfg
     );
     if (imp) impressions.push(imp);
     else failures += 1;
@@ -487,17 +496,17 @@ export function extractFromHomeContainer(root, ctx) {
  * @param {ParentNode} root
  * @param {object} ctx
  */
-export function extractFromContainer(root, ctx) {
+export function extractFromContainer(root, ctx, cfg = DEFAULT_SELECTORS) {
   if (ctx?.surface === "HOME") return extractFromHomeContainer(root, ctx);
 
-  const cards = [...root.querySelectorAll(CARD_SEL)];
+  const cards = [...root.querySelectorAll(cfg.cards)];
   const impressions = [];
   let failures = 0;
   const seen = new Set();
 
   for (let slot_index = 0; slot_index < cards.length; slot_index++) {
     const card = cards[slot_index];
-    const f = readCardFields(card);
+    const f = readCardFields(card, cfg);
     if (!f) {
       failures += 1;
       continue;
@@ -508,7 +517,8 @@ export function extractFromContainer(root, ctx) {
     const imp = extractFromElement(
       card,
       { ...ctx, surface: "WATCH_NEXT", slot_index },
-      f
+      f,
+      cfg
     );
     if (imp) impressions.push(imp);
     else failures += 1;

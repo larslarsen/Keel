@@ -327,3 +327,136 @@ func TestStaleStreamIsNotPromoted(t *testing.T) {
 		t.Error("a stream seen ten minutes ago was not promoted")
 	}
 }
+
+// TestFirstInsertResurrectionGuard is WO-054 Part 4's regression test.
+//
+// After a daemon restart, the in-memory index is wiped. A peer's gossip can
+// create an entry via the first-insert branch, which previously stored the
+// peer's claimed SeenAt directly with no guard. This test verifies that if we
+// have a local observation (from seeding impressions at startup) showing the
+// stream ended > LiveRecency ago, a peer's recent SeenAt claim is rejected.
+func TestFirstInsertResurrectionGuard(t *testing.T) {
+	li := &LiveIndex{
+		entries:     map[string]*liveEntry{},
+		localSeenAt: map[string]int64{},
+		logf:        func(string, ...any) {},
+	}
+	now := time.Now()
+
+	// Simulate local observation from yesterday (seeded from impressions at startup).
+	yesterday := now.Add(-24 * time.Hour).UnixMilli()
+	li.setLocalSeenAt("deadstream1", yesterday)
+
+	// Peer gossips a claim that the stream was live 1 minute ago.
+	peerClaim := now.Add(-1 * time.Minute).UnixMilli()
+	li.merge(LiveRecord{
+		VideoID: "deadstream1",
+		Title:   "Dead stream",
+		SeenAt:  peerClaim,
+	})
+
+	// The stored SeenAt should stay at yesterday (our local truth),
+	// not the peer's incredible claim.
+	e := li.entries["deadstream1"]
+	if e == nil {
+		t.Fatal("entry not created")
+	}
+	if e.rec.SeenAt != yesterday {
+		t.Errorf("stored SeenAt=%d (peer's claim), want %d (local truth)",
+			e.rec.SeenAt, yesterday)
+	}
+}
+
+// TestFirstInsertNoLocalObservationAcceptsPeer ensures the long-tail feed
+// still works: if we have NO local observation, we accept a peer's recent
+// SeenAt claim (the accepted tradeoff for unsigned gossip).
+func TestFirstInsertNoLocalObservationAcceptsPeer(t *testing.T) {
+	li := &LiveIndex{
+		entries:     map[string]*liveEntry{},
+		localSeenAt: map[string]int64{},
+		logf:        func(string, ...any) {},
+	}
+	now := time.Now()
+
+	// No local observation for this video.
+	peerClaim := now.Add(-10 * time.Minute).UnixMilli()
+	li.merge(LiveRecord{
+		VideoID: "longtailstream",
+		Title:   "Long tail stream",
+		SeenAt:  peerClaim,
+	})
+
+	// Should accept peer's claim since we have no local knowledge to contradict it.
+	e := li.entries["longtailstream"]
+	if e == nil {
+		t.Fatal("entry not created")
+	}
+	if e.rec.SeenAt != peerClaim {
+		t.Errorf("stored SeenAt=%d, want peer's %d", e.rec.SeenAt, peerClaim)
+	}
+}
+
+// TestFirstInsertLocalMoreRecentKeepsLocal ensures that if our local
+// observation is more recent than the peer's claim, we keep our local time.
+func TestFirstInsertLocalMoreRecentKeepsLocal(t *testing.T) {
+	li := &LiveIndex{
+		entries:     map[string]*liveEntry{},
+		localSeenAt: map[string]int64{},
+		logf:        func(string, ...any) {},
+	}
+	now := time.Now()
+
+	// Local observation 5 minutes ago.
+	localSeen := now.Add(-5 * time.Minute).UnixMilli()
+	li.setLocalSeenAt("recentstream", localSeen)
+
+	// Peer claims 10 minutes ago (older than our local).
+	peerClaim := now.Add(-10 * time.Minute).UnixMilli()
+	li.merge(LiveRecord{
+		VideoID: "recentstream",
+		Title:   "Recent stream",
+		SeenAt:  peerClaim,
+	})
+
+	// Should keep our more recent local observation.
+	e := li.entries["recentstream"]
+	if e == nil {
+		t.Fatal("entry not created")
+	}
+	if e.rec.SeenAt != localSeen {
+		t.Errorf("stored SeenAt=%d, want local %d", e.rec.SeenAt, localSeen)
+	}
+}
+
+// TestFirstInsertPeerWithinWindowAccepted ensures that if peer claims a
+// SeenAt within LiveRecency of our local observation, we accept it (stream
+// might still be running).
+func TestFirstInsertPeerWithinWindowAccepted(t *testing.T) {
+	li := &LiveIndex{
+		entries:     map[string]*liveEntry{},
+		localSeenAt: map[string]int64{},
+		logf:        func(string, ...any) {},
+	}
+	now := time.Now()
+
+	// Local observation 30 minutes ago (within LiveRecency = 1 hour).
+	localSeen := now.Add(-30 * time.Minute).UnixMilli()
+	li.setLocalSeenAt("runningstream", localSeen)
+
+	// Peer claims 10 minutes ago (more recent, but within LiveRecency of local).
+	peerClaim := now.Add(-10 * time.Minute).UnixMilli()
+	li.merge(LiveRecord{
+		VideoID: "runningstream",
+		Title:   "Running stream",
+		SeenAt:  peerClaim,
+	})
+
+	// Should accept peer's more recent claim since stream might still be live.
+	e := li.entries["runningstream"]
+	if e == nil {
+		t.Fatal("entry not created")
+	}
+	if e.rec.SeenAt != peerClaim {
+		t.Errorf("stored SeenAt=%d, want peer's %d", e.rec.SeenAt, peerClaim)
+	}
+}

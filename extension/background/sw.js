@@ -364,6 +364,19 @@ async function handle(message, sender) {
      * whole. The query is matched there against records this machine already
      * holds, so nothing about it reaches the network.
      */
+    /**
+     * Selector config (WO-056). Data only — the extension validates it again
+     * before use and refuses the whole thing on any violation.
+     */
+    case "GET_SELECTORS": {
+      if (!bridge.helloOk) throw new Error("daemon not connected");
+      const env = await bridge.request("GET_SELECTORS", {});
+      if (env.type === "ERROR") {
+        throw new Error(env.payload?.message || "GET_SELECTORS failed");
+      }
+      return { selectors: env.payload };
+    }
+
     case "LIVE_SEARCH": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
       const env = await bridge.request("LIVE_SEARCH", {

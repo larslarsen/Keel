@@ -243,6 +243,8 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		return handleBlockChannel(env, out, st, false)
 	case "EXPLAIN_VIDEO":
 		return handleExplainVideo(env, out, st)
+	case "GET_SELECTORS":
+		return handleGetSelectors(env, out)
 	case "LIVE_SEARCH":
 		return handleLiveSearch(env, out)
 	default:
