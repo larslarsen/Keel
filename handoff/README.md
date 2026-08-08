@@ -73,3 +73,4 @@ log has not been made — it will drift out from under whoever is implementing i
 | 055 | Swarm status showed DHT noise as peers | Engineer | **Fixed** |
 | 056 | Implement Option B (data-driven selectors) for YouTube — minimal first bite | Sr Dev | **Open** |
 | 057 | TikTok surface + platform-scoped panel (depends on 056) | Sr Dev | **Open** (blocked on 056) |
+| 058 | Peer graph empty at v0.1.0: no seed, no auto peer data | Sr Dev | **Open** |

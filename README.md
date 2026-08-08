@@ -31,10 +31,13 @@ gives you both.
 Nowhere, by default. The recording lives in a SQLite file on your machine, there
 is no account, and there is no server to send it to — none exists.
 
-Above the default you can lend disk space to mirror what *other* people have
-published, which is what lets suggestions reach past your own history. Even
-then, nothing you recorded is published: that needs threshold encryption, which
-is not built.
+Above the default you can lend disk space to fetch and re-serve the recommendation
+graph *other* people have published. That is what will let your suggestions walk
+past your own history — but at v0.1.0 there is no published seed and no automatic
+peer data yet, so nothing is relayed and the walk stays within your own history
+until a seed or bundle is imported. At every level that ships, nothing you
+recorded leaves your machine; publishing your own observations would need
+threshold encryption (Levels 3–4), which is not built yet.
 
 The one exception, at every setting: when Keel sees a livestream it tells other
 Keel users the stream exists. That notice carries no sender — not your address,
@@ -171,26 +174,29 @@ What Keel does differently is the combination, not any one part:
 1. **Raw observation never leaves the device.** You get personal value first —
    search your own recommendations, see which video led to which. The recording
    is yours.
-2. **Sharing is opt-in and threshold-encrypted (STAR).** You can contribute to a
-   global count without any server learning your trail, and without the platform
-   ever being involved.
+2. **Sharing is opt-in and threshold-encrypted (STAR).** When built, you can
+   contribute to a global count without any server learning your trail, and
+   without the platform ever being involved. Until then, the only thing that
+   moves is the graph data *other people* have published, which your node pulls
+   and relays.
 3. **No platform cooperation required.** The measurement is taken from the page
    you actually see, so it cannot be gamed from the server side the way an
    enclave audit can.
-4. **Publication is decentralised** (the swarm), not a central research database.
+4. **The graph is decentralised.** What users actually exchange today is the
+   recommendation graph itself — pulled neighbourhood by neighbourhood and
+   re-served — not a central database and not your raw history.
 
-The bucket system is the quiet part that makes the peer sharing work at all. When
-a node asks the network for data it never requests one video's neighbourhood — it
-asks for every neighbourhood whose key falls in a prefix bucket (thousands of
-videos at once, hashed so the buckets are evenly populated) and takes the whole
-bucket. There is no "real request hidden among decoys" to statistically separate,
-because the node genuinely takes everything in the bucket. The blocks fetched for
-cover are exactly the blocks that make the node a useful mirror for others, so
-Level 2's privacy mechanism and its contribution are the *same act*, and the disk
-budget you set is the anonymity parameter. Combined with a fresh network identity
-per session, a peer answering you learns almost nothing about what you watched —
-and the aggregate that results is the empirical density estimate of the
-population manifold.
+The bucket system is what will make peer sharing private *when there is a graph
+to share*. When a node asks the network it never requests one video's
+neighbourhood — it asks for every neighbourhood whose key falls in a prefix
+bucket (thousands of videos at once, hashed so the buckets are evenly
+populated) and takes the whole bucket. There is no "real request hidden among
+decoys" to statistically separate, because the node genuinely takes everything
+in the bucket. The blocks fetched for cover are exactly the blocks that would
+make the node a useful mirror for others, so Level 2's privacy mechanism and its
+contribution are the *same act*, and the disk budget you set is the anonymity
+parameter. Combined with a fresh network identity per session, a peer answering
+you learns almost nothing about what you watched.
 
 **What is already known, and what is not**
 
@@ -220,12 +226,16 @@ the tail.
 
 At v0.1.0 the motivated early adopters are people who want to measure this, not
 casual users. If that is you: install it, run it against your own YouTube, and
-the per-person record is the raw material. When enough independent corpora exist,
-the aggregate is the empirical density estimate of the population manifold —
-publishable, reproducible, and resistant to the one-shot decay that sinks the
-sockpuppet studies, because the pipeline re-runs continuously rather than once.
-The design is in `DESIGN_v2.md` (§6 for the aggregation, §6.3 for cohort rules);
-the contribution levels are in `handoff/WO-051`. An install that breaks on your
+the per-person record is the raw material — the one piece that already works
+fully. The peer graph layer (seed bundle plus swarm relay) is built and passes
+its tests, but there is no published seed and no automatic peer data yet, so the
+suggestion walk reaches past your own history only once a seed or bundle is
+imported. The aggregate that becomes the empirical density estimate of the
+population manifold is designed-for but not yet populated; when independent
+corpora exist, the pipeline can re-run continuously rather than once, which is
+what resists the one-shot decay that sinks the sockpuppet studies. The design is
+in `DESIGN_v2.md` (§6 for the aggregation, §6.3 for cohort rules); the
+contribution levels are in `handoff/WO-051`. An install that breaks on your
 machine is a bug report we want.
 
 ## Repository layout
