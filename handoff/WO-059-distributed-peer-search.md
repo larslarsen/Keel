@@ -71,6 +71,12 @@ This makes private search feasible for any query by decomposing it into many
 common-token queries. Strictly better than word-buckets for the
 common/rare-word problem, and avoids the BPE "common word = rare bucket" trap.
 
+**Superseded in part by grouping (see empirical section):** the short-token bias
+keeps tokens common, but a genuinely rare token still yields a small per-token
+bucket. The measured fix is grouping tokens into uniform shards
+(`shard = hash(token) mod M`), which removes per-token rarity entirely. The
+tokenizer here stays as the first layer; grouping is the second.
+
 ### The invention, restated (succinct)
 
 Distributed search over recommendation-graph/catalogue data that is NOT on your
@@ -163,16 +169,21 @@ precomputed and served as opaque buckets.)
 - It does NOT replace the video-ID graph bucket (graph traversal: what-follows-
   video-X). Both coexist: graph bucket for walking, term/token bucket for the
   search box.
-- Bandwidth cost: N full buckets per query (N terms or N tokens). Cheap in
-  information, not in bytes — same trade as the existing bucket.
+- Bandwidth cost: per query = Σ (shard size over the query's tokens' shards),
+  bounded and predictable; k=3 ≈ 450 (1-word) to ≈1,900 (4-word) pairs at M=256
+  on the local corpus, scaling linearly with the corpus, NOT exponentially.
+  See the empirical section for the full k=1..5 + grouping model.
 
 ## Caveats (load-bearing, record them)
 
 1. **Non-collusion / identity.** Different peer per fetch AND fresh ephemeral ID
    per fetch. Current code rotates per SESSION — must tighten to per-fetch or a
    colluder links the fetches and reconstructs the query.
-2. **Common-term requirement.** Safety is "tokens/terms are common." Exotic
-   words have few/some-rare tokens → partial leak. Acceptable, document it.
+2. **Common-term requirement.** Safety is "tokens/terms are common." With
+   per-token buckets, exotic words have few/some-rare tokens → partial leak.
+   **RESOLVED by grouping (empirical section):** tokens land in uniform shards,
+   so no token's rarity reaches the peer. The short-token bias remains a useful
+   first layer but is no longer the sole defence.
 3. **Static index required.** Token→videoID index must be precomputed and served
    as opaque buckets, never computed from the request.
 4. **Rare-term residual leak.** Single rare token still reveals more than a
@@ -192,22 +203,24 @@ sound. Listed in priority order.
    per SESSION (swarm_runtime.go:72) — must tighten to per-fetch or the whole
    construction collapses to the invertible-query leak it was built to avoid.
 
-2. **Rare-token floor.** Even with a space-aware short-token scheme, a genuinely
-   exotic word can decompose into pieces that are themselves rare (e.g. a word
-   made of unusual character sequences). A rare token's bucket is small, fetching
-   it reveals more. Token length / space-anchoring is a knob: shorter, more
-   common pieces are noisier (more false positives, more bandwidth) but more
-   private. **Mitigation: bias the precomputed tokenizer toward short common
-   pieces so even rare-word tokens stay common; accept a residual floor for
-   genuinely exotic character sequences.** Documented, not eliminated. (This is
-   why we design our OWN tokenizer for the privacy invariant, not borrow BPE —
-   see Construction B.)
+2. **Rare-token floor — SOLVED by grouping, not by tokenizer tuning.** A
+   genuinely exotic word decomposes into pieces that are themselves rare, and a
+   rare token's per-token bucket is small (a peer serving it learns you wanted
+   that token). Hashing the token key does NOT fix this — the bucket contents are
+   fixed as videos(token), so renaming the key leaves the size unchanged. The fix
+   is GROUPING tokens into uniform shards (`shard = hash(token) mod M`, M≈64–256,
+   measured): the peer serves a common shard containing many tokens, never the
+   rare token. See the empirical section — under grouping no token's rarity
+   reaches the peer. The precomputed-tokenizer bias (shorter = more common) is now
+   secondary; grouping is the primary control.
 
 3. **Bucket-population inference.** An adversary running many nodes learns global
    bucket populations. Fetching a bucket known to contain exactly 3 videos tells
-   them you searched one of those 3, regardless of token vs word. **Mitigation:
-   pad buckets to a minimum size, or only serve buckets above a popularity
-   floor.**
+   them you searched one of those 3, regardless of token vs word. **SOLVED by
+   grouping (see empirical section): shards are uniform (CV 0.15–0.58 at M=64–256),
+   so no bucket is small enough to identify a query. The per-token population
+   reporting below is still required for CORRECTNESS (completing thin-slice
+   replies), not for this privacy leak.**
 
 4. **Temporal / fetch-count attack.** "This identity fetched 11 token-buckets in
    200ms" reveals query structure (single word ≈ N tokens, multi-word ≈ sum),
@@ -350,63 +363,149 @@ benevolently as a warning) and WO-058 (empty graph is the root cause). The
 correctness dependency makes the count-reporting subsystem required at ANY
 network size, not just small — so it is core, not deferred.
 
-## Empirical tokenizer evaluation (on Lars's local corpus, 2026-08-08)
+## Empirical tokenizer evaluation (measured 2026-08-09, supersedes the 08-08 table)
 
-Measured against 3,796 distinct real YouTube titles from the live Keel DB
-(`.config/keel/keel.sqlite`, `impressions` table — note: 22,537 raw rows
-collapse to 3,796 unique titles after DISTINCT). Tokens deduplicated per title
-(so a title counts once per bucket). Bucket size = number of titles containing
-the token.
+Measured against **4,527 distinct** real YouTube titles from the live Keel DB
+(`.config/keel/keel.sqlite`, `impressions` table). The earlier 3,796-number
+table was stale AND internally inconsistent (it claimed k=2 has the FEWEST
+tokens per query — false: smaller tokens split a word into MORE pieces, so
+k=2 emits ~30 tokens/title vs k=3's ~25). The earlier table also reported only
+the MEDIAN bucket, which hid the mean that actually drives bytes. Corrected
+below. Tokenization: space-anchored, letters-only (`' rec'`), as the design
+specifies. Bucket size = number of titles containing the token.
 
-| Scheme | Distinct tokens | Median bucket | % tokens k=1 (leak) | % tokens ≤5 (risk) |
-|---|---|---|---|---|
-| k=3 raw (spaces+punct) | 11,287 | 2 | 44% | 72% |
-| k=2 raw | 3,098 | 3 | 36% | 63% |
-| **k=2 letters-only** | **1,029** | **19** | **14%** | **33%** |
-| k=3 letters-only | 6,476 | 4 | 28% | 55% |
+### Per-token buckets, k=1..5 (the unit is the token bucket)
 
-Conclusion: **k=2, letters-only, space-anchored is the best scheme** — largest
-median bucket (19), fewest k=1 tokens (14%), and FEWEST tokens per query (so
-cheapest bandwidth). Stripping punctuation/numbers is the dominant win: the rare
-tail was mostly junk tokens (" f's", " 672", " rn.").
+| k | tokens/title | mean bucket | median bucket | 1-word bytes | 4-word bytes | % k=1 (leak) |
+|---|---|---|---|---|---|---|
+| 1 | 16.5 | 2848 | 3054 | 34,140 | 49,431 | 0.0% |
+| 2 | 30.1 | 233 | 51 | 7,223 | 33,466 | 9.2% |
+| **3** | **25.1** | **25** | **6** | **480** | **5,644** | **23.8%** |
+| 4 | 18.2 | 6.7 | 2 | 49 | 1,211 | 39.7% |
+| 5 | 12.5 | 3.7 | 1 | 31 | 458 | 52.0% |
 
-**k-step is a developer release, not network-driven.** k=2 is the right choice
-while the network is sparse (privacy-bound: local buckets must be large). As the
-network densifies, every token's bucket becomes huge from the union across peers
-regardless of k, so k=2's only remaining trait is "more tokens per query =
-more bandwidth." At that point stepping to k=3 loses no privacy and saves
-bandwidth. BUT this step is a PROTOCOL VERSION BUMP shipped by developers (see
-WO-060) — it is NOT triggered by global bucket-population estimates. Those
-estimates are eventually-consistent and can differ between nodes; using them to
-flip a hard deterministic parameter would let nodes disagree on tokenization and
-partition the network (would need blockchain/consensus, which Keel does not
-build). So: k is a compile-time constant; any change is a release, applied
-uniformly because it is compiled in.
+"bytes" = Σ bucket sizes over the query's tokens (the real cost; it is the
+PRODUCT N×mean_bucket, NOT median and NOT token count). Findings:
 
-**Caveat — these are LOCAL numbers.** The scheme's privacy is a function of
-network size (union across peers). The 14% k=1 locally becomes network-wide
-k≈10–50 at modest peer counts. This is exactly why the global count-reporting
-(see above) is required: locally a peer sees few matches; the client needs the
-global population to know if a reply is complete.
+- **Per-query bytes fall monotonically as k rises.** k=2 → 33,466; k=3 → 5,644
+  (6× less); k=4 → 1,211 (28× less than k=2). The earlier "k=2 optimal" was
+  exactly backwards: bigger k shrinks buckets, and the bucket-size collapse
+  dominates the small token-count rise (33→30 tokens from k=2 to k=3).
+- **k=3 is the bandwidth/privacy knee.** Cheapest scheme with still-acceptable
+  rare-token privacy (23.8% k=1). k=1/k=2 are private but brutal in bytes;
+  k=4/k=5 are cheap but half their tokens leak. **Default k=3.**
+- **Space-anchoring does not move bytes** (identical columns with/without it) —
+  it is a CORRECTNESS guard (stops "men" matching "moment" across words), not a
+  bandwidth lever. Keep it.
+
+### Adaptive stepping by query length
+
+A short query has few tokens, so stepping DOWN to a smaller k keeps buckets
+common (private) and tolerates the byte cost; a long query has many tokens, so
+stepping UP to a larger k shrinks buckets cheaply (the rare-token risk is
+diluted across many tokens). Measured on "algorithm" (1 word):
+
+| k | tokens | bytes |
+|---|---|---|
+| 2 | 8 | 7,223 |
+| 3 | 7 | 480 |
+| 4 | 6 | 49 |
+
+Rule: **≤2 words → k=2; 3–4 words → k=3; ≥5 words → k=4.** Precompute the
+inverted index at k=2, 3, 4 (3× storage, cheap; the client picks k, the serving
+peer needs that k's table).
+
+### Grouping tokens into uniform shards — kills the server-side rare-token leak
+
+Per-token buckets can never fix the rare-token leak (attack #2/#3): a token's
+bucket size is intrinsic to its frequency, so a rare token yields a tiny bucket
+and the serving peer learns you wanted it. **Hashing the token KEY does not help
+— the bucket contents are fixed as videos(token), so renaming the key leaves the
+size unchanged.** What fixes it is GROUPING: assign each token to a shard by
+`shard = hash(token) mod M`, and store the shard as `(videoID → set of tokens-in-
+shard it matches)`. Fetching shard G returns a UNIFORM set; intersect locally on
+the token tag to recover exactly videos(token). The peer sees only "shard G"
+(common, many tokens) — never the token.
+
+This is the §7.4 prefix-bucket pattern reapplied to the token index. It is
+**server-side privacy**: the serving peer cannot link you to a token, because
+one shard contains many tokens. (§7.4 prefix buckets bought CLIENT-side privacy
+— hid the client's query. Here the shard hides the token from the peer. Different
+direction, same mechanism.)
+
+Measured (4,527 titles; byte proxy = (videoID, token) pairs per shard; CV =
+coefficient of variation, lower = more equal):
+
+| k | M | distinct tokens | shard median | shard mean | shard max | CV |
+|---|---|---|---|---|---|---|
+| 3 | 64 | 4,432 | 1,715 | 1,746 | 2,994 | 0.26 |
+| 3 | 256 | 4,432 | 383 | 436 | 1,913 | 0.58 |
+| 4 | 64 | 12,161 | 1,286 | 1,271 | 1,752 | 0.15 |
+| 4 | 256 | 12,161 | 307 | 318 | 761 | 0.31 |
+
+**M must be small relative to the token count** (M=64–256). At M=4096 with
+4,432 tokens most shards go empty and CV explodes. At M=64–256 the shards are
+near-uniform (CV 0.15–0.58) and the old leak is gone: old k=3 had 2,141 tokens
+with ≤5 videos (a per-token leak); under grouping no token's rarity reaches the
+peer — only the uniform shard does.
+
+Per-query bytes under grouping (M=256 target; proportional to shard size):
+k=3 ≈ 450 (1-word) to ≈1,900 (4-word) pairs; k=4 ≈ 180 to ≈760. Bounded,
+predictable, linear in corpus, NOT exponential.
+
+Consequence for sharing: because the shard is uniform AND its contents are a
+fixed public function of the corpus (identical for every node), a peer serving a
+shard learns nothing about the requester that is not already public. So the
+**per-fetch-ephemeral-identity requirement (caveat #1) becomes good hygiene, not
+the load-bearing anonymizer — the uniform shard is.** The token→videoID index
+shards are safe to serve/share (server-side-private), exactly like the graph
+buckets in §7.4. This does NOT make the CATALOGUE (titles) safe to share raw —
+titles still derive from graph buckets per §7.4; only the token index shards and
+graph buckets are server-side-private. Client-side query reconstruction is
+unchanged.
+
+### k-step remains a developer release
+
+k is still a COMPILE-TIME constant (WO-060): nodes must agree on tokenization or
+they partition the network. The adaptive stepping above is by QUERY LENGTH on the
+client, choosing among the three precomputed k-tables — it does not change the
+protocol, only which local table the client queries. So stepping is a client
+local choice over precomputed tables, not a network-wide parameter flip.
+
+**Caveat — LOCAL numbers.** Privacy scales with network size (union across
+peers). The %k=1 locally becomes network-wide k≈10–50 at modest peer counts,
+which is exactly why the global count-reporting below is required for
+correctness (a thin-slice peer's small reply must not collapse the result). The
+grouping model's uniformity holds network-wide (shards stay uniform as the corpus
+grows); absolute bytes scale with corpus.
 
 ## Acceptance (when built)
 
-- [ ] Static token/term → videoID inverted index built from local catalogue.
-- [ ] Serve-bucket RPC returns the whole bucket for a token, no query evaluation.
-- [ ] Per-fetch ephemeral identity (not per-session) + different peer per token.
+- [ ] Static token/term → videoID inverted index built from local catalogue, at
+      **k=2, 3, and 4** (precomputed; adaptive stepping picks among them by query
+      length: ≤2 words → k=2, 3–4 → k=3, ≥5 → k=4).
+- [ ] Tokens grouped into **uniform shards** (`shard = hash(token) mod M`,
+      M≈64–256; measured CV 0.15–0.58). Shard stored as
+      `(videoID → set of tokens-in-shard matched)`, fetched whole, intersected
+      locally on the token tag. No per-token bucket is ever served.
+- [ ] Serve-shard RPC returns the whole shard for a token's group, no query
+      evaluation; the peer learns only the common shard, never the token
+      (server-side privacy — see empirical section).
+- [ ] Ephemeral identity per fetch (not per-session) + different peer per shard
+      (good hygiene; the uniform shard is the load-bearing anonymizer, so this is
+      no longer the sole defence).
 - [ ] Local intersection yields the precise result; no peer observes the query.
-- [ ] Test: a node searches a term another node holds, peer logs show only
-      token-buckets, never the term or the result.
-- [ ] Each node reports per-token bucket population counts (from its local index)
-      without revealing bucket contents.
-- [ ] Network-wide per-token counts aggregated via HLL sketch (sketch.go),
-      MIN-across-peers for attack resistance.
-- [ ] Client uses global per-token count to detect truncated/partial bucket
-      replies from thin-slice peers and fetches additional peers to COMPLETE the
-      union (correctness: a 1-element reply must not collapse the result set).
-- [ ] Search UI shows a gradient warning driven by aggregate bucket population
+- [ ] Test: a node searches a term another node holds, peer logs show only shard
+      ids, never the token or the result.
+- [ ] Each node reports per-shard population counts (from its local index) without
+      revealing shard contents.
+- [ ] Network-wide per-shard counts aggregated via HLL sketch (sketch.go),
+      MIN-across-peers for attack resistance; used to COMPLETE thin-slice replies
+      (a 1-element reply must not collapse the result set).
+- [ ] Search UI shows a gradient warning driven by aggregate shard population
       (threshold ≈ STAR K of 50); copy states the small-network limit honestly.
-- [ ] Tokenizer ships as k=2, letters-only, space-anchored (empirically best on
-      real corpus); not BPE/WordPiece; COMPILE-TIME constant, identical on all
-      nodes, versioned per WO-060. Any k change is a developer release, never
+- [ ] Tokenizer ships as k=2/3/4 tables, letters-only, space-anchored (measured
+      optimal: k=3 is the bandwidth/privacy knee; NOT the stale "k=2 optimal"
+      claim); not BPE/WordPiece; COMPILE-TIME constant, identical on all nodes,
+      versioned per WO-060. Any k change is a developer release, never
       network-driven.
