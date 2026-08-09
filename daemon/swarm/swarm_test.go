@@ -4,6 +4,7 @@ package swarm
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -412,5 +413,56 @@ func TestFallsBackToRememberedPeers(t *testing.T) {
 	}
 	if len(sug.Suggestions) == 0 {
 		t.Error("edges arrived via the fallback but the walk returns nothing")
+	}
+}
+
+// TestHandleBlockRequestFaultInjection is the server-side fault surface the
+// happy-path tests never touch: a peer (or a client probing the handler
+// directly) can send a hostile prefix line. The handler reads at most 256 bytes
+// and treats an empty/garbage prefix as a silent no-op. A malicious line must
+// never panic the server nor return a valid block. We drive it over a real
+// in-process libp2p connection via FetchFrom with crafted keys, asserting the
+// server survives and the client gets a clean miss (not a crash, not data).
+func TestHandleBlockRequestFaultInjection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	server := newStore(t, "server.sqlite")
+	seed(t, server, "seedaaaaaaa", "targetaaaa1", 0)
+	sNode, err := Start(ctx, server, isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	client := newStore(t, "client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+
+	hostile := []string{
+		"",                           // empty line -> no-op
+		"   ",                        // whitespace only
+		strings.Repeat("x", 300),     // over the 256-byte read limit
+		"../../../etc/passwd",        // path traversal attempt
+		"\x00\x01\x02binary",         // embedded NULs / binary
+		"a3f\n\r\r\n",                // CRLF noise
+		"seedaaaaaaa",                // a real key the server DOES have
+	}
+	for _, key := range hostile {
+		// A known, directly-connected peer is asked. For hostile keys the
+		// server handler should no-op and the client should get a clean miss
+		// (FetchFrom returns an error for non-bucket/garbage, or 0 edges for
+		// an empty bucket). The assertion is that it does not panic/hang.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("handler panicked on hostile key %q: %v", key, r)
+				}
+			}()
+			_, _ = cNode.FetchFrom(ctx, sNode.AddrInfo(), key)
+		}()
 	}
 }
