@@ -400,20 +400,20 @@ PRODUCT N×mean_bucket, NOT median and NOT token count). Findings:
 
 ### Adaptive stepping by query length
 
-A short query has few tokens, so stepping DOWN to a smaller k keeps buckets
-common (private) and tolerates the byte cost; a long query has many tokens, so
-stepping UP to a larger k shrinks buckets cheaply (the rare-token risk is
-diluted across many tokens). Measured on "algorithm" (1 word):
+Because tokenization is space-anchored (per-word), a short word within an
+otherwise-normal query does NOT break it — the other words still produce tokens
+(e.g. "recommendation ai" tokenizes fully at k=4; only the 2-char word "ai"
+contributes nothing). The ONLY case that fails is a query that CONSISTS SOLELY
+of a word too short for k (a single sub-k-char word → zero tokens). For the
+local 4,527-title corpus that means: sub-3-char single words at k=4, sub-2-char
+at k=3 ("ai", "ml", "go" at k=4; "go" at k=3).
 
-| k | tokens | bytes |
-|---|---|---|
-| 2 | 8 | 7,223 |
-| 3 | 7 | 480 |
-| 4 | 6 | 49 |
-
-Rule: **≤2 words → k=2; 3–4 words → k=3; ≥5 words → k=4.** Precompute the
-inverted index at k=2, 3, 4 (3× storage, cheap; the client picks k, the serving
-peer needs that k's table).
+So stepping is a fallback for the degenerate single-short-word query, not a
+general rule: if the whole query yields zero tokens at the chosen k, step DOWN
+until at least one token forms. Measured rule: k=3 handles all ≥2-char single
+words; k=4 needs step-down only for sub-3-char single words. (Under grouping the
+privacy rationale for stepping is gone — group shards are uniform at every k — so
+what remains is purely the tokenizability floor.)
 
 ### Grouping tokens into uniform shards — kills the server-side rare-token leak
 
@@ -453,16 +453,20 @@ Per-query bytes under grouping (M=256 target; proportional to shard size):
 k=3 ≈ 450 (1-word) to ≈1,900 (4-word) pairs; k=4 ≈ 180 to ≈760. Bounded,
 predictable, linear in corpus, NOT exponential.
 
-Consequence for sharing: because the shard is uniform AND its contents are a
-fixed public function of the corpus (identical for every node), a peer serving a
-shard learns nothing about the requester that is not already public. So the
-**per-fetch-ephemeral-identity requirement (caveat #1) becomes good hygiene, not
-the load-bearing anonymizer — the uniform shard is.** The token→videoID index
-shards are safe to serve/share (server-side-private), exactly like the graph
-buckets in §7.4. This does NOT make the CATALOGUE (titles) safe to share raw —
-titles still derive from graph buckets per §7.4; only the token index shards and
-graph buckets are server-side-private. Client-side query reconstruction is
-unchanged.
+Consequence for serving: the property is SERVER-SIDE — what a node returns must
+not leak information about THAT node's private corpus. A small or rare bucket
+fingerprints the serving node's slice (this is exactly what the STAR K ≈50
+contributor floor was meant to guarantee: don't serve a bucket small enough to
+pinpoint you). Under grouping, every shard is uniform and common, so serving it
+reveals nothing distinguishing about the node's holdings — grouping does
+structurally what STAR K did as a threshold. STAR's role thus shrinks to the
+cold-start warning (when the network is too small for any shard to be genuinely
+common). The token→videoID index shards are safe to serve/share for this reason,
+like the graph buckets in §7.4. This is independent of the CLIENT's query privacy
+(the peer already learns nothing about which token the requester wanted). It does
+NOT make the CATALOGUE (titles) safe to share raw — titles still derive from
+graph buckets per §7.4; only the token index shards and graph buckets are
+server-side-safe.
 
 ### k-step remains a developer release
 
