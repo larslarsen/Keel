@@ -127,7 +127,7 @@ function setStatus(ok, detail = "") {
   }
 }
 
-const bridge = createNativeBridge({
+let bridge = createNativeBridge({
   onStatus: setStatus,
   // Do not broadcast STATS_RESULT / IMPRESSIONS_ACK here. The IMPRESSIONS
   // handler (and flushBuffer) already emit STORE_UPDATED with lastPage.
@@ -244,6 +244,12 @@ async function handle(message, sender) {
       const { values, errors } = validateImpressionList(list);
       if (errors.length) console.warn(LOG, "invalid", errors);
       rememberPage(values, failures, message.payload?.generation);
+      // Snapshot the page state THIS handler owns before yielding. rememberPage
+      // mutates the shared module-level lastPage, and a concurrent IMPRESSIONS
+      // (another tab / PAGE_CONTEXT) can change it during the await below.
+      // Broadcasting the live lastPage on resume would tag these impressions
+      // with the wrong page (BUG S2: stale commit across await).
+      const pageSnap = { ...lastPage, impressions: lastPage.impressions.slice() };
 
       if (!bridge.helloOk) {
         buffer.push(...values);
@@ -251,7 +257,7 @@ async function handle(message, sender) {
         return { queued: values.length, connected: false };
       }
       const result = await sendImpressions(values);
-      broadcast({ type: "STORE_UPDATED", payload: { ...result, lastPage } });
+      broadcast({ type: "STORE_UPDATED", payload: { ...result, lastPage: pageSnap } });
       return { result, connected: true };
     }
 
@@ -631,4 +637,15 @@ if (browser.runtime.onInstalled?.addListener) {
       ?.create?.({ url: browser.runtime.getURL("consent/index.html") })
       .catch(() => {});
   });
+}
+
+// Test-only seam: the SW event handlers (handle/rememberPage/flushBuffer) are
+// module-private, and the race in BUG S2 lives in their shared mutation of
+// `lastPage` across `await` yield points. Exposing them — and a bridge
+// injector — lets the regression test drive two interleaved IMPRESSIONS
+// messages without a live native-messaging connection. Production never calls
+// these; the injector only swaps the module-level `bridge` binding.
+export { handle, rememberPage, flushBuffer };
+export function __test_setBridge(b) {
+  bridge = b;
 }
