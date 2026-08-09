@@ -843,6 +843,69 @@ func TestSuggestEntropyAndBlocklist(t *testing.T) {
 	}
 }
 
+// TestSuggestRailCompetesForTopSlots is the regression for the user's complaint
+// that the panel "stays the same" — the rail (what YouTube actually showed
+// alongside the watched video) was being held out of the leading slots by a
+// novelty reservation, so the top of the panel never reordered to the rail.
+// Per the user's explicit call, the rail must compete for the top slots on its
+// own walk mass. This test builds a seed whose rail contains a high-mass
+// neighbour R and at least five non-rail (second-hop) candidates, then asserts
+// R is allowed to lead — not forced to slot 6+ behind a novelty reservation.
+func TestSuggestRailCompetesForTopSlots(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "t.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	seed := "seedvideo01"
+	put := func(page, vid, title, ch string, slot int, views float64) {
+		t.Helper()
+		v := views
+		if _, err := st.PutImpressions([]bridge.Impression{{
+			PageLoadID: page, ObservedAt: time.Now().UnixMilli(), Surface: "WATCH_NEXT",
+			ContextVideoID: &seed, SlotIndex: slot,
+			VideoID: vid, Title: title, ChannelID: &ch, ViewCount: &v,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// R is the seed's slot-0 rail neighbour: it holds the most walk mass.
+	put("11111111-1111-4111-8111-111111111111", "railvideo01", "Rail", "UCrailnnnnnnnnnnnnnnnnnn", 0, 5_000_000)
+
+	// Five non-rail second-hop candidates via a peer, so there are well over
+	// five candidates and a novelty reservation would otherwise bury R.
+	secondHops := []string{"secondhop01", "secondhop02", "secondhop03", "secondhop04", "secondhop05"}
+	edges := make([]bridge.EdgeObservation, 0, len(secondHops))
+	cats := make([]bridge.CatalogueEntry, 0, len(secondHops))
+	for _, to := range secondHops {
+		edges = append(edges, bridge.EdgeObservation{
+			From: seed, To: to, Surface: "WATCH_NEXT",
+			SlotBucket: "1", DayBucket: "2026-08-03", Cohort: "unknown", Count: 1,
+		})
+		cats = append(cats, bridge.CatalogueEntry{VideoID: to, Title: "Second " + to})
+	}
+	if _, _, err := st.ImportEdges("peer-a", edges, cats); err != nil {
+		t.Fatal(err)
+	}
+
+	// Entropy 0: focus, so walk mass dominates and R (direct neighbour) ranks
+	// first. With the rail allowed to compete, R leads. A novelty reservation
+	// would have pushed it to slot 5+.
+	res, err := st.Suggest(seed, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Suggestions) == 0 {
+		t.Fatal("no suggestions produced")
+	}
+	if res.Suggestions[0].VideoID != "railvideo01" {
+		t.Fatalf("rail video should be allowed to lead, got top=%q (full=%+v)",
+			res.Suggestions[0].VideoID, res.Suggestions)
+	}
+}
+
 func TestEdgeObservationsBucketing(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(filepath.Join(dir, "t.sqlite"))

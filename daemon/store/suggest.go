@@ -44,14 +44,6 @@ const (
 	// finishedLivePenalty pushes ended streams down without hiding them.
 	finishedLivePenalty = 0.15
 
-	// novelLeadSlots is how many leading suggestions are guaranteed to be
-	// videos the user was not just shown.
-	//
-	// Five: enough that the top of the panel is never a reordering of the rail,
-	// few enough that the rest can rank honestly and so vary with what is being
-	// watched.
-	novelLeadSlots = 5
-
 	// maxLivePromoted bounds how many running streams lead the panel.
 	//
 	// Three: enough that a live stream is never missed, few enough that the
@@ -258,14 +250,6 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// panel becomes a reordering of the thing it replaced. Measured on a live
 	// corpus: 10 of 10 suggestions came from the rail at entropy 0 through 100.
 	//
-	// The rail is how the walk travels, not what it recommends. Excluding the
-	// destination while keeping the path forces suggestions at least two hops
-	// out, which is where anything the user has not just been offered lives.
-	seen, err := s.railFor(platform, seed)
-	if err != nil {
-		return nil, err
-	}
-
 	// A running livestream is the one thing worth keeping from the rail, and it
 	// is exempt from the demotion below: its value expires, so "you were already
 	// shown this" is not a reason to bury it.
@@ -276,28 +260,28 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 
 	var ranked []scored
 	for id, sc := range rank {
-		if id == seed || id == HomeFrom || sc <= 0 {
-			continue
-		}
-		ranked = append(ranked, scored{id: id, score: sc})
+	if id == seed || id == HomeFrom || sc <= 0 {
+		continue
+	}
+	ranked = append(ranked, scored{id: id, score: sc})
 	}
 	// A corpus too small to reach past one hop would otherwise show nothing at
 	// all. An empty panel is worse than a familiar one, so fall back — and the
 	// caller is told, so the interface can say why.
 	// Nothing at all: the corpus cannot reach past this rail yet.
 	if len(ranked) == 0 {
-		out.RailOnly = true
-		for id, sc := range rank {
-			if id == seed || id == HomeFrom || sc <= 0 {
-				continue
-			}
-			ranked = append(ranked, scored{id: id, score: sc})
+	out.RailOnly = true
+	for id, sc := range rank {
+		if id == seed || id == HomeFrom || sc <= 0 {
+			continue
 		}
+		ranked = append(ranked, scored{id: id, score: sc})
+	}
 	}
 
 	meta, err := s.videoMeta(platform, ids(ranked))
 	if err != nil {
-		return nil, err
+	return nil, err
 	}
 
 	// Serendipity: at high entropy, damp by popularity so the walk surfaces
@@ -305,13 +289,13 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// crypto — is what delivers the anti-popularity promise (§3).
 	pop := float64(entropy) / 100.0
 	for i := range ranked {
-		m := meta[ranked[i].id]
-		if m == nil {
-			continue
-		}
-		if pop > 0 && m.views > 0 {
-			ranked[i].score /= math.Pow(math.Log10(m.views+10), pop)
-		}
+	m := meta[ranked[i].id]
+	if m == nil {
+		continue
+	}
+	if pop > 0 && m.views > 0 {
+		ranked[i].score /= math.Pow(math.Log10(m.views+10), pop)
+	}
 	}
 
 	// A stream that has finished is a bad recommendation: hours long, titled as
@@ -321,41 +305,15 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// right answer, it just should not lead.
 	pastLive, err := s.everLive(platform)
 	if err != nil {
-		return nil, err
+	return nil, err
 	}
 	for i := range ranked {
-		switch {
-		case live[ranked[i].id]:
-			ranked[i].score *= liveBoost
-		case pastLive[ranked[i].id]:
-			ranked[i].score *= finishedLivePenalty
-		}
-		// Videos already on the page are held out of the leading slots only.
-		//
-		// They were excluded outright, so the panel would not be a reordering of
-		// the rail. Right instinct, wrong mechanism: on a young graph the seed's
-		// only neighbours *are* the rail, so excluding them left two or three
-		// candidates and forced a corpus-wide walk that ignored the seed —
-		// which is why the panel stopped changing as you browsed.
-		//
-		// A score multiplier does not work either: a rail item is a direct
-		// neighbour holding most of the seed's mass, so any penalty small enough
-		// to be principled still leaves it on top. Measured at 0.02, two of five
-		// seeds came back six-eighths rail.
-		//
-		// Sorting them behind *everything* does not work either, and this is
-		// the subtle one. The seed's immediate neighbourhood is its rail, so
-		// banishing the rail leaves a list built from corpus mass and second
-		// hops — which are near enough identical whatever you are watching.
-		// Measured: rails that overlap as little as 17% produced suggestion
-		// lists that overlapped 93%. That is the panel appearing frozen.
-		//
-		// So novelty is guaranteed for the leading slots and nowhere else.
-		// The top of the panel is always something you have not just been
-		// shown; below that, ranking is honest and therefore follows the video
-		// you are on. As the graph grows, more real candidates arrive and the
-		// rail is pushed down on its own.
-		ranked[i].onPage = seen[ranked[i].id] && !live[ranked[i].id]
+	switch {
+	case live[ranked[i].id]:
+		ranked[i].score *= liveBoost
+	case pastLive[ranked[i].id]:
+		ranked[i].score *= finishedLivePenalty
+	}
 	}
 	// Cap how much of the panel live streams may take.
 	//
@@ -366,38 +324,26 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	//
 	// Beyond the cap a stream keeps its place in the ordering but loses the
 	// boost and the exemption, so it competes on merit like anything else.
-	byRank := func(a, b int) bool {
-		if ranked[a].onPage != ranked[b].onPage {
-			return !ranked[a].onPage
-		}
-		if ranked[a].score != ranked[b].score {
-			return ranked[a].score > ranked[b].score
-		}
-		return ranked[a].id < ranked[b].id
-	}
-	// Sorted first, so the streams that keep the boost are the best-ranked
-	// ones rather than whichever the map happened to yield first.
-	sort.Slice(ranked, byRank)
 	shown := 0
 	for i := range ranked {
-		if !live[ranked[i].id] {
-			continue
-		}
-		shown++
-		if shown > maxLivePromoted {
-			ranked[i].score /= liveBoost
-			ranked[i].onPage = seen[ranked[i].id]
-		}
+	if !live[ranked[i].id] {
+		continue
+	}
+	shown++
+	if shown > maxLivePromoted {
+		ranked[i].score /= liveBoost
+	}
 	}
 
-	// Rank by merit alone, then lift novel items into the leading slots.
+	// Rank by merit alone. Rail items compete for the top slots on their own
+	// score — the user explicitly wants the panel to reorder what YouTube
+	// showed rather than hold the rail behind a novelty reservation.
 	sort.Slice(ranked, func(a, b int) bool {
-		if ranked[a].score != ranked[b].score {
-			return ranked[a].score > ranked[b].score
-		}
-		return ranked[a].id < ranked[b].id // stable for tests
+	if ranked[a].score != ranked[b].score {
+		return ranked[a].score > ranked[b].score
+	}
+	return ranked[a].id < ranked[b].id // stable for tests
 	})
-	ranked = leadWithNovel(ranked, novelLeadSlots)
 
 	for _, r := range ranked {
 		m := meta[r.id]
@@ -584,29 +530,6 @@ GROUP BY root`, HomeFrom, platform)
 	return counts, nil
 }
 
-// leadWithNovel moves up to n items the user has not just been shown to the
-// front, leaving everything else in rank order.
-//
-// This is the whole of the "do not reorder the rail" rule. Applying it to the
-// entire list instead — by exclusion or by sorting rail items last — removes
-// the seed's own neighbourhood, and with it the reason the panel differs from
-// one video to the next.
-func leadWithNovel(ranked []scored, n int) []scored {
-	if n <= 0 || len(ranked) == 0 {
-		return ranked
-	}
-	lead := make([]scored, 0, n)
-	rest := make([]scored, 0, len(ranked))
-	for _, r := range ranked {
-		if !r.onPage && len(lead) < n {
-			lead = append(lead, r)
-			continue
-		}
-		rest = append(rest, r)
-	}
-	return append(lead, rest...)
-}
-
 // everLive returns videos this node has ever seen carrying a LIVE badge.
 //
 // Distinct from currentlyLive, which is about right now. This is "was a stream",
@@ -629,29 +552,7 @@ func (s *Store) everLive(platform string) (map[string]bool, error) {
 	return out, nil
 }
 
-// railFor returns the videos this user was shown alongside one context video.
-//
-// These are the seed's own out-edges: what YouTube offered on that page. They
-// drive the walk and are excluded from its output — see Suggest.
-func (s *Store) railFor(platform, seed string) (map[string]bool, error) {
-	rows, err := s.db.Query(
-		`SELECT DISTINCT video_id FROM impressions WHERE context_video_id = ? AND platform = ?`,
-		seed, platform)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]bool{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out[id] = true
-	}
-	return out, rows.Err()
-}
-
+// videoMeta fetches catalogue metadata for a set of ids in one pass.
 func (s *Store) videoMeta(platform string, idList []string) (map[string]*vmeta, error) {
 	out := map[string]*vmeta{}
 	if len(idList) == 0 {
