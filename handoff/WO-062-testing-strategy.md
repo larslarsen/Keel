@@ -33,6 +33,16 @@ from the WO-003/WO-004 review findings and WO-055.
    mid-fetch, DHT timeout, frame I/O error (done).
 4. **Multi-node integration**: spawn 3+ in-process libp2p nodes, exercise gossip/seed/
    catalogue/block-fetch, kill one, assert convergence.
+   - **Must exercise the REAL discovery path, not just manual dial.** Existing
+     multi-node tests use `connect(t, a, b)` which calls `a.host.Connect(ctx,
+     b.AddrInfo())` — a manual dial that BYPASSES discovery. That proves the
+     transport works but says nothing about whether two nodes can FIND each other.
+     The v0.1.0 gap (WO-058) is precisely that discovery (announce → DHT provider
+     lookup → dial) is unverified. So add a test where node B has blocks, node A
+     does NOT know B's address, and A reaches B ONLY via the DHT provider-record
+     lookup (no manual `Connect`). Assert A fetches from B. This is the loopback
+     proof that the announce/discover chain works — the thing WO-058 says has
+     "only ever run against loopback" and never been confirmed end-to-end.
 5. **CI coverage gate**: fail under 80% on `store`/`bridge`/`swarm`.
 6. **Regression test per bug** from WO-003/WO-004/WO-055 (daemon-testable surfaces) —
    see `daemon/store/regressions_test.go`, `daemon/swarm/regressions_test.go`.

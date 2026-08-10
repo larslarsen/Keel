@@ -26,6 +26,15 @@ FETCH KEY must be versioned and agreed:
   must not drift between nodes.
 - Hash algorithm / domain separators used to derive keys.
 - Any future bucketing or sharding scheme.
+- **The yield-gossip dictionary (WO-059).** The 1-bit yield vector is indexed by a
+  FIXED shared dictionary: each bit position = one dictionary word's "worth
+  fetching" flag. Nodes MUST agree on the dictionary (word list AND ordering) or
+  the yield vector is gibberish across peers — bit N means different things on
+  different nodes. So the dictionary is a key-deriving constant, versioned like k.
+  It is local/fixed at each node (never sent on the wire; only the bit vector
+  travels), but the WORD LIST and its ORDERING are protocol constants, not
+  per-node choices. Bumping the dictionary (adding/removing words, re-ordering) is
+  a protocol version bump, applied uniformly in a release.
 
 A node that computes a different key than its peers is silently partitioned from
 them — it fetches and finds nothing, serves and is queried for nothing. Worse
@@ -43,7 +52,9 @@ than an error: it looks like "the network is empty" (see WO-058).
   constants.
 - Gap: the tokenizer k and normalization are NOT versioned constants yet. They
   don't exist in code (WO-059 is unbuilt). When built, they must be hard-coded
-  constants under version control, not runtime choices.
+  constants under version control, not runtime choices. Same for the yield-gossip
+  dictionary (word list + ordering): it must be a compiled-in constant, identical
+  on every node, version-bumped when changed — not derived or negotiated.
 
 ## Requirements
 
@@ -97,3 +108,6 @@ release, applied uniformly because it's compiled in.
       keys when the constant changes.
 - [ ] Test: a k=2 node and a k=3 node cannot serve each other's token buckets
       (keys mismatch detected at handshake, not by empty results).
+- [ ] Yield-gossip dictionary (word list + ordering) is a compile-time `const`,
+      identical across all builds of a version; a dictionary change is a protocol
+      version bump, not a per-node or negotiated choice.

@@ -376,6 +376,16 @@ to what the session actually concluded. Corrected model:
   is a much tighter bandwidth problem under the same O(N·d) rebroadcast model. The
   networking decision (bounded-fanout rebroadcast) applies to BOTH yield-gossip
   and livestream; livestream is the stress case and its bandwidth is unresolved.
+
+  RESOLUTION DIRECTION (Lars, 2026-08-09): acceptable for now — livestream scale
+  is small and will stay that way for a while. But apply the SAME rate-limiting
+  approach as the yield-gossip invention from this session: bound how often a node
+  rebroadcasts live state per peer (e.g. a max announcements/sec per stream, like
+  the yield-vector's bounded periodic push), so a busy stream cannot flood the
+  O(N·d) fanout. The rate-limit is a per-stream, per-peer cap, not a suppression
+  of updates — recent state still propagates, just throttled. Defer the detailed
+  throttle numbers to when livestream scale actually grows; the mechanism (bounded
+  rebroadcast, same family as yield-gossip) is the decision.
 - **Skip below-threshold shards** (pull a big block for few K = bandwidth waste +
   gossip clutter). Absence of the flag = "below threshold," blurred (no magnitude
   disclosed). There is NO absolute-count N floor — that would wrongly exclude
