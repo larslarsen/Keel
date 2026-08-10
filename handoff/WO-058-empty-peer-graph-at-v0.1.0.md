@@ -32,14 +32,33 @@ nothing to pull or relay.
 - The swarm has only ever run against loopback (README Status). The only live
   cross-node feature today is the no-sender livestream index (live.go).
 
-## Consequence
+## Consequence (updated 2026-08-09 — bootstrap resolved via search)
 
 At v0.1.0 every shipped Level 2 node starts with empty `peer_edges` and an empty
-swarm. The suggestion walk reaches past a user's own history **only** once a seed
-or bundle is imported manually. The "decentralised graph exchange" is, in the
-shipping state, bundle replication over a file or §7.3 HTTPS channel — not a
-self-sustaining peer mesh. The bucket-privacy machinery protects fetches of data
-that does not yet exist.
+swarm — that part stands. BUT the empty-graph blocker for SEARCH is resolved by
+WO-059's distributed peer search, not by a seed: the shard namespace is
+deterministic and global, so the moment any node searches, it materializes blocks
+for those shards and serves them. Another node searching an overlapping/identical
+word hits the SAME shards — finds existing blocks or mirrors them. Coverage is
+demand-driven and self-heals from t=0; **no pre-seeded graph (seed-pack) is
+required for search to work.** The corpus converges to "whatever people search
+for." So WO-058's "empty peer graph" is a real shipping-state fact for the
+*suggestion walk* (which still needs a graph to walk), but it is NOT a blocker for
+the *search* path — search bootstraps itself.
+
+The seed's reduced role: the bootstrap seed and prefetching-suggestions pull
+**GRAPH ONLY** (stringless), and can be regenerated from what a node downloaded
+from searching others — re-pullable at any time. Strings are fetched on demand at
+search time only. So the seed is no longer the load-bearing bootstrap artifact for
+search; it remains relevant only for the graph-walk/suggestion path, where a
+stringless graph still has to come from somewhere (a Level-3+ publisher, or the
+user's own history extended by search-populated graph blocks).
+
+Remaining open item (not resolved by WO-059): the *suggestion walk* still needs a
+graph to traverse. Search populates graph blocks as a side effect, so over time a
+node's graph grows from its own searches — but the first-run suggestion experience
+with zero graph is still empty until the user searches. That is the honest
+remaining gap; it is narrower than the original WO-058 framed it.
 
 ## What to fix (decision needed, not assumed)
 
