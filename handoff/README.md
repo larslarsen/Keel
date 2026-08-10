@@ -78,3 +78,5 @@ log has not been made — it will drift out from under whoever is implementing i
 | 060 | Protocol versioning for deterministic, node-agreeing constants (tokenizer k, bucket params) | Sr Dev | **Open** |
 | 061 | Version negotiation, compatibility policy, update UX (connect-if-compatible, warn/auto-update if behind) | Sr Dev | **Open** |
 | 062 | Testing strategy: fuzz + property + error-injection + regression, not review models | Sr Dev | **Open** |
+| 064 | Watch queue: add-to-queue button + daemon-persisted ordered queue + play/remove/reorder | Sr Dev (Opus) | **Open** |
+| 065 | Refresh suggestions button (re-draw via SUGGEST, same entropy) | Sr Dev (Opus) | **Open** |
