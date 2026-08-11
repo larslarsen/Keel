@@ -10,14 +10,19 @@ import (
 	"github.com/keel-app/keel/daemon/bridge"
 )
 
-// TestTokenizeWordAnchored checks the concrete scheme WO-059 specifies: every
-// k-letter run of a lowercased word, with only the word's first run carrying
-// the leading-space anchor — that asymmetry is what a word-start match relies
-// on (see the tokenize doc comment). "AI" is shorter than k=3 and emits
-// nothing, per the tokenizability floor "adaptive stepping" exists to cover.
-func TestTokenizeWordAnchored(t *testing.T) {
+// TestTokenizeFixedSizeSpaceAware checks the concrete scheme: normalize pads
+// with a leading/trailing space and collapses inter-word gaps to one space,
+// then every consecutive ShardK-length window of that string is a token —
+// fixed size always, space included as an ordinary character rather than
+// anchored to word starts specially.
+func TestTokenizeFixedSizeSpaceAware(t *testing.T) {
+	// normalize("Recommendation AI") = " recommendation ai " (19 chars);
+	// k=3 gives 19-3+1 = 17 windows.
 	got := tokenize("Recommendation AI", 3)
-	want := []string{" rec", "eco", "com", "omm", "mme", "men", "end", "nda", "dat", "ati", "tio", "ion"}
+	want := []string{
+		" re", "rec", "eco", "com", "omm", "mme", "men", "end", "nda", "dat",
+		"ati", "tio", "ion", "on ", "n a", " ai", "ai ",
+	}
 	if len(got) != len(want) {
 		t.Fatalf("tokenize() = %v (%d tokens), want %d", got, len(got), len(want))
 	}
@@ -26,59 +31,63 @@ func TestTokenizeWordAnchored(t *testing.T) {
 			t.Errorf("token %d = %q, want %q", i, got[i], want[i])
 		}
 	}
+	for _, tok := range got {
+		if len(tok) != 3 {
+			t.Errorf("token %q has length %d, want fixed size 3", tok, len(tok))
+		}
+	}
 }
 
-// TestTokenizeCrossWordBleed is WO-059 attack #7: a query for the whole word
-// "men" must not match the bare run "men" buried mid-word in
-// "recommendation" — the query's word-initial token (" men", anchored) must
-// differ from the title's interior token at that position ("men", unanchored).
-// The doc calls this "minimal, not zero": only the anchored, word-initial
-// case is guaranteed distinct; interior tokens are still a shared, unanchored
-// space (why a title re-check remains a backstop).
+// TestTokenizeCrossWordBleed is WO-059 attack #7, restated for the fixed-
+// window scheme: a query for the whole word "men" shares its bare interior
+// window ("men", no space either side) with the same run buried mid-word in
+// "recommendation" — that residual overlap is the accepted "minimal, not
+// zero" bleed. But the query's word-boundary windows (" me", "en ", which
+// only occur where "men" is a whole word on its own) must NOT appear in
+// recommendation's tokens, because "men" sits mid-word there with letters
+// (not spaces) on both sides.
 func TestTokenizeCrossWordBleed(t *testing.T) {
 	title := tokenize("recommendation", 3)
-	query := TokenizeQuery("men")
-	if len(query) != 1 || query[0] != " men" {
-		t.Fatalf("TokenizeQuery(\"men\") = %v, want exactly [\" men\"]", query)
+	query := TokenizeQuery("men") // normalize("men") = " men ": " me","men","en "
+	want := []string{" me", "en ", "men"}
+	if len(query) != len(want) {
+		t.Fatalf("TokenizeQuery(\"men\") = %v, want %v", query, want)
 	}
+
+	inTitle := map[string]bool{}
 	for _, tt := range title {
-		if tt == query[0] {
-			t.Errorf("title token %q collided with anchored query token %q", tt, query[0])
-		}
+		inTitle[tt] = true
 	}
-	// The interior run does still appear, unanchored — documenting the
-	// accepted residual bleed rather than asserting it away.
-	foundInterior := false
-	for _, tt := range title {
-		if tt == "men" {
-			foundInterior = true
-		}
+	if !inTitle["men"] {
+		t.Fatal(`expected the bare interior window "men" in recommendation's tokens (residual bleed) — test assumption changed`)
 	}
-	if !foundInterior {
-		t.Fatal("expected the unanchored interior run \"men\" in recommendation's tokens (test assumption changed)")
+	for _, edge := range []string{" me", "en "} {
+		if inTitle[edge] {
+			t.Errorf("title token set contains %q, a word-boundary window that should only occur where \"men\" stands alone", edge)
+		}
 	}
 }
 
-// TestTokenizeQueryStepsDownForShortSingleWord covers the one degenerate case
-// WO-059's "adaptive stepping" names: a query that is a single word shorter
-// than ShardK emits nothing at ShardK, so the tokenizer must fall back to
-// k=2 rather than returning an empty, unsearchable query.
-func TestTokenizeQueryStepsDownForShortSingleWord(t *testing.T) {
-	if got := TokenizeQuery("ai"); len(got) == 0 {
-		t.Fatal("TokenizeQuery(\"ai\") produced no tokens even after stepping down")
-	}
-	// A normal multi-word query is never stepped, even if one word is short:
-	// the other words already produce tokens at ShardK. "ai" itself must not
-	// contribute (too short at k=3), so its 2-letter fallback tokens must be
-	// absent — evidence stepping did not fire.
-	got := TokenizeQuery("recommendation ai")
-	for _, tok := range got {
-		if tok == " ai" {
-			t.Error(`TokenizeQuery("recommendation ai") stepped down to k=2 and emitted " ai" — should not have, "recommendation" already tokenizes at k=3`)
+// TestTokenizeQueryNeverFallsBackToADifferentK is the correction to an
+// earlier, wrong design: ShardK is a versioned protocol constant
+// (keyscheme.go, WO-060) that every node's ShardSlice tokenizes titles at.
+// A client falling back to some other k for a short query would compute
+// shards no server populates at that width and silently find nothing — so
+// there must be no fallback, and padding (normalize) must make even a
+// one- or two-letter query produce a real ShardK token on its own.
+func TestTokenizeQueryNeverFallsBackToADifferentK(t *testing.T) {
+	for _, q := range []string{"a", "ai", "go"} {
+		got := TokenizeQuery(q)
+		if len(got) == 0 {
+			t.Errorf("TokenizeQuery(%q) produced no tokens — padding should guarantee at least one at ShardK=%d", q, ShardK)
+			continue
 		}
-	}
-	if len(got) == 0 {
-		t.Fatal("TokenizeQuery(\"recommendation ai\") produced no tokens")
+		for _, tok := range got {
+			if len(tok) != ShardK {
+				t.Errorf("TokenizeQuery(%q) = %v contains a token of length %d, want fixed ShardK=%d",
+					q, got, len(tok), ShardK)
+			}
+		}
 	}
 }
 

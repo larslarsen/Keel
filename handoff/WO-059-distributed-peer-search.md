@@ -916,15 +916,30 @@ poisoning consensus) to **WO-067**, since those sub-parts were themselves
 marked open/TBD in this document and each needs its own scoping pass.
 
 - **Tokenizer & shard math — `daemon/store/shard.go`.** `tokenize`/
-  `TokenizeQuery` implement Construction B exactly as specified, with one
-  clarification the original spec left implicit: only a word's *first*
-  k-gram carries the leading-space anchor; interior k-grams do not. Anchoring
-  every window (as a literal reading of "space-aware tokens" might suggest)
-  would make the space a constant prefix that anchors nothing — the working
-  case is a query word like "men" (→ anchored `" men"`) not colliding with
-  the interior run "men" inside "recommendation" (→ unanchored `"men"`, no
-  space). This makes attack #7's "minimal, not zero" residual bleed literal:
-  interior runs are still a shared, unanchored space.
+  `TokenizeQuery` implement Construction B as **fixed-size, space-aware
+  windows, not a per-word scheme** (an earlier pass in this session built a
+  word-anchored variant — only a word's first k-gram carrying a leading
+  space — which Lars caught as wrong: it made tokens variable-shaped and,
+  worse, motivated a k-fallback for short queries that would have broken
+  against the versioned `ShardK` constant). The actual scheme: `normalize`
+  lowercases, collapses every run of non-letters to a single space, and pads
+  the whole string with a leading and trailing space; `tokenize` then slides
+  a fixed `ShardK`-width window across that string one character at a time,
+  space included as an ordinary alphabet member. Every token is exactly
+  `ShardK` characters, always — "space-aware" describes the alphabet, not a
+  per-token special case. Padding is what makes even a one-letter query
+  produce a real token at `ShardK`: `normalize("a") = " a "`, already 3
+  characters, so `TokenizeQuery` needs no fallback to a different k for short
+  queries — which matters because `ShardK` is a versioned protocol constant
+  (`keyscheme.go`, WO-060) that every node's `ShardSlice` tokenizes titles
+  at; a client using some other k for short queries would compute shards no
+  server populates at that width and silently find nothing. Attack #7's
+  "minimal, not zero" residual bleed is still exactly right under this
+  scheme: the query "men" tokenizes to `" me"`, `"men"`, `"en "`, and only
+  the bare interior window `"men"` (no space either side) collides with the
+  same run buried mid-word in "recommendation" — the two word-boundary
+  windows do not, because "men" sits mid-word there with letters on both
+  sides, not spaces.
 - **Constants** `ShardK=3`, `ShardM=256` and `shardDomain` live in
   `daemon/store/keyscheme.go` per WO-060's own convention (that file already
   earmarked the space). No `KeySchemeVersion` bump — a new domain, not a

@@ -88,16 +88,23 @@ const (
 	shardDomain = "keel/shard/1/"
 )
 
-// ShardK is the tokenizer's window: every ShardK-letter run of a lowercased
-// word, anchored to the word's start, e.g. " rec" from "recommendation".
+// ShardK is the tokenizer's fixed window width: every text is normalized
+// (lowercased, non-letters collapsed to single spaces, padded with a leading
+// and trailing space) and then sliced into every consecutive ShardK-character
+// run, e.g. " rec" from " recommendation " — a plain fixed-size sliding
+// window over space-including text, not a per-word scheme. See
+// daemon/store/shard.go's tokenize doc comment for the exact algorithm.
 //
 // Fixed at 3 — WO-059's measurement found it the bandwidth/privacy knee:
 // smaller k keeps per-token buckets more private but multiplies per-query
 // bytes roughly 6x going from k=3 to k=2; larger k roughly halves bytes again
-// but leaks more short single-word queries under grouping's per-token
-// tokenizability floor (handoff/WO-059-distributed-peer-search.md, "Empirical
-// tokenizer evaluation"). A change is a protocol version bump, never runtime
-// — see KeySchemeVersion's history above.
+// but leaks more of a token's content per window (handoff/
+// WO-059-distributed-peer-search.md, "Empirical tokenizer evaluation"). A
+// change is a protocol version bump, never runtime — see KeySchemeVersion's
+// history above, and never a per-query fallback either: every node's
+// ShardSlice tokenizes titles at exactly this k, so a client using a
+// different k for some queries would search shards no server populates at
+// that width.
 const ShardK = 3
 
 // ShardM is how many shards tokens are grouped into: shard = hash(token) mod

@@ -3,11 +3,11 @@
 //
 // A search over peers' data cannot ask "who has videos matching my query" —
 // asking that literally hands the query to whoever answers. So a query is
-// tokenized into short, word-anchored pieces (tokenize), each piece is hashed
-// into one of ShardM shards (ShardOf), and a node fetches a whole shard from a
-// peer rather than asking for a token. A shard groups thousands of tokens
-// together, so a peer serving one learns only "this node wanted something in
-// shard G" — never which token, because the token is never sent.
+// tokenized into short, space-aware, fixed-size pieces (tokenize), each piece
+// is hashed into one of ShardM shards (ShardOf), and a node fetches a whole
+// shard from a peer rather than asking for a token. A shard groups thousands
+// of tokens together, so a peer serving one learns only "this node wanted
+// something in shard G" — never which token, because the token is never sent.
 //
 // This file builds the local side: turning this node's own titles into shards
 // it can serve, and turning a query into the shards a search needs to fetch.
@@ -25,35 +25,57 @@ import (
 	"github.com/keel-app/keel/daemon/bridge"
 )
 
-// tokenize splits a title into k-letter tokens: every consecutive k-letter
-// run of each lowercased word. Only the word's first run carries a leading
-// space; the rest do not. That asymmetry is the anchor — a query word like
-// "men" tokenizes to the single anchored token " men", which matches another
-// word that *starts* with "men" (e.g. "mentor") but not the bare run "men"
-// buried mid-word in "recommendation", which tokenizes unanchored ("men", no
-// space) and is therefore a different string. WO-059 attack #7 (cross-word
-// bleed) calls this "minimal, not zero": an unanchored interior run can still
-// coincide with another word's interior run, which is why a cheap local title
-// re-check remains as a backstop rather than being removed.
+// tokenize splits text into every fixed k-length window of its normalized
+// form (normalize below), sliding by one. Fixed size, not word-anchored:
+// every token is exactly k characters, always, and space is an ordinary
+// alphabet member rather than a marker bolted onto one token per word. A
+// token is "space-aware" only in the sense that a window landing on a word
+// boundary naturally contains a space and one that doesn't, doesn't — that
+// difference falls out of sliding uniformly over space-including text, it is
+// not special-cased.
 //
-// Letters only: splitting on everything else means digits and punctuation
-// never enter a token, which keeps the vocabulary the size the doc measured
-// rather than multiplying it for no privacy gain.
-func tokenize(title string, k int) []string {
+// Because normalize pads the whole string with one leading and one trailing
+// space, even a single-letter word produces at least one token at k=3 (a
+// 1-letter word normalizes to 3 characters exactly: " x "), which is why
+// TokenizeQuery below needs no fallback to a smaller k for short queries.
+//
+// Letters only inside a word: normalize collapses everything else (digits,
+// punctuation, extra whitespace) to single-space separators, which keeps the
+// vocabulary the size WO-059 measured rather than multiplying it for no
+// privacy gain.
+func tokenize(text string, k int) []string {
 	if k <= 0 {
 		return nil
 	}
-	var out []string
-	for _, word := range splitWords(title) {
-		if len(word) < k {
-			continue
-		}
-		out = append(out, " "+word[:k])
-		for i := 1; i+k <= len(word); i++ {
-			out = append(out, word[i:i+k])
-		}
+	norm := normalize(text)
+	if len(norm) < k {
+		return nil
+	}
+	out := make([]string, 0, len(norm)-k+1)
+	for i := 0; i+k <= len(norm); i++ {
+		out = append(out, norm[i:i+k])
 	}
 	return out
+}
+
+// normalize lowercases, collapses every run of non a-z runes to a single
+// space, and pads the result with a leading and trailing space — so the
+// first and last words get the same word-boundary information a window in
+// the middle of the string gets for free. Empty (no letters at all) stays
+// empty rather than becoming a lone space, so tokenize can tell "nothing to
+// tokenize" apart from "one very short word".
+//
+// There is exactly one implementation of this, used by both title
+// tokenization (ShardSlice, LocalShards) and query tokenization
+// (TokenizeQuery) — titles and queries must pad identically, or a token
+// computed for a query would never equal the token computed for the same
+// text inside a title, and the whole scheme depends on that equality.
+func normalize(s string) string {
+	words := splitWords(s)
+	if len(words) == 0 {
+		return ""
+	}
+	return " " + strings.Join(words, " ") + " "
 }
 
 // splitWords lowercases and splits on runs of non a-z runes.
@@ -78,17 +100,16 @@ func splitWords(s string) []string {
 	return words
 }
 
-// TokenizeQuery tokenizes a whole search query at ShardK, stepping down to
-// k=2 only in the degenerate case where that emits nothing at all — a query
-// that is a single word shorter than ShardK (WO-059 "adaptive stepping").
-// Titles are never stepped: they are long enough in aggregate that this only
-// ever matters for what the user typed.
+// TokenizeQuery tokenizes a whole search query at ShardK — always, with no
+// fallback to a different k for short queries. ShardK is a versioned
+// protocol constant (keyscheme.go, WO-060): every node tokenizes titles for
+// ShardSlice at exactly ShardK, so a client that tokenized a query at some
+// other k would compute shards no server ever populates at that width and
+// silently find nothing. Because normalize pads the text, this is not the
+// compromise it would be under a per-word scheme — see tokenize's doc
+// comment for why even a one-letter query still yields a token at k=3.
 func TokenizeQuery(query string) []string {
-	toks := tokenize(query, ShardK)
-	if len(toks) == 0 {
-		toks = tokenize(query, 2)
-	}
-	return uniqueSorted(toks)
+	return uniqueSorted(tokenize(query, ShardK))
 }
 
 func uniqueSorted(in []string) []string {
