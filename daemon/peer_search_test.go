@@ -203,4 +203,16 @@ func TestPeerSearchRoundTrip(t *testing.T) {
 	if !found {
 		t.Errorf("PEER_SEARCH_RESULT hits = %v, missing findmeviaday1", got.Hits)
 	}
+	// Build 4's wire contract: PEER_SEARCH_RESULT carries one progress entry
+	// per distinct query token so the search UI can draw coverage without
+	// receiving the token text itself.
+	wantTokens := len(store.TokenizeQuery("sourdough"))
+	if len(got.Progress) != wantTokens {
+		t.Errorf("progress has %d entries, want %d (one per distinct token)", len(got.Progress), wantTokens)
+	}
+	for _, p := range got.Progress {
+		if p.Known {
+			t.Errorf("token_index %d reports known=true on a client's first-ever search", p.TokenIndex)
+		}
+	}
 }

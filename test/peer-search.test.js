@@ -81,6 +81,10 @@ describe("PEER_SEARCH (WO-059)", () => {
               { video_id: "titledvid01", title: "A sourdough tutorial" },
               { video_id: "untitledvid1", title: "" },
             ],
+            progress: [
+              { token_index: 42, fetched: 1, target: 3, known: true },
+              { token_index: 99, fetched: 0, target: 0, known: false },
+            ],
           },
         });
       },
@@ -98,6 +102,10 @@ describe("PEER_SEARCH (WO-059)", () => {
     assert.equal(res.peer_search.available, true);
     assert.equal(res.peer_search.hits.length, 2);
     assert.equal(res.peer_search.hits[1].title, "", "an untitled hit must survive the relay, not be dropped");
+    assert.equal(res.peer_search.progress.length, 2, "WO-067 progress must pass through the SW unaltered");
+    assert.equal(res.peer_search.progress[0].token_index, 42);
+    assert.equal(res.peer_search.progress[0].known, true);
+    assert.equal(res.peer_search.progress[1].known, false);
   });
 
   it("relays available=false when no swarm is running, rather than throwing", async () => {

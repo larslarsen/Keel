@@ -15,6 +15,8 @@ const el = {
   meta: document.getElementById("search-meta"),
   results: document.getElementById("results"),
   searchNetwork: document.getElementById("search-network"),
+  peerProgress: document.getElementById("peer-progress"),
+  peerProgressCaption: document.getElementById("peer-progress-caption"),
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
@@ -397,11 +399,74 @@ function appendPeerHits(hits) {
   }
 }
 
+// Validated dark-mode categorical palette (dataviz skill), in its fixed
+// CVD-safe adjacency order. Cycled by dictionary index for queries with
+// more distinct tokens than colors — an accepted departure from "never
+// cycle" here, because these segments carry no user-facing identity to
+// protect long-term the way a tracked chart series would (WO-067).
+const PEER_PROGRESS_COLORS = [
+  "#3987e5", "#d95926", "#199e70", "#c98500",
+  "#d55181", "#008300", "#9085e9", "#e66767",
+];
+
+// renderPeerProgress draws one segment per query token the daemon walked,
+// color-coded and shuffled — deliberately not labeled and not in query
+// order, so the bar itself cannot be read back into the query's structure
+// (WO-067). progress entries carry only an opaque token_index, never the
+// token text; the daemon does not send that either.
+function renderPeerProgress(progress) {
+  if (!el.peerProgress) return;
+  el.peerProgress.replaceChildren();
+  if (!progress || !progress.length) {
+    el.peerProgress.hidden = true;
+    el.peerProgress.setAttribute("aria-hidden", "true");
+    if (el.peerProgressCaption) el.peerProgressCaption.hidden = true;
+    return;
+  }
+
+  const order = progress.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+
+  const fills = [];
+  for (const i of order) {
+    const p = progress[i];
+    const color = PEER_PROGRESS_COLORS[Math.abs(p.token_index || 0) % PEER_PROGRESS_COLORS.length];
+    const seg = document.createElement("div");
+    seg.style.setProperty("--seg-color", color);
+    if (p.known) {
+      const pct = p.target > 0 ? Math.min(100, Math.round((p.fetched / p.target) * 100)) : 100;
+      const fill = document.createElement("div");
+      fill.className = "fill";
+      fill.style.width = "0%";
+      seg.className = "seg";
+      seg.appendChild(fill);
+      seg.title = `~${pct}% of the network's estimated coverage for this part of the search`;
+      fills.push([fill, pct]);
+    } else {
+      seg.className = "seg unknown";
+      seg.title = "No network estimate yet for this part of the search";
+    }
+    el.peerProgress.appendChild(seg);
+  }
+  el.peerProgress.hidden = false;
+  el.peerProgress.setAttribute("aria-hidden", "false");
+  if (el.peerProgressCaption) el.peerProgressCaption.hidden = false;
+  // Width starts at 0 so the CSS transition animates to the final fraction
+  // on the next frame rather than painting already-full.
+  requestAnimationFrame(() => {
+    for (const [fill, pct] of fills) fill.style.width = pct + "%";
+  });
+}
+
 el.form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const query = el.q.value.trim();
   if (!query) return;
   el.meta.textContent = "Searching…";
+  renderPeerProgress(null);
   try {
     const r = await rpc("SEARCH", { query, limit: 100 });
     renderHits(r.search);
@@ -414,6 +479,7 @@ el.form.addEventListener("submit", async (e) => {
     const r = await rpc("PEER_SEARCH", { query, limit: 100 });
     if (r.peer_search?.available) {
       appendPeerHits(r.peer_search.hits);
+      renderPeerProgress(r.peer_search.progress);
     }
   } catch {
     // Network search is a bonus on top of local results already shown;

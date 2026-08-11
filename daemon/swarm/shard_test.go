@@ -342,7 +342,7 @@ func TestPeerSearchViaDiscovery(t *testing.T) {
 
 	var ids []string
 	ok := waitUntil(45*time.Second, func() bool {
-		ids, err = client.PeerSearch(ctx, "sourdough")
+		ids, _, err = client.PeerSearch(ctx, "sourdough")
 		if err != nil {
 			t.Logf("search attempt: %v", err)
 			return false
@@ -360,6 +360,65 @@ func TestPeerSearchViaDiscovery(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("PeerSearch(\"sourdough\") = %v, missing findmevideo1", ids)
+	}
+}
+
+// TestPeerSearchProgressReportsPerToken is Build 4's data contract: PeerSearch
+// must return one TokenProgress per distinct query token, and the reported
+// target must be the PRE-fetch estimate, not one already inflated by folding
+// in what this exact search just found.
+func TestPeerSearchProgressReportsPerToken(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	boot := privateDHT(t, ctx)
+	bootInfo := peer.AddrInfo{ID: boot.ID(), Addrs: boot.Addrs()}
+
+	serverStore := newStore(t, "progress-server.sqlite")
+	putTitle(t, serverStore, "findmevideo1", "A distinctive sourdough baking tutorial")
+	server, err := Start(ctx, serverStore, bootstrappedTo(bootInfo, true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	clientStore := newStore(t, "progress-client.sqlite")
+	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if !waitUntil(30*time.Second, func() bool {
+		return len(server.host.Network().Peers()) > 0 && len(client.host.Network().Peers()) > 0
+	}) {
+		t.Fatal("nodes never connected to the private DHT")
+	}
+	if !waitUntil(45*time.Second, func() bool {
+		return server.Announce(ctx) == nil
+	}) {
+		t.Fatal("serving node could not announce its shards")
+	}
+
+	wantTokens := len(store.TokenizeQuery("sourdough"))
+	var progress []TokenProgress
+	ok := waitUntil(45*time.Second, func() bool {
+		_, progress, err = client.PeerSearch(ctx, "sourdough")
+		return err == nil && len(progress) > 0
+	})
+	if !ok {
+		t.Fatal("PeerSearch returned no progress entries")
+	}
+	if len(progress) != wantTokens {
+		t.Errorf("progress has %d entries, want one per distinct token (%d)", len(progress), wantTokens)
+	}
+	// This client had never searched or heard anything about "sourdough"'s
+	// tokens before this call, so every entry's pre-fetch target must read
+	// as unknown — not inflated by this search's own results.
+	for _, p := range progress {
+		if p.Known {
+			t.Errorf("token index %d reports Known=true on a client's first-ever search for it", p.TokenIndex)
+		}
 	}
 }
 

@@ -589,7 +589,7 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 
 	ctx, cancel := context.WithTimeout(context.Background(), peerSearchTimeout)
 	defer cancel()
-	ids, err := swarmNode.PeerSearch(ctx, p.Query)
+	ids, progress, err := swarmNode.PeerSearch(ctx, p.Query)
 	if err != nil {
 		return replyErr(out, env.ID, err)
 	}
@@ -600,8 +600,14 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 	if p.Limit > 0 && len(hits) > p.Limit {
 		hits = hits[:p.Limit]
 	}
+	wireProgress := make([]bridge.TokenProgress, 0, len(progress))
+	for _, tp := range progress {
+		wireProgress = append(wireProgress, bridge.TokenProgress{
+			TokenIndex: tp.TokenIndex, Fetched: tp.Fetched, Target: tp.Target, Known: tp.Known,
+		})
+	}
 	return reply(out, env.ID, "PEER_SEARCH_RESULT", bridge.PeerSearchResultPayload{
-		Query: p.Query, Hits: hits, Available: true,
+		Query: p.Query, Hits: hits, Available: true, Progress: wireProgress,
 	})
 }
 

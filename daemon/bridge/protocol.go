@@ -305,6 +305,30 @@ type PeerSearchResultPayload struct {
 	// (contribution Level 1) — distinct from a true empty result, so the
 	// interface can say why rather than imply the network has nothing.
 	Available bool `json:"available"`
+	// Progress is this search's per-token coverage against WO-067's
+	// gossiped target, one entry per distinct token the query tokenized to.
+	// Order carries no meaning — see TokenProgress.
+	Progress []TokenProgress `json:"progress"`
+}
+
+// TokenProgress is one query token's fetched-vs-target coverage (WO-067),
+// for the search UI's progress indicator.
+//
+// TokenIndex, never the token text: the daemon has no reason to send the
+// extension the actual substring just to render a progress bar, and not
+// sending it means nothing downstream — logs, the render layer, a
+// screenshot — ever handles query content that a color-coded bar doesn't
+// need. The index is otherwise meaningless outside the daemon's own
+// tokenizer; the extension only uses it to pick a stable color per token
+// within one render, never to recover what it names.
+type TokenProgress struct {
+	TokenIndex int    `json:"token_index"`
+	Fetched    int    `json:"fetched"`
+	Target     uint64 `json:"target"`
+	// Known is false when nothing has been gossiped or searched for this
+	// token before — Fetched/Target should read as "search this deep, no
+	// completeness signal available" rather than a fraction.
+	Known bool `json:"known"`
 }
 
 // SuggestPayload is the SUGGEST request body (WO-023).

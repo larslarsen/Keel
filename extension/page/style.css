@@ -80,6 +80,33 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
 }
 .check-row input { margin: 0; }
 
+/* Peer-search progress (WO-067). One segment per query token, deliberately
+   unlabeled and shuffled in JS before render: color is the only thing that
+   distinguishes a segment, and even that carries no legend, because the
+   whole point is that a viewer must not be able to map a segment back to
+   a specific part of the query. Colors are the validated dark-mode
+   categorical palette (dataviz skill), cycled by dictionary index. */
+.peer-progress { display: flex; gap: 2px; height: 8px; margin: 10px 0 0; }
+.peer-progress .seg {
+  flex: 1 1 0; min-width: 3px; height: 100%; border-radius: 4px;
+  position: relative; overflow: hidden;
+  background: color-mix(in srgb, var(--seg-color) 25%, transparent);
+}
+.peer-progress .seg .fill {
+  position: absolute; inset: 0; width: 0; border-radius: 4px;
+  background: var(--seg-color);
+  transition: width .35s ease-out;
+}
+.peer-progress .seg.unknown {
+  background-image: repeating-linear-gradient(
+    45deg, var(--seg-color) 0 3px, transparent 3px 6px);
+  opacity: .45;
+}
+@media (prefers-reduced-motion: reduce) {
+  .peer-progress .seg .fill { transition: none; }
+}
+.peer-progress-caption { margin: 4px 0 0; font-size: 11px; }
+
 #results { list-style: none; margin: 14px 0 0; padding: 0; }
 #results li { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .r-title { margin: 0 0 2px; }

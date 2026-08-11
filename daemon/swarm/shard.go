@@ -290,23 +290,49 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 	return out, nil
 }
 
+// TokenProgress is one query token's coverage against its gossiped target,
+// for the search UI's per-token indicator (WO-067). TokenIndex, not the
+// token text itself: the daemon never needs to send the extension the
+// actual substring to render a progress indicator, and not sending it means
+// nothing downstream of the daemon — logs, the render layer — ever handles
+// query content it doesn't need. See tokendict.go for what the index means.
+type TokenProgress struct {
+	TokenIndex int
+	Fetched    int
+	Target     uint64
+	Known      bool
+}
+
 // PeerSearch finds videos matching every token in a query, across peers.
 //
 // Tokenizing the whole query and intersecting each token's result set is
 // Construction B's conjunction (WO-059): no peer ever sees more than one
 // shard fetch's worth of information, and a shard groups many tokens, so no
 // single fetch identifies the token, let alone the query.
-func (n *Node) PeerSearch(ctx context.Context, query string) ([]string, error) {
+func (n *Node) PeerSearch(ctx context.Context, query string) ([]string, []TokenProgress, error) {
 	tokens := store.TokenizeQuery(query)
 	if len(tokens) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
+	progress := make([]TokenProgress, 0, len(tokens))
 	var result map[string]bool
 	for _, tok := range tokens {
+		// Must be read BEFORE FetchShard, not after: FetchShard's own defer
+		// folds this search's results into the estimate via
+		// RecordTokenSearch, so reading afterward would report a target
+		// that already includes what was just found — self-referentially
+		// inflated toward "complete" regardless of true coverage.
+		target, known := n.st.TokenEstimate(tok)
 		hits, err := n.FetchShard(ctx, tok)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		if idx, ok := store.TokenDictIndex(tok); ok {
+			progress = append(progress, TokenProgress{
+				TokenIndex: idx, Fetched: len(hits), Target: target, Known: known,
+			})
+		}
+
 		set := make(map[string]bool, len(hits))
 		for id := range hits {
 			set[id] = true
@@ -328,5 +354,5 @@ func (n *Node) PeerSearch(ctx context.Context, query string) ([]string, error) {
 	for id := range result {
 		out = append(out, id)
 	}
-	return out, nil
+	return out, progress, nil
 }
