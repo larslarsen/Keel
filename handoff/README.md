@@ -84,3 +84,5 @@ log has not been made — it will drift out from under whoever is implementing i
 | 067 | Distributed search: yield-gossip, global count, coverage UI, hardening (split from 059) | Sr Dev | **Done** |
 | 068 | Global word-level corpus telemetry: space-delimited words + on-demand HLL/CMS pack fetch → distinct-word count, per-word % + nested char-token bars | Sr Dev (Opus) | **Done** |
 | 069 | SUGGEST intermittently times out (8s native-bridge client cap vs synchronous graph walk on cold DB) | Sr Dev (Opus) | **Open** |
+| 070 | PEER_SEARCH times out on multi-word queries with no/empty peers (8s bridge cap; token-fetch stall) | Sr Dev (Opus) | **Open** |
+| 071 | Panel not context-aware per platform: stale YT data on tab switch; TikTok shows YT counts | Sr Dev (Opus) | **Open** |
