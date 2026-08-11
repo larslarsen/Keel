@@ -1,7 +1,7 @@
 # WO-071 — Panel context-awareness: restore close-on-leave via fullpage surface; TikTok shows YouTube counts
 
 **Addressee:** Sr Dev (Opus)
-**Status:** Open
+**Status:** **Done 2026-08-11** — both defects fixed and tested; see "What was found and built" below.
 **Date:** 2026-08-11
 **Source:** Lars, 2026-08-11.
 
@@ -87,3 +87,60 @@ Verify which before fixing. Manifest already grants TikTok host permission
   only; assert no "yt"-only video_id appears.
 - Toolbar button clickable on every page (no `enabled:false` dead state for the
   button itself — only the panel visibility is gated).
+
+## What was found and built (2026-08-11)
+
+Despite three prior commits with "WO-071" in their message (`e4b683d`,
+`43c0217`, `5be9cdb`), none of them touched any code — `git show --stat` on
+all three shows only edits to this ticket file and `handoff/README.md`. A
+direct read of `extension/background/sw.js` confirmed no `onActivated`/
+`onUpdated` gating, no `action.onClicked` handler, and `openPanelOnActionClick:
+true` still unconditional — defect 1 was entirely unimplemented, matching
+this session's WO-069 lesson that ticket-titled commits from the concurrent
+session are not evidence of landed code.
+
+**Defect 1 — panel gating.** Implemented as specified:
+- `browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })`
+  (was `true`).
+- `syncPanelForTab(tabId, url)` computes watch-page-ness via
+  `surfaceFromUrl` (`content/extract.js`, already shared with the content
+  script — no second definition of "watch page" to drift out of sync) and
+  calls `sidePanel.setOptions({ tabId, enabled })`. Wired to
+  `tabs.onUpdated` (url changes / SPA nav) and `tabs.onCreated`, plus a
+  full-tab sweep at SW startup and on every watchdog tick (mirrors
+  `rearmYoutubeTabs`' own SW-restart-recovery reasoning — a tab opened while
+  the SW was evicted must still end up correctly gated).
+- `action.onClicked`: on a watch tab, `sidePanel.open({tabId})`; otherwise
+  `openFullpageTab()`, which focuses an already-open full-page tab rather
+  than stacking a duplicate.
+
+**Defect 2 — TikTok showing YouTube counts.** Both hypotheses in the
+original ticket turned out to be wrong on direct inspection:
+- The TikTok content script *does* send `platform: "tt"`
+  (`observer.js` → `platformFromUrl(location.href)`).
+- `SuggestOn`/`loadGraph` *does* partition every query by
+  `WHERE platform = ?`, and `platformOf` correctly passes `"tt"` through
+  (`bridge.KnownPlatforms["tt"] == true`).
+
+The real bug: `sw.js`'s `rememberPage` resets `lastPage` on a rail-generation
+change (YouTube swaps the watch-next rail ~2s after every load — a normal
+part of the page lifecycle, not an edge case) and the reset object literal
+never included `platform`, silently setting it to `undefined`. The panel
+(`sidepanel/index.js:614`, `lastPageCache?.platform || "yt"`) then fell back
+to `"yt"` — which reads as correct on a YouTube page (coincidence) and wrong
+on a TikTok page (the reported bug), exactly matching "TikTok shows YouTube
+counts" rather than "TikTok shows random/missing counts." Fixed with a
+one-line addition: `platform: lastPage.platform || "yt"` in the reset.
+
+Tests (`test/sw-panel-gating.test.js`): `setPanelBehavior` called with
+`openPanelOnActionClick: false`; `syncPanelForTab` enables on YT/TikTok
+watch URLs and disables on YT home / an unrelated site; `action.onClicked`
+opens the panel on a watch tab and never calls `tabs.create`, opens (or
+focuses, not duplicates) the full-page tab everywhere else and never calls
+`sidePanel.open`; the defect-2 regression constructs the exact rail-swap
+sequence (PAGE_CONTEXT platform:"tt" → IMPRESSIONS generation 1 → IMPRESSIONS
+generation 2, same page) and asserts `platform` is still `"tt"` after GET_STATUS
+— verified red (fails with `undefined !== 'tt'`) against the pre-fix code,
+green after. Full suite: `npm test` 74/74 (10 new); `go build ./... && go test
+./... -race` and `scripts/check-coverage.sh` unaffected (no Go changes in this
+ticket).

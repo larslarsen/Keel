@@ -61,10 +61,14 @@ export const browser = {
         create: p(raw.tabs.create, raw.tabs),
         update: p(raw.tabs.update, raw.tabs),
         query: p(raw.tabs.query, raw.tabs),
+        get: p(raw.tabs.get, raw.tabs),
         // Host permission on youtube.com is enough — no "tabs" permission.
         sendMessage: p(raw.tabs.sendMessage, raw.tabs),
+        onUpdated: raw.tabs.onUpdated,
+        onCreated: raw.tabs.onCreated,
       }
     : undefined,
+  windows: raw.windows ? { update: p(raw.windows.update, raw.windows) } : undefined,
   scripting: raw.scripting
     ? { executeScript: p(raw.scripting.executeScript, raw.scripting) }
     : undefined,

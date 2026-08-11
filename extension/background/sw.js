@@ -6,6 +6,7 @@
 import { browser } from "../lib/browser.js";
 import { validateImpressionList } from "../lib/protocol.js";
 import { createNativeBridge } from "../lib/native.js";
+import { surfaceFromUrl } from "../content/extract.js";
 import {
   DEFAULT_HIDE_MODE,
   HIDE_MODE_KEY,
@@ -169,7 +170,13 @@ function rememberPage(values, failures, generation) {
     lastPage.pageLoadId !== pid ||
     (generation != null && generation !== lastPage.generation)
   ) {
+    // platform must survive this reset (WO-071 defect 2): the rail-generation
+    // reset fires on every watch page ~2s after load (YouTube swaps the
+    // watch-next rail), and dropping platform here left it undefined until the
+    // next PAGE_CONTEXT — sidepanel/index.js's `lastPageCache?.platform || "yt"`
+    // fallback then silently read as YouTube on a TikTok tab.
     lastPage = {
+      platform: lastPage.platform || "yt",
       pageLoadId: pid,
       impressions: [],
       failures: 0,
@@ -191,21 +198,21 @@ function rememberPage(values, failures, generation) {
 }
 
 /**
- * The side panel is available everywhere, always.
+ * The side panel is gated to YouTube/TikTok watch pages only (WO-071).
  *
- * It used to be disabled by default and enabled per tab only when a content
- * script reported an observed surface. That made the toolbar icon do nothing on
- * /feed, /results, channel pages, and on every page at all when consent had not
- * been given — a click with no effect and no error, which reads as broken.
+ * 7d60797 ("Side panel is always available; narrow the orphan check") made
+ * the panel open everywhere, always, to fix a dead-button problem: disabled
+ * by default and enabled per tab only on an observed surface meant the
+ * toolbar icon did nothing on /feed, /results, channel pages, and everywhere
+ * before consent — a click with no effect and no error (setOptions rejects
+ * silently), which reads as broken.
  *
- * The problem that behaviour was written for (WO-021) was the panel showing
- * stale data on unrelated tabs. That is a question of what the panel *renders*,
- * not of whether it can be opened, and solving it by making the button
- * conditionally dead traded a cosmetic issue for a functional one.
- *
- * Every failure mode of the old approach was also silent: setOptions rejects
- * without throwing anywhere the user can see, so a panel that would not open
- * gave no clue why.
+ * WO-071 restores the close-on-leave behaviour that dead-button fix cost,
+ * without reintroducing it: the toolbar button (`action.onClicked` below)
+ * stays clickable on every page and always does something — on a watch page
+ * it opens the panel, everywhere else it opens the full-page tab. Only the
+ * *panel's* availability is gated by `syncPanelForTab`/`openPanelOnActionClick:
+ * false`; the button itself is never dead.
  */
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -623,9 +630,106 @@ if (browser.runtime.onConnect) {
 
 if (browser.sidePanel?.setPanelBehavior) {
   browser.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
+    .setPanelBehavior({ openPanelOnActionClick: false })
     .catch(() => {});
 }
+
+/**
+ * Whether a tab's panel should be enabled: only on a YouTube/TikTok watch
+ * page. Reuses surfaceFromUrl (content/extract.js) so "watch page" is
+ * defined in exactly one place, shared with the content script.
+ */
+function isWatchUrl(url) {
+  return surfaceFromUrl(url || "").surface === "WATCH_NEXT";
+}
+
+/** Enable/disable one tab's panel to match the WO-071 hard gate. */
+async function syncPanelForTab(tabId, url) {
+  if (tabId == null || !browser.sidePanel?.setOptions) return;
+  try {
+    await browser.sidePanel.setOptions({ tabId, enabled: isWatchUrl(url) });
+  } catch (err) {
+    console.warn(LOG, "syncPanelForTab", err?.message || err);
+  }
+}
+
+/**
+ * Sweep every open tab. Covers tabs opened before this SW instance started
+ * (install/update/eviction) and any navigation `onUpdated` missed — mirrors
+ * rearmYoutubeTabs' own SW-restart-recovery rationale, below.
+ */
+async function syncAllTabsPanelState() {
+  if (!browser.tabs?.query) return;
+  let tabs;
+  try {
+    tabs = await browser.tabs.query({});
+  } catch (err) {
+    console.warn(LOG, "syncAllTabsPanelState", err?.message || err);
+    return;
+  }
+  for (const t of tabs) {
+    if (t.id != null) syncPanelForTab(t.id, t.url).catch(() => {});
+  }
+}
+
+if (browser.tabs?.onUpdated) {
+  browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.url || changeInfo.status === "complete") {
+      syncPanelForTab(tabId, changeInfo.url || tab?.url).catch(() => {});
+    }
+  });
+}
+if (browser.tabs?.onCreated) {
+  browser.tabs.onCreated.addListener((tab) => {
+    syncPanelForTab(tab.id, tab.url).catch(() => {});
+  });
+}
+
+/**
+ * Open the full-page tab, focusing an already-open instance rather than
+ * stacking duplicates.
+ */
+async function openFullpageTab() {
+  const url = browser.runtime.getURL("page/index.html");
+  if (browser.tabs?.query) {
+    try {
+      const existing = await browser.tabs.query({ url });
+      if (existing.length) {
+        const t = existing[0];
+        await browser.tabs.update(t.id, { active: true });
+        if (t.windowId != null) {
+          browser.windows?.update?.(t.windowId, { focused: true }).catch(() => {});
+        }
+        return;
+      }
+    } catch {
+      /* fall through to create */
+    }
+  }
+  await browser.tabs?.create?.({ url });
+}
+
+/**
+ * Toolbar button: on a watch page, open the panel; everywhere else (the
+ * full-page tab, a blank tab, any other site), open the full-page tab
+ * instead. Never a dead click — see the block comment above.
+ */
+if (browser.action?.onClicked) {
+  browser.action.onClicked.addListener((tab) => {
+    (async () => {
+      if (tab?.id != null && isWatchUrl(tab.url) && browser.sidePanel?.open) {
+        try {
+          await browser.sidePanel.open({ tabId: tab.id });
+          return;
+        } catch (err) {
+          console.warn(LOG, "sidePanel.open", err?.message || err);
+        }
+      }
+      await openFullpageTab();
+    })().catch((err) => console.warn(LOG, "action click", err?.message || err));
+  });
+}
+
 /**
  * Report the browser's own locale once connected (WO-029).
  *
@@ -643,8 +747,6 @@ async function reportCohort() {
     /* cohort is best-effort; "unknown" is a valid value */
   }
 }
-
-// Panel is off by default; a tab enables it by reporting an observed surface.
 
 /**
  * Re-inject bootstrap.js into every open YouTube tab. Idempotent: the observer
@@ -683,6 +785,7 @@ async function rearmYoutubeTabs() {
 async function onWatchdog() {
   if (!bridge.connected) bridge.connect();
   await rearmYoutubeTabs();
+  await syncAllTabsPanelState();
 }
 
 if (browser.alarms?.create && browser.alarms?.onAlarm) {
@@ -697,6 +800,7 @@ if (browser.alarms?.create && browser.alarms?.onAlarm) {
 }
 
 bridge.connect();
+syncAllTabsPanelState().catch(() => {});
 console.info(LOG, "ready");
 
 /**

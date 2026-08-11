@@ -83,7 +83,7 @@ log has not been made — it will drift out from under whoever is implementing i
 | 066 | Live detection false-positive: non-live video flagged LIVE (loose `liveLoose`/thumbnail matcher) | Sr Dev (Hermes) | **Resolved** |
 | 067 | Distributed search: yield-gossip, global count, coverage UI, hardening (split from 059) | Sr Dev | **Done** |
 | 068 | Global word-level corpus telemetry: space-delimited words + on-demand HLL/CMS pack fetch → distinct-word count, per-word % + nested char-token bars | Sr Dev (Opus) | **Done** |
-| 069 | SUGGEST intermittently times out (8s native-bridge client cap vs synchronous graph walk on cold DB) | Sr Dev (Opus) | **Open** |
-| 070 | PEER_SEARCH times out on multi-word queries with no/empty peers (8s bridge cap; token-fetch stall) | Sr Dev (Opus) | **Open** |
-| 071 | Panel not context-aware per platform: stale YT data on tab switch; TikTok shows YT counts | Sr Dev (Opus) | **Open** |
+| 069 | SUGGEST intermittently times out (8s native-bridge client cap vs synchronous graph walk on cold DB) | Sr Dev (Opus) | **Done** — defensive goroutine-offload + timeout guard landed; original "cold DB" root cause not confirmed by direct benchmarking (documented in ticket) |
+| 070 | PEER_SEARCH times out on multi-word queries with no/empty peers (8s bridge cap; token-fetch stall) | Sr Dev (Opus) | **Done** — zero-peers fast path in `PeerSearch`, `peerSearchTimeout` cut to 6s, handler off the bridge thread |
+| 071 | Panel not context-aware per platform: stale YT data on tab switch; TikTok shows YT counts | Sr Dev (Opus) | **Done** — panel gated to YT/TikTok watch pages via `tabs.onUpdated`/`action.onClicked`; TikTok-counts bug was `rememberPage` dropping `platform` on its rail-generation reset |
 | 072 | Same channel name twice in "Channels seen most" (two channel_ids, not canonicalized) | Sr Dev (Opus) | **Open** |
