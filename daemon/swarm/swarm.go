@@ -92,10 +92,12 @@ type Store interface {
 	SwarmIdentity() ([]byte, error)
 	EphemeralSwarmIdentity() ([]byte, error)
 	Cohort() string
-	// ShardSlice and LocalShards back distributed token-shard search
-	// (WO-059) — see shard.go in this package for the request/fetch side.
+	// ShardSlice, LocalShards and BuildShardPack back distributed
+	// token-shard search (WO-059) and its signing layer (WO-067) — see
+	// shard.go in this package for the request/fetch side.
 	ShardSlice(shard int, mirrorOnly bool) ([]store.ShardEntry, error)
 	LocalShards(mirrorOnly bool) ([]int, error)
+	BuildShardPack(shard int, mirrorOnly bool, limit int) (*store.ShardPack, error)
 }
 
 // Config controls what a node offers and consumes.

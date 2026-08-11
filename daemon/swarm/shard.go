@@ -32,14 +32,19 @@ func shardCID(shard int) (cid.Cid, error) {
 	return cid.NewCidV1(cid.Raw, sum), nil
 }
 
-// handleShardRequest answers one stream: a shard number in, every
-// (video, matched tokens) pair this node holds in that shard out.
+// handleShardRequest answers one stream: a shard number in, a signed
+// store.ShardPack of every (video, matched tokens) pair this node holds in
+// that shard out.
 //
 // The peer never learns which token was wanted — only that this node asked
 // for shard G, which by construction holds many tokens (store.ShardM groups
 // them precisely so no single shard identifies one). This mirrors
 // handleCatalogueRequest's Level-3 gating: below that level the reply is
 // built from peer_catalogue only, never this node's own impressions.
+//
+// Signed (WO-067), unlike WO-059's original bare-array reply: FetchShard
+// unions replies from several peers, and an unsigned reply cannot be
+// distinguished from a forged one when two peers disagree about a video.
 func (n *Node) handleShardRequest(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
@@ -52,12 +57,12 @@ func (n *Node) handleShardRequest(s network.Stream) {
 	if !ok {
 		return
 	}
-	entries, err := n.st.ShardSlice(shard, !n.cfg.ServeOwnObservations)
+	pack, err := n.st.BuildShardPack(shard, !n.cfg.ServeOwnObservations, 0)
 	if err != nil {
 		n.logf("shard %d: %v", shard, err)
 		return
 	}
-	raw, err := json.Marshal(entries)
+	raw, err := json.Marshal(pack)
 	if err != nil {
 		return
 	}
@@ -81,6 +86,71 @@ func parseShard(s string) (int, bool) {
 	return n, true
 }
 
+// shardClaim is what one peer said about one video within a shard reply:
+// whether its tag list included the token being fetched, and whether that
+// claim came signed.
+type shardClaim struct {
+	hasToken bool
+	signed   bool
+}
+
+// resolveShardEntries folds one peer's (already signature-verified) shard
+// pack into the running cross-peer state, applying WO-067's poison rule, and
+// returns how many videos this pack newly added to out.
+//
+// A pure function on purpose — kept separate from FetchShard's network loop
+// so the disagreement/override/poison logic can be tested directly against
+// crafted packs, without needing two real peers to naturally disagree (which
+// would mean engineering a title-collision by hand, since a video's tag set
+// is deterministic from its title).
+func resolveShardEntries(entries []store.ShardEntry, token string, signed bool,
+	known map[string]shardClaim, poisoned map[string]bool, out map[string][]string) (gained int) {
+	for _, e := range entries {
+		if poisoned[e.VideoID] {
+			continue
+		}
+		hasToken := false
+		for _, t := range e.Tokens {
+			if t == token {
+				hasToken = true
+				break
+			}
+		}
+		prior, seen := known[e.VideoID]
+		switch {
+		case !seen:
+			known[e.VideoID] = shardClaim{hasToken: hasToken, signed: signed}
+		case prior.hasToken == hasToken:
+			if signed && !prior.signed {
+				known[e.VideoID] = shardClaim{hasToken: hasToken, signed: true}
+			}
+		case signed && !prior.signed:
+			// The new, signed claim overrides the old, unsigned one — not a
+			// poison signal, just a stronger source correcting a weaker one.
+			known[e.VideoID] = shardClaim{hasToken: hasToken, signed: true}
+		case !signed && prior.signed:
+			// The existing signed claim already wins; this unsigned dispute
+			// changes nothing.
+			hasToken = prior.hasToken
+		default:
+			// Both signed, or both unsigned, and they disagree: neither side
+			// can be trusted over the other.
+			poisoned[e.VideoID] = true
+			delete(out, e.VideoID)
+			continue
+		}
+		if !hasToken {
+			delete(out, e.VideoID)
+			continue
+		}
+		if _, already := out[e.VideoID]; !already {
+			gained++
+		}
+		out[e.VideoID] = e.Tokens
+	}
+	return gained
+}
+
 // FetchShard retrieves every video this node can find that carries `token`,
 // by fetching the whole shard `token` groups into from several peers and
 // keeping only entries actually tagged with `token` — the tag-self-filter
@@ -88,6 +158,18 @@ func parseShard(s string) (int, bool) {
 // unrelated tokens hash into the same shard, and dropping those silently
 // (rather than treating their absence-of-token as "no match") is what stops
 // one thin peer from nulling a search another peer could have answered.
+//
+// Cross-peer poison detection (WO-067): a video's tag set is a deterministic
+// function of its title (tokenize is pure), so two peers who both claim to
+// hold the same video in the same shard reply must agree on whether it
+// carries the token. A peer simply not mentioning a video it doesn't hold is
+// not disagreement — only a direct contradiction between two claims is. When
+// one side is signed and the other isn't, the signed claim wins outright
+// (no poison, just an override); when both are signed, or both are
+// unsigned, and they still disagree, the video is dropped and stays dropped
+// — a later peer agreeing with either side does not undo it. This is
+// per-search only: nothing here persists across calls, matching how nothing
+// else in this path persists either.
 //
 // Stop condition is deliberately simpler than the full design's target-based
 // one (which needs a network-wide distinct count this pass does not build,
@@ -115,6 +197,8 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 	)
 	tried := 0
 	misses := 0
+	known := map[string]shardClaim{}
+	poisoned := map[string]bool{}
 	for p := range n.dht.FindProvidersAsync(ctx, c, maxPeers) {
 		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
 			continue
@@ -123,28 +207,17 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 		if err != nil {
 			continue
 		}
-		var entries []store.ShardEntry
-		if err := json.Unmarshal(raw, &entries); err != nil {
+		var pack store.ShardPack
+		if err := json.Unmarshal(raw, &pack); err != nil {
 			continue
 		}
-		tried++
-		gained := 0
-		for _, e := range entries {
-			hasToken := false
-			for _, t := range e.Tokens {
-				if t == token {
-					hasToken = true
-					break
-				}
-			}
-			if !hasToken {
-				continue
-			}
-			if _, seen := out[e.VideoID]; !seen {
-				gained++
-			}
-			out[e.VideoID] = e.Tokens
+		if err := store.VerifyShardPack(&pack); err != nil {
+			n.logf("shard %d from %s: %v", shard, p.ID, err)
+			continue
 		}
+		signed := pack.Signature != ""
+		tried++
+		gained := resolveShardEntries(pack.Entries, token, signed, known, poisoned, out)
 		n.remember(p)
 		if gained == 0 {
 			misses++

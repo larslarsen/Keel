@@ -123,6 +123,92 @@ func TestFetchShardTagSelfFilter(t *testing.T) {
 	}
 }
 
+// TestResolveShardEntriesDropsGenuineDisagreement is WO-067's poison rule:
+// two peers of equal trust level who both claim to hold the same video, but
+// disagree on whether it carries the token, must have that video dropped —
+// and a third peer later agreeing with either side must not resurrect it.
+func TestResolveShardEntriesDropsGenuineDisagreement(t *testing.T) {
+	known := map[string]shardClaim{}
+	poisoned := map[string]bool{}
+	out := map[string][]string{}
+
+	// Peer A (unsigned): video V carries the token.
+	gained := resolveShardEntries(
+		[]store.ShardEntry{{VideoID: "v1", Tokens: []string{" rec"}}},
+		" rec", false, known, poisoned, out)
+	if gained != 1 || out["v1"] == nil {
+		t.Fatalf("after peer A: gained=%d out=%v, want v1 present", gained, out)
+	}
+
+	// Peer B (unsigned): same video, but its tag list does NOT include the
+	// token — a direct contradiction, not mere absence (V is present in B's
+	// reply, just tagged differently).
+	gained = resolveShardEntries(
+		[]store.ShardEntry{{VideoID: "v1", Tokens: []string{" the"}}},
+		" rec", false, known, poisoned, out)
+	if gained != 0 {
+		t.Errorf("peer B's disagreement counted as a gain: %d", gained)
+	}
+	if _, ok := out["v1"]; ok {
+		t.Error("v1 still in result after two equal-trust peers disagreed")
+	}
+	if !poisoned["v1"] {
+		t.Error("v1 not marked poisoned after genuine disagreement")
+	}
+
+	// Peer C (unsigned) agrees with peer A's original claim — must not
+	// resurrect v1. Once poisoned, stays poisoned.
+	gained = resolveShardEntries(
+		[]store.ShardEntry{{VideoID: "v1", Tokens: []string{" rec"}}},
+		" rec", false, known, poisoned, out)
+	if gained != 0 {
+		t.Errorf("a corroborating peer after poisoning counted as a gain: %d", gained)
+	}
+	if _, ok := out["v1"]; ok {
+		t.Error("v1 was resurrected by a peer agreeing with the original claim — poison must be sticky")
+	}
+}
+
+// TestResolveShardEntriesSignedOverridesUnsigned is the other half of the
+// trust rule: a signed claim beats an unsigned one outright — that is an
+// override, not a poison signal, so the video survives with the signed
+// claim's answer.
+func TestResolveShardEntriesSignedOverridesUnsigned(t *testing.T) {
+	known := map[string]shardClaim{}
+	poisoned := map[string]bool{}
+	out := map[string][]string{}
+
+	// Unsigned peer claims v1 has the token.
+	resolveShardEntries(
+		[]store.ShardEntry{{VideoID: "v1", Tokens: []string{" rec"}}},
+		" rec", false, known, poisoned, out)
+	if _, ok := out["v1"]; !ok {
+		t.Fatal("unsigned claim did not add v1")
+	}
+
+	// Signed peer disagrees: v1 does NOT have the token. Signed wins —
+	// v1 must be removed from the result, and must NOT be poisoned (an
+	// override is not a disagreement between equals).
+	resolveShardEntries(
+		[]store.ShardEntry{{VideoID: "v1", Tokens: []string{" the"}}},
+		" rec", true, known, poisoned, out)
+	if _, ok := out["v1"]; ok {
+		t.Error("signed claim did not override the unsigned one")
+	}
+	if poisoned["v1"] {
+		t.Error("a signed override was treated as poison — it should not be")
+	}
+
+	// A later unsigned peer disputing the now-established signed claim must
+	// not change anything.
+	gained := resolveShardEntries(
+		[]store.ShardEntry{{VideoID: "v1", Tokens: []string{" rec"}}},
+		" rec", false, known, poisoned, out)
+	if gained != 0 || out["v1"] != nil {
+		t.Errorf("an unsigned dispute overturned an established signed claim: gained=%d out=%v", gained, out)
+	}
+}
+
 // TestPeerSearchViaDiscovery mirrors TestFetchViaDiscoveryNotManualDial: the
 // client never learns the server's address directly, only through the DHT
 // provider record the server's Announce publishes for its shards. This is

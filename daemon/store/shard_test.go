@@ -287,6 +287,71 @@ func TestTitlesForReturnsEveryIDTitledOrNot(t *testing.T) {
 	}
 }
 
+// TestShardPackSignRoundTrip is WO-067's hardening layer: a pack built and
+// signed by one store must verify cleanly, including on a second store that
+// never built it — the receiver side of the actual network path.
+func TestShardPackSignRoundTrip(t *testing.T) {
+	st := openStore(t, "shard-pack.sqlite")
+	seedTitle(t, st, "vid00000001", "Recommendation systems explained")
+
+	shard := ShardOf(TokenizeQuery("recommendation")[0])
+	pack, err := st.BuildShardPack(shard, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack.Signature == "" || pack.PublicKey == "" {
+		t.Fatal("BuildShardPack produced an unsigned pack")
+	}
+	if len(pack.Entries) == 0 {
+		t.Fatal("pack has no entries; the property below would be vacuous")
+	}
+	if err := VerifyShardPack(pack); err != nil {
+		t.Fatalf("VerifyShardPack rejected a pack this store just built and signed: %v", err)
+	}
+}
+
+// TestShardPackRejectsForgedContent mirrors TestImportBlockRejectsForged: a
+// pack whose entries were tampered with after signing, or whose signature is
+// simply bogus, must fail verification rather than being accepted.
+func TestShardPackRejectsForgedContent(t *testing.T) {
+	st := openStore(t, "shard-pack-forge.sqlite")
+	seedTitle(t, st, "vid00000001", "Recommendation systems explained")
+	shard := ShardOf(TokenizeQuery("recommendation")[0])
+	pack, err := st.BuildShardPack(shard, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pack.Entries) == 0 {
+		t.Fatal("pack has no entries; the property below would be vacuous")
+	}
+
+	// Tamper with the content after signing: digest and signature both stay
+	// as they were computed, but the entries no longer match.
+	tampered := *pack
+	tampered.Entries = append([]ShardEntry{}, pack.Entries...)
+	tampered.Entries[0].VideoID = "forgedvideo1"
+	if err := VerifyShardPack(&tampered); err == nil {
+		t.Error("VerifyShardPack accepted a pack whose entries were altered after signing")
+	}
+
+	// Bogus signature entirely, correct digest.
+	bogus := *pack
+	bogus.Signature = "not-a-real-signature"
+	if err := VerifyShardPack(&bogus); err == nil {
+		t.Error("VerifyShardPack accepted a bogus signature")
+	}
+
+	// Unsigned is accepted (matches ImportCataloguePack's policy) — the
+	// negative case here is that a BROKEN signature must still be rejected,
+	// not that every signature is mandatory.
+	unsigned := *pack
+	unsigned.Signature = ""
+	unsigned.PublicKey = ""
+	if err := VerifyShardPack(&unsigned); err != nil {
+		t.Errorf("VerifyShardPack rejected an honestly-unsigned pack: %v", err)
+	}
+}
+
 // seedTitle records one impression carrying a title, for tests that only
 // care about the catalogue/search side rather than the graph.
 func seedTitle(t *testing.T, st *Store, videoID, title string) {

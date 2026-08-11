@@ -16,7 +16,10 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -24,6 +27,10 @@ import (
 
 	"github.com/keel-app/keel/daemon/bridge"
 )
+
+// shardSchemaVersion is bumped when ShardPack's wire shape changes
+// incompatibly, mirroring catalogueSchemaVersion.
+const shardSchemaVersion = 1
 
 // tokenize splits text into every fixed k-length window of its normalized
 // form (normalize below), sliding by one. Fixed size, not word-anchored:
@@ -193,6 +200,105 @@ func (s *Store) ShardSlice(shard int, mirrorOnly bool) ([]ShardEntry, error) {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].VideoID < out[b].VideoID })
 	return out, nil
+}
+
+// ShardPack is a shard reply signed as a unit — the WO-067 hardening layer
+// on top of WO-059's bare ShardSlice. Same shape as CataloguePack, and for
+// the same reason: entries here are votes about public facts (which tokens a
+// title contains), not the requester's own data, so signing the whole bucket
+// once is enough — no per-entry signature the way blocks carry, because a
+// ShardEntry has no independent existence outside the bucket it was served
+// in.
+type ShardPack struct {
+	SchemaVersion int          `json:"schema_version"`
+	Shard         int          `json:"shard"`
+	Entries       []ShardEntry `json:"entries"`
+
+	ContentSHA256 string `json:"content_sha256"`
+	Signature     string `json:"signature,omitempty"`
+	PublicKey     string `json:"public_key,omitempty"`
+	Algorithm     string `json:"signature_alg,omitempty"`
+}
+
+// canonicalShardPayload is the exact byte sequence a ShardPack's digest and
+// signature cover — a shard-typed twin of bundle.go's canonicalPayload,
+// which is hardcoded to (CatalogueEntry, EdgeObservation) and can't be
+// reused here directly. ShardSlice already returns entries sorted by
+// VideoID with each Tokens slice deduped and sorted, so this needs no
+// re-sorting to be deterministic across an unchanged corpus.
+func canonicalShardPayload(entries []ShardEntry) ([]byte, error) {
+	return json.Marshal(struct {
+		Entries []ShardEntry `json:"entries"`
+	}{entries})
+}
+
+func shardDigest(entries []ShardEntry) (string, error) {
+	b, err := canonicalShardPayload(entries)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// BuildShardPack assembles and signs everything this node can serve for one
+// shard. Mirrors BuildCataloguePack (catalogue.go) exactly.
+func (s *Store) BuildShardPack(shard int, mirrorOnly bool, limit int) (*ShardPack, error) {
+	entries, err := s.ShardSlice(shard, mirrorOnly)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
+	}
+	pack := &ShardPack{
+		SchemaVersion: shardSchemaVersion,
+		Shard:         shard,
+		Entries:       entries,
+	}
+	if pack.ContentSHA256, err = shardDigest(entries); err != nil {
+		return nil, err
+	}
+	payload, err := canonicalShardPayload(entries)
+	if err != nil {
+		return nil, err
+	}
+	if pack.Signature, pack.PublicKey, err = s.signPayload(payload); err != nil {
+		return nil, err
+	}
+	pack.Algorithm = signAlgorithm
+	return pack, nil
+}
+
+// VerifyShardPack checks a pack's digest and, if present, its signature.
+//
+// An unsigned pack is accepted here (matches ImportCataloguePack's policy —
+// refusing one would break interop with any future build that ships
+// unsigned for some reason), but the caller decides what "unsigned" is worth:
+// FetchShard treats a signed-and-internally-consistent claim as more
+// trustworthy than an unsigned one when two peers disagree about a video.
+func VerifyShardPack(pack *ShardPack) error {
+	if pack.SchemaVersion > shardSchemaVersion {
+		return fmt.Errorf("shard pack schema %d is newer than this build understands (%d)",
+			pack.SchemaVersion, shardSchemaVersion)
+	}
+	digest, err := shardDigest(pack.Entries)
+	if err != nil {
+		return err
+	}
+	if digest != pack.ContentSHA256 {
+		return fmt.Errorf("shard pack contents do not match its digest")
+	}
+	if pack.Signature != "" || pack.PublicKey != "" {
+		payload, err := canonicalShardPayload(pack.Entries)
+		if err != nil {
+			return err
+		}
+		if err := verifyPayload(payload, pack.Signature, pack.PublicKey); err != nil {
+			return fmt.Errorf("shard pack: %w", err)
+		}
+	}
+	return nil
 }
 
 // LocalShards lists the shards this node holds anything in — what gets
