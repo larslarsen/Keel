@@ -35,13 +35,23 @@ FETCH KEY must be versioned and agreed:
   travels), but the WORD LIST and its ORDERING are protocol constants, not
   per-node choices. Bumping the dictionary (adding/removing words, re-ordering) is
   a protocol version bump, applied uniformly in a release.
-- **The k=1 word dictionary (WO-067).** A fixed shared list of single words used
-  ONLY for global-corpus telemetry (distinct-word count, per-word percentage in
-  the search UI) — NOT for storage/fetch keys (Keel serves k=3 token buckets, not
-  k=1). Still a protocol constant: every node must agree on the word list (and
-  stopword exclusions) or the global word percentage is computed against
-  different vocabularies across nodes and is not comparable. Compiled-in,
-  version-bumped with the protocol, never per-node or negotiated. See WO-067.
+- **The character tokenizer — frozen vs mutable (Lars, 2026-08-10).** `ShardK`
+  (window width, currently 3 chars) is FROZEN: it will never change, so it does
+  not need a mutable version-bump path — it is a compile-time `const`
+  (`keyscheme.go:113`), effectively immutable. `ShardM` (bucket count, currently
+  256) and `TokenDictAlphabet` are NOT frozen: bucket size MUST adjust as the
+  global corpus grows, so they remain versioned/mutable constants — a ShardM
+  change is a protocol-version bump, applied uniformly in a release. So WO-059's
+  "tokenizer k" line below is narrowed: ShardK is frozen (no bump), ShardM +
+  alphabet are the versioned ones. (The yield-vector dictionary at line 29 is
+  unchanged — it must stay versioned because bit positions are fixed by it.)
+- **Word-telemetry normalization (WO-068), NOT a dictionary.** Global word
+  telemetry uses a space-delimited word tokenizer with a SHARED NORMALIZATION
+  RULE (lowercase / punctuation / letters-vs-digits / stopwords) — a constant
+  nodes must agree on so HLL merges are comparable. It is deliberately NOT a
+  fixed word dictionary: there is no yield-vector slot contract for words (no
+  search over words), so the word set emerges from observation. Only the
+  normalization rule is versioned, not a vocabulary. See WO-068.
 
 A node that computes a different key than its peers is silently partitioned from
 them — it fetches and finds nothing, serves and is queried for nothing. Worse

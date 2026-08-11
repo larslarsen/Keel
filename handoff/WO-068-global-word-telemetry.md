@@ -1,55 +1,63 @@
-# WO-068 — Global word-level corpus telemetry (k=1 dictionary + periodic HLL)
+# WO-068 — Global word-level corpus telemetry (word tokenizer + periodic HLL)
 
 **Addressee:** Sr Dev (Opus)
 **Status:** Open
-**Date:** 2026-08-10
+**Date:** 2026-08-10 (revised 2026-08-10 after k clarification)
 **Source:** Lars, 2026-08-10 — wants global stats that demonstrate what the
 observed graph (the swarm's view of YouTube) contains: how big it is, what words
 appear, and a per-word percentage bar in the search UI. NOT a search/fetch axis.
 
+## Correction (2026-08-10)
+
+The character tokenizer is `ShardK = 3` CHARACTER n-grams over `TokenDictAlphabet`
+(letters + space, keyscheme.go). A "token" is a 3-character string, NOT a word or
+phrase. There is therefore NO fixed word dictionary and NO "k=1" setting that
+produces words — k=1 would be single characters, still not words. Word counts
+require a SEPARATE word tokenizer (split on spaces), not a k of the character
+scheme. This ticket is rebuilt on that understanding. The earlier "k=1 fixed
+dictionary" and "dictionary coverage %" framing is withdrawn.
+
 ## What this is
 
-A read-only, privacy-safe **global cardinality telemetry** layer, separate from
-WO-059's k=3 token search. It answers "what does the corpus contain?" not "fetch
-me graphs for word X."
+A read-only, privacy-safe **global cardinality telemetry** layer. It answers
+"what does the corpus contain?" not "fetch me graphs for word X."
 
-Concretely, two outputs:
-1. **Global distinct-word count + dictionary coverage %** — "the swarm has seen
-   N distinct words; M% of the k=1 dictionary is populated." The "how big is it"
-   headline.
+Two outputs:
+1. **Global distinct-word count** — "the swarm has seen N distinct words." The
+   "how big is it" headline. NO coverage-% metric (there is no fixed word
+   dictionary to be a denominator — words are observed, not enumerated).
 2. **Per-word global percentage** — for a given word, what fraction of all
-   observed graphs contain it. Drives a **per-word percentage bar in the search
-   UI** (e.g. searching "trading" shows "trading — 12% of observed graphs").
+   observed graphs contain it. Drives a per-word percentage bar in the search UI
+   (e.g. "trading — 12% of observed graphs").
 
 ## Design (must hold)
 
-- **k=1 dictionary is TELEMETRY ONLY.** Nodes do NOT fetch or serve k=1 token
-  buckets. Keel's storage/fetch keys stay at k=3 (WO-059). k=1 exists solely to
-  produce the global word stats above. No search path queries k=1.
-- **Fixed shared dictionary, versioned (WO-060).** The k=1 word list AND its
-  stopword exclusions are protocol constants — compiled in, identical on every
-  node, bumped with the protocol version. Nodes must agree on the vocabulary or
-  the global percentage is not comparable across peers (silent partition of the
-  stat, like WO-060's key-deriving constants). Folded into WO-060's constant list.
+- **Word tokenizer is space-delimited, NOT a fixed dictionary.** Count whatever
+  words appear in the observed corpus. No pre-enumerated word list, no fixed
+  vocabulary. The ONLY thing nodes must agree on is the NORMALIZATION RULE
+  (lowercase? strip punctuation? letters-only or include digits? split on
+  whitespace) — a normalization constant (WO-060), not a vocabulary. As long as
+  every node normalizes words identically, the HLL merge is comparable. The word
+  set emerges from observation. (Contrast with the character scheme's fixed
+  `TokenDictSize = 27^3` dictionary, which exists only because the yield vector
+  needs predetermined bit slots — irrelevant here, no yield vector for words.)
 - **HLL sketch, periodic, gossip-merged.** Each node maintains a local HLL of the
   distinct words it has observed. On a timer (bounded-fanout rebroadcast, same
   family as the yield-gossip invention) it merges peers' HLLs into a swarm-wide
   estimate. HLL merge reveals only combined cardinality — no individual video,
   no raw observation, no "was word X in your graph." Fits the design rule
-  (live.go:13: "gossip what is small and ephemeral, fetch what is large") and
-  violates no no-raw-data rule. Reuses Opus's existing sketch code.
-- **Per-word percentage** is derived from the global word HLL + the global
-  distinct-graph count (also an HLL, or the existing graph cardinality): for word
-  w, percentage = (distinct graphs containing w) / (distinct graphs total).
-  distinct-graphs-containing-w comes from the word HLL; distinct-graphs-total
-  from a graph-level HLL. Both merged the same way. Approximate (~1-2% HLL error)
-  — label it as an estimate in the UI, never a precise count.
-- **Stopword filtering for display.** Common stopwords ("the", "video", "live")
-  dominate raw word counts and make the headline stat meaningless ("the: 900,000").
-  The k=1 dictionary's stopword exclusion list (a protocol constant, WO-060) keeps
-  these out of the displayed top-words and out of the "populated %" denominator.
-  Stopwords are still observed locally; they are just excluded from the published
-  global stat.
+  (live.go:13) and violates no no-raw-data rule. Reuses Opus's existing sketch
+  code.
+- **Per-word percentage** = (distinct graphs containing w) / (distinct graphs
+  total). distinct-graphs-containing-w from the word HLL; distinct-graphs-total
+  from a graph-level HLL. Approximate (~1-2% HLL error) — label as estimate.
+- **Stopword filtering for display only.** Common stopwords ("the", "video",
+  "live") dominate raw counts ("the: 900,000"). Filter at display time from the
+  normalized word stream (a normalization/stopword rule, WO-060) — NOT a fixed
+  dictionary. Stopwords still observed locally; just excluded from the published
+  stat and the shown top-words.
+- **TELEMETRY ONLY.** No word bucket fetch/serve. Keel's storage/fetch keys stay
+  at k=3 character tokens (WO-059). This layer never triggers a fetch.
 
 ## UI (search page) — two-tier nested percentage bars
 
@@ -57,90 +65,56 @@ The search UI breaks a query into WORDS and shows global-corpus percentages,
 loading progressively as swarm data arrives.
 
 - **Top tier: one percentage bar per WORD in the query.** Each word bar shows its
-  global frequency: "trading — X% of all observed graphs" (from the k=1 global
-  word HLL). Fills toward the global distinct-word count as data gossiped in.
-- **Bottom tier: nested sub-bars per k=3 TOKEN the word participates in.** Under
-  each word bar, show one smaller bar for every token that word belongs to
-  (e.g. "trading" → "day trading strategy", "trading strategy live",
-  "best trading strategy"), color-coded by token so membership is visible. Each
-  token sub-bar shows that token's global coverage loading up — toward (or past)
-  its target global token count (from WO-067's gossiped token-sketch / yield
-  estimate). All bars load in parallel as the swarm answers.
-- **Color coding = token identity.** Tokens get a fixed color (CVD-safe palette,
-  like WO-067's `PEER_PROGRESS_COLORS`); a word's sub-bars are colored by their
-  token so the user sees which tokens a word spans. Do NOT label sub-bars with
-  the token text in the UI — color carries token identity, same privacy stance as
-  WO-067 (the bar must not be readable back into query structure).
-- **Progressive load.** Word % and token sub-bars fill concurrently as the daemon
-  streams global estimates. A sub-bar may exceed its target (token seen in more
-  graphs than the current estimate assumed) — render that as "past target",
-  not clamped silently.
-- **Telemetry only.** All values are global-corpus estimates (k=1 word HLL +
-  k=3 token sketch). This UI does NOT trigger a k=1 or k=3 bucket fetch; it is a
-  read-only view of what the swarm has observed. Distinct from WO-067's
-  `renderPeerProgress` per-query coverage bar (that one shows how much of a
-  specific search's buckets this node has fetched — query-scoped, not corpus-wide).
-  The two bars coexist in the search UI but consume different data; keep them
-  separate so they are not conflated.
-- Search UI lives in `extension/page/index.js` (search page) — Opus extends the
-  existing `renderPeerProgress` area or adds a sibling renderer. Consumes
-  swarm-status fields: global word % (k=1 HLL) + global token coverage (k=3 sketch).
-- Show "~" / "est." labels to signal HLL approximation.
+  global frequency (from the global word HLL). Fills as data gossiped in.
+- **Bottom tier: nested sub-bars per ShardK CHARACTER-TOKEN the word contains.**
+  A word ("trading") is sliced by the EXISTING character tokenizer into its 3-char
+  n-grams (" tra", "tra", "rad", "adi", "din", "ing"). Under the word bar, show
+  one smaller bar per such n-gram, color-coded by token, each showing that
+  character-token's global coverage loading toward (or past) its target (from
+  WO-067's gossiped token-sketch / yield estimate). All bars load in parallel.
+  Word→char-token membership is EXACT by construction: the word is the source text
+  for those n-grams (run the existing `Tokenize` on the word). Never re-derive
+  from a dictionary.
+- **Color coding = token identity** (CVD-safe palette, like WO-067's
+  `PEER_PROGRESS_COLORS`); sub-bars colored by token, not labeled with token text.
+- **Progressive load.** Word % and char-token sub-bars fill concurrently; a
+  sub-bar may exceed target ("past target", not clamped).
+- **Telemetry only.** Distinct from WO-067's `renderPeerProgress` per-query
+  coverage bar (query-scoped fetch coverage, not corpus-wide frequency). Keep the
+  two renderers separate, consuming distinct data.
+- Show "~" / "est." labels for HLL approximation.
 
-## Data the UI consumes (must be exposed by the daemon)
+## Data the UI consumes (daemon-exposed)
 
-- `global_word_pct[word]` — from k=1 word HLL ÷ graph HLL (WO-068 telemetry).
-- `global_token_coverage[token]` + `token_target` — from k=3 token sketch (WO-067
-  gossiped estimate). The word→token membership list comes from the shared
-  tokenizer (k=1 dict knows which tokens each word appears in; WO-060 constant).
+- `global_word_pct[word]` — word HLL ÷ graph HLL (WO-068 telemetry).
+- `global_token_coverage[token]` + `token_target` — from k=3 character sketch
+  (WO-067 gossiped estimate). The word→char-token list is produced by running the
+  existing `Tokenize` on the word; no dictionary lookup.
 
 ## Depends on
 
-- WO-060 — k=1 dictionary + stopword list are versioned constants.
-- WO-058 — until the swarm graph is populated (discovery + observation), the
-  global HLL reads ~0 / empty. The machinery is buildable now; the numbers mean
-  nothing until WO-058/WO-059 land. Do NOT fake a non-zero stat on an empty swarm.
+- WO-060 — the word NORMALIZATION rule (and stopword rule) is a shared constant;
+  ShardK itself is FROZEN (never changes) so needs no mutable versioning, but
+  ShardM / alphabet ARE versioned (bucket size adjusts as corpus grows).
+- WO-058 — until the swarm graph is populated, the global HLL reads ~0. Machinery
+  buildable now; numbers mean nothing until WO-058/WO-059 land. No fabricated
+  stats on an empty swarm.
 - Opus's existing sketch code (HLL) — extend, don't reimplement.
 
 ## Acceptance
 
-- [ ] k=1 word dictionary + stopword list are compile-time constants (WO-060),
-      identical across builds, version-bumped on change.
-- [ ] Local word HLL maintained per node; merged with peers on a timer via
-      bounded-fanout rebroadcast; merge reveals cardinality only (no raw data).
-- [ ] Global distinct-word count + dictionary coverage % exposed in swarm status.
-- [ ] Per-word global percentage computed from word HLL ÷ graph HLL; shown as an
-      estimate in the UI.
-- [ ] Search UI shows a two-tier nested bar for the entered query: top tier one
-      percentage bar per WORD (global word % from k=1 HLL); bottom tier under each
-      word, one color-coded sub-bar per k=3 TOKEN the word belongs to (global token
-      coverage from WO-067 sketch). Bars load progressively in parallel. Read-only,
-      triggers no k=1/k=3 fetch.
-- **Word→token association is a reverse map of the daemon's tokenization, NOT a
-  re-tokenize.** The k=3 tokenizer is space- and position-aware: it slides a
-  3-token window over the normalized stream, so a token only exists when its three
-  words appear consecutively in order. Tokenizing an isolated word ("trading")
-  alone yields NOTHING (a 1-word input can't form a k=3 window) and cannot recover
-  which tokens contain it. So: the query is tokenized ONCE (correctly); the UI
-  takes the produced tokens and reverse-maps each to the words it contains (a
-  token's 3 word-slots are known). Word bars = distinct words across those tokens;
-  under word W, show exactly the tokens that contain W. Never run the tokenizer
-  over a word by itself. This also fixes alignment: since tokens come only from
-  the real full-query tokenization, word↔token membership is exact by construction
-  (the word is literally one of the token's 3 slots) — no risk of a normalized
-  token not lining up with a word start.
-- [ ] Word→token membership (which tokens a word spans) is a reverse map of the
-      daemon's tokenization output (each produced token's 3 word-slots), NOT a
-      re-tokenize of the isolated word; sub-bars color-coded by token, not labeled
-      with token text.
-- [ ] Token sub-bar may exceed its target (rendered "past target", not clamped).
-- [ ] WO-067's per-query `renderPeerProgress` coverage bar and this global
-      word/token telemetry bar are distinct renderers consuming distinct data;
-      not conflated in the UI.
-- [ ] Stopwords excluded from displayed top-words and the coverage denominator.
-- [ ] On an empty swarm (WO-058 not populated) the stat reads ~0 / "no data yet";
-      no fabricated counts.
-- [ ] Regression test: two in-process nodes merge word HLLs and converge on the
-      same distinct-word estimate (extends WO-062 multi-node test).
-- [ ] No k=1 bucket fetch/serve path exists (telemetry only — verify by code
-      review; searching a word does not dial a k=1 bucket).
+- [ ] Word tokenizer: space-delimited, shared normalization rule (WO-060),
+      NO fixed word dictionary — counts whatever words appear in the corpus.
+- [ ] Local word HLL per node; merged with peers on a timer via bounded-fanout
+      rebroadcast; merge reveals cardinality only (no raw data).
+- [ ] Global distinct-word count exposed in swarm status (NO coverage-% metric).
+- [ ] Per-word global percentage from word HLL ÷ graph HLL; shown as estimate.
+- [ ] Search UI two-tier bar: top = per-WORD global %; bottom = per ShardK
+      char-token inside the word (from existing `Tokenize`), color-coded, loading
+      in parallel, may exceed target. Read-only, no fetch.
+- [ ] Word→char-token membership from `Tokenize(word)`, not a dictionary.
+- [ ] Stopwords excluded from displayed top-words (display-time filter, WO-060
+      rule); no fabricated counts on empty swarm.
+- [ ] Regression test: two in-process nodes merge word HLLs, converge on same
+      distinct-word estimate (extends WO-062 multi-node test).
+- [ ] No word bucket fetch/serve path exists (telemetry only).
