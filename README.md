@@ -34,8 +34,11 @@ is no account, and there is no server to send it to — none exists.
 Above the default you can lend disk space to fetch and re-serve the recommendation
 graph *other* people have published. That is what will let your suggestions walk
 past your own history — but at v0.1.0 there is no published seed and no automatic
-peer data yet, so nothing is relayed and the walk stays within your own history
-until a seed or bundle is imported. At every level that ships, nothing you
+peer data for the *suggestion walk*, so it stays within your own history until a
+seed or bundle is imported. Search is different: turning on "search the network"
+reaches peers on demand, with no seed needed — the first search for a term
+populates it for whoever searches it next, so coverage grows from use rather than
+from a published dataset. At every level that ships, nothing you
 recorded leaves your machine; publishing your own observations would need
 threshold encryption (Levels 3–4), which is not built yet.
 
@@ -176,9 +179,10 @@ What Keel does differently is the combination, not any one part:
    is yours.
 2. **Sharing is opt-in and threshold-encrypted (STAR).** When built, you can
    contribute to a global count without any server learning your trail, and
-   without the platform ever being involved. Until then, the only thing that
-   moves is the graph data *other people* have published, which your node pulls
-   and relays.
+   without the platform ever being involved. Until then, what moves is graph
+   data *other people* have published (which your node pulls and relays) and,
+   for search, whatever the network has already been asked for — demand-driven,
+   not published.
 3. **No platform cooperation required.** The measurement is taken from the page
    you actually see, so it cannot be gamed from the server side the way an
    enclave audit can.
