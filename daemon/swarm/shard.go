@@ -94,6 +94,28 @@ type shardClaim struct {
 	signed   bool
 }
 
+// shouldStopOnSaturation is FetchShard's stop-condition decision (WO-067),
+// pulled out as a pure function for the same reason resolveShardEntries is:
+// testing it directly is deterministic, where testing it through real DHT
+// provider ordering would not be — provider order isn't something a test
+// controls, so a scenario needing "three empty peers, then a fourth that
+// has the answer" can't be constructed reliably against the real network
+// stack.
+//
+// Without a known target (haveTarget=false — nothing gossiped or searched
+// for this token before), this is pure saturation: a miss streak stops the
+// search, the pre-WO-067 behavior. With a target, a miss streak alone is not
+// enough — "counts almost never decrease" (WO-059's own design), so three
+// quiet peers more likely means bad luck in who was tried than an empty
+// rest-of-network. Saturation only stops the search once found has actually
+// reached target.
+func shouldStopOnSaturation(misses, saturationStreak int, haveTarget bool, found int, target uint64) bool {
+	if misses < saturationStreak {
+		return false
+	}
+	return !haveTarget || uint64(found) >= target
+}
+
 // resolveShardEntries folds one peer's (already signature-verified) shard
 // pack into the running cross-peer state, applying WO-067's poison rule, and
 // returns how many videos this pack newly added to out.
@@ -171,13 +193,20 @@ func resolveShardEntries(entries []store.ShardEntry, token string, signed bool,
 // per-search only: nothing here persists across calls, matching how nothing
 // else in this path persists either.
 //
-// Stop condition is deliberately simpler than the full design's target-based
-// one (which needs a network-wide distinct count this pass does not build,
-// see handoff/WO-067): poll distinct providers, union what each contributes,
-// and stop after 3 consecutive peers add nothing new or after 20 peers,
-// whichever comes first. Both numbers are the same shape of backstop the full
-// design keeps even once a target exists ("saturating below target → keep
-// going... disk slider as backstop") — this just doesn't have the target half.
+// Stop condition (WO-067): once this node has a known target for the token
+// (store.TokenEstimate, fed by gossiped sketches — see sketch_store.go), a
+// stale miss streak below that target does not stop the search — "counts
+// almost never decrease" (WO-059's own design), so three quiet peers more
+// likely means bad luck in who was tried than an empty rest-of-network.
+// Saturation only stops the search once the target is reached; the hard
+// maxPeers cap is the real backstop either way, target or not. Without a
+// target (nothing gossiped or searched for this token before), this falls
+// back to pure saturation — the pre-WO-067 behavior.
+//
+// Every real search feeds back into the same target via RecordTokenSearch
+// (sketch_store.go's drift scheduling), regardless of how the search ended,
+// unless nothing was found and nothing was expected — that carries no signal
+// worth recording.
 func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]string, error) {
 	out := map[string][]string{}
 	if !n.cfg.Fetch {
@@ -191,13 +220,27 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
+	target, haveTarget := n.st.TokenEstimate(token)
+	defer func() {
+		if len(out) == 0 && !haveTarget {
+			return
+		}
+		ids := make([]string, 0, len(out))
+		for id := range out {
+			ids = append(ids, id)
+		}
+		if err := n.st.RecordTokenSearch(token, ids); err != nil {
+			n.logf("shard: record search: %v", err)
+		}
+	}()
+
 	const (
 		maxPeers         = 20
 		saturationStreak = 3
 	)
 	tried := 0
 	misses := 0
-	known := map[string]shardClaim{}
+	claims := map[string]shardClaim{}
 	poisoned := map[string]bool{}
 	for p := range n.dht.FindProvidersAsync(ctx, c, maxPeers) {
 		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
@@ -225,11 +268,11 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 		}
 		signed := pack.Signature != ""
 		tried++
-		gained := resolveShardEntries(pack.Entries, token, signed, known, poisoned, out)
+		gained := resolveShardEntries(pack.Entries, token, signed, claims, poisoned, out)
 		n.remember(p)
 		if gained == 0 {
 			misses++
-			if misses >= saturationStreak {
+			if shouldStopOnSaturation(misses, saturationStreak, haveTarget, len(out), target) {
 				break
 			}
 		} else {

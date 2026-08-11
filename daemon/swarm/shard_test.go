@@ -48,6 +48,95 @@ func TestParseShard(t *testing.T) {
 	}
 }
 
+// TestShouldStopOnSaturation covers WO-067's stop-condition rule directly,
+// since real DHT provider ordering can't be controlled from a test — a
+// scenario needing "three empty peers before a fourth that has the answer"
+// isn't constructible reliably against the real network stack.
+func TestShouldStopOnSaturation(t *testing.T) {
+	const streak = 3
+	cases := []struct {
+		name       string
+		misses     int
+		haveTarget bool
+		found      int
+		target     uint64
+		want       bool
+	}{
+		{"no target, streak reached: stops (pre-WO-067 behavior)", 3, false, 0, 0, true},
+		{"no target, streak not reached: keeps going", 2, false, 0, 0, false},
+		{"target known, streak reached, target not met: keeps going", 3, true, 2, 10, false},
+		{"target known, streak reached, target exactly met: stops", 3, true, 10, 10, true},
+		{"target known, streak reached, target exceeded: stops", 3, true, 15, 10, true},
+		{"target known, streak not reached: keeps going regardless", 1, true, 0, 10, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldStopOnSaturation(tc.misses, streak, tc.haveTarget, tc.found, tc.target)
+			if got != tc.want {
+				t.Errorf("shouldStopOnSaturation(misses=%d, streak=%d, haveTarget=%v, found=%d, target=%d) = %v, want %v",
+					tc.misses, streak, tc.haveTarget, tc.found, tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFetchShardRecordsSearchForTargetFeedback is the end-to-end wiring
+// check: a real fetch must feed its result back into RecordTokenSearch, so
+// a later search for the same token has a target to consult. Ordering-
+// sensitive stop-condition behavior itself is covered by
+// TestShouldStopOnSaturation above; this only checks the feedback loop
+// connects.
+func TestFetchShardRecordsSearchForTargetFeedback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	boot := privateDHT(t, ctx)
+	bootInfo := peer.AddrInfo{ID: boot.ID(), Addrs: boot.Addrs()}
+
+	serverStore := newStore(t, "shard-target-server.sqlite")
+	putTitle(t, serverStore, "recvideo001", "Recommendation systems explained")
+	server, err := Start(ctx, serverStore, bootstrappedTo(bootInfo, true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	clientStore := newStore(t, "shard-target-client.sqlite")
+	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if !waitUntil(30*time.Second, func() bool {
+		return len(server.host.Network().Peers()) > 0 && len(client.host.Network().Peers()) > 0
+	}) {
+		t.Fatal("nodes never connected to the private DHT")
+	}
+	if !waitUntil(45*time.Second, func() bool {
+		return server.Announce(ctx) == nil
+	}) {
+		t.Fatal("serving node could not announce its shards")
+	}
+
+	token := store.TokenizeQuery("recommendation")[0]
+	if _, known := clientStore.TokenEstimate(token); known {
+		t.Fatal("test assumption broken: client already had an estimate")
+	}
+
+	ok := waitUntil(45*time.Second, func() bool {
+		got, err := client.FetchShard(ctx, token)
+		return err == nil && len(got) > 0
+	})
+	if !ok {
+		t.Fatal("FetchShard found nothing")
+	}
+
+	if _, known := clientStore.TokenEstimate(token); !known {
+		t.Error("FetchShard did not record its result — a later search for this token still has no target")
+	}
+}
+
 // TestFetchShardTagSelfFilter is WO-059's tag-self-filter requirement: a
 // shard reply can legitimately hold a video that is in the shard only because
 // some OTHER token of its title hashes there too. FetchShard must keep only
