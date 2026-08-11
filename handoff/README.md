@@ -71,8 +71,8 @@ log has not been made — it will drift out from under whoever is implementing i
 | 053 | Dependency-squatting / name-hijack audit | Engineer | **Done — toolchain pinned, CI reporting** |
 | 054 | Live promotion ignored the 1-hour rule | Engineer | **Fixed** |
 | 055 | Swarm status showed DHT noise as peers | Engineer | **Fixed** |
-| 056 | Implement Option B (data-driven selectors) for YouTube — minimal first bite | Sr Dev | **Open** |
-| 057 | TikTok surface + platform-scoped panel (depends on 056) | Sr Dev | **Open** (blocked on 056) |
+| 056 | Implement Option B (data-driven selectors) for YouTube — minimal first bite | Sr Dev | **Done** 2026-08-07 |
+| 057 | TikTok surface + platform-scoped panel (depends on 056) | Sr Dev | **Built** 2026-08-08 — platform dimension, `selectors_tt.json`, platform-scoped panel, tiktok.com permissions all landed; selectors unverified against live TikTok (fixture is hand-authored, see WO-063) |
 | 058 | Peer graph empty at v0.1.0: no seed, no auto peer data | Sr Dev | **Resolved** — copy + DESIGN_v2 fixed, no seed planned, relies on WO-059 self-healing |
 | 059 | Distributed search over peer data via multi-peer superset fetch + local intersection (user-invented) | Sr Dev | **Phase 1+2 done** — tokenizer, shards, serve/fetch RPC, search UI; rest split to 067 |
 | 060 | Protocol versioning for deterministic, node-agreeing constants (tokenizer k, bucket params) | Sr Dev | **Done** — key scheme versioned, carried in protocol ids |
