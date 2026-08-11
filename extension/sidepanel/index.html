@@ -91,10 +91,32 @@
         <span class="entropy-label">Focus</span>
         <input type="range" id="entropy" min="0" max="100" step="5" value="60" aria-label="Focus or serendipity" />
         <span class="entropy-label">Serendipity</span>
+        <!-- WO-065: re-run the walk on demand. In the entropy row rather than a
+             row of its own — the panel header is already as tall as it should
+             get, and this is the same weight of control as the slider. -->
+        <button
+          type="button"
+          class="btn-icon"
+          id="btn-resuggest"
+          title="Suggest again"
+          aria-label="Suggest again"
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+        </button>
       </div>
       <p class="meta" id="suggest-meta">Open a watch page to begin.</p>
       <ol id="list"></ol>
     </section>
+
+    <!-- WO-064. The queue lives in the daemon, like everything else the user
+         owns; the panel only draws it. Not YouTube's "Up next" — that is
+         theirs, and it is another place recommendations come from. -->
+    <details class="panel panel-fold" id="queue-panel">
+      <summary>Watch queue <span id="queue-count" class="fold-count"></span></summary>
+      <div class="fold-body">
+        <ol id="queue-list"></ol>
+      </div>
+    </details>
 
     <details class="panel panel-fold">
       <summary>Counts</summary>

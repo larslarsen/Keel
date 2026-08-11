@@ -247,6 +247,18 @@ CREATE TABLE IF NOT EXISTS channel_blocklist (
   channel_id TEXT PRIMARY KEY,
   blocked_at INTEGER NOT NULL
 );
+-- The watch queue (WO-064). User intent, not observation: an ordered list of
+-- videos to watch later. Stored here rather than in the browser because the
+-- extension holds no state (§2.1), and position is explicit so reordering does
+-- not have to rewrite when something was added.
+CREATE TABLE IF NOT EXISTS watch_queue (
+  video_id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL DEFAULT 'yt',
+  position INTEGER NOT NULL,
+  added_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watch_queue_pos ON watch_queue(position);
+
 -- Peers that have actually served us data (WO-052).
 --
 -- The public DHT is subject to a censorship attack with no available fix

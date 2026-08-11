@@ -1,7 +1,7 @@
 # WO-065: Refresh suggestions button
 
 **Addressee:** Sr Dev (Opus)
-**Status:** Open
+**Status:** Done — re-suggest button in the entropy row (2026-08-10)
 **Depends on:** WO-064 (same side panel); the suggestion-render path in
 `extension/sidepanel/index.js`.
 

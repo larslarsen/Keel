@@ -263,6 +263,54 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		return handleBlockChannel(env, out, st, true)
 	case "UNBLOCK_CHANNEL":
 		return handleBlockChannel(env, out, st, false)
+	case "QUEUE_ADD":
+		var p bridge.QueuePayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil || p.VideoID == "" {
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+				Message: "video_id required", Code: "bad_payload"})
+		}
+		if err := st.AddToQueue(p.VideoID, p.Platform, time.Now().UnixMilli()); err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		return replyQueue(out, env.ID, st)
+	case "QUEUE_LIST":
+		return replyQueue(out, env.ID, st)
+	case "QUEUE_ADVANCE":
+		var p bridge.QueuePayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil || p.VideoID == "" {
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+				Message: "video_id required", Code: "bad_payload"})
+		}
+		next, err := st.AdvanceQueue(p.VideoID)
+		if err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		items, err := st.ListQueue()
+		if err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		return reply(out, env.ID, "QUEUE_RESULT",
+			bridge.QueueResultPayload{Items: items, Next: next})
+	case "QUEUE_REMOVE":
+		var p bridge.QueueIndexPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+				Message: "index required", Code: "bad_payload"})
+		}
+		if err := st.RemoveFromQueue(p.Index); err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		return replyQueue(out, env.ID, st)
+	case "QUEUE_REORDER":
+		var p bridge.QueueIndexPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+				Message: "from and to required", Code: "bad_payload"})
+		}
+		if err := st.ReorderQueue(p.From, p.To); err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		return replyQueue(out, env.ID, st)
 	case "EXPLAIN_VIDEO":
 		return handleExplainVideo(env, out, st)
 	case "GET_SELECTORS":
@@ -282,6 +330,19 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 // The query is matched against records this node already holds, so nothing is
 // sent anywhere — the whole point of gossiping an index small enough to hold in
 // full (DESIGN_v2 §7.5).
+// replyQueue answers every queue mutation with the resulting queue.
+//
+// The caller always needs the new order, and returning it here means the
+// interface never has to guess what a mutation did or issue a second call to
+// find out.
+func replyQueue(out io.Writer, id string, st *store.Store) error {
+	items, err := st.ListQueue()
+	if err != nil {
+		return replyErr(out, id, err)
+	}
+	return reply(out, id, "QUEUE_RESULT", bridge.QueueResultPayload{Items: items})
+}
+
 func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
 	var p struct {
 		Query string `json:"query"`

@@ -433,6 +433,47 @@ async function handle(message, sender) {
       return { suggest: env.payload };
     }
 
+    /**
+     * The watched video finished (WO-064 autoplay).
+     *
+     * The daemon answers with the next queued video, or null when the finished
+     * one was never queued — which is most of the time, and is why this cannot
+     * hijack ordinary watching. Only then is the tab navigated, and only the
+     * tab that reported the end.
+     */
+    case "VIDEO_ENDED": {
+      if (!bridge.helloOk) return { advanced: false };
+      const tabId = sender?.tab?.id;
+      const env = await bridge.request("QUEUE_ADVANCE", {
+        video_id: String(message.payload?.video_id || ""),
+        platform: String(message.payload?.platform || "yt"),
+      });
+      if (env.type === "ERROR") return { advanced: false };
+      const next = env.payload?.next;
+      if (!next?.video_id || tabId == null) return { advanced: false };
+      const href =
+        next.platform === "tt"
+          ? `https://www.tiktok.com/video/${encodeURIComponent(next.video_id)}`
+          : `https://www.youtube.com/watch?v=${encodeURIComponent(next.video_id)}`;
+      await browser.tabs.update(tabId, { url: href });
+      return { advanced: true, next: next.video_id };
+    }
+
+    // The watch queue (WO-064). The daemon owns it — the extension stores no
+    // state — so all four verbs are a straight relay and the daemon answers
+    // every one of them with the resulting queue.
+    case "QUEUE_ADD":
+    case "QUEUE_LIST":
+    case "QUEUE_REMOVE":
+    case "QUEUE_REORDER": {
+      if (!bridge.helloOk) throw new Error("daemon not connected");
+      const env = await bridge.request(message.type, message.payload || {});
+      if (env.type === "ERROR") {
+        throw new Error(env.payload?.message || `${message.type} failed`);
+      }
+      return { queue: env.payload };
+    }
+
     case "AGGREGATE_SUMMARY":
     case "EXPORT_BUNDLE":
     case "PEERS": {

@@ -39,7 +39,20 @@ const el = {
   blockList: document.getElementById("block-list"),
   blockInput: document.getElementById("block-input"),
   blockAddBtn: document.getElementById("btn-block-add"),
+  resuggest: document.getElementById("btn-resuggest"),
+  queuePanel: document.getElementById("queue-panel"),
+  queueList: document.getElementById("queue-list"),
+  queueCount: document.getElementById("queue-count"),
 };
+
+/** Video ids currently queued, so a suggestion row can show which state it is
+ *  in without asking the daemon per row. */
+let queuedSet = new Set();
+
+const QUEUE_ICON_ON =
+  '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h11"/><path d="M4 12h11"/><path d="M4 17h7"/><path d="M15 18l2.5 2.5L22 16"/></svg>';
+const QUEUE_ICON_OFF =
+  '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h12"/><path d="M4 12h12"/><path d="M4 17h8"/><path d="M18 14v7"/><path d="M14.5 17.5h7"/></svg>';
 
 /** @type {Set<string>} */
 let blocklistSet = new Set();
@@ -271,6 +284,35 @@ function makeSuggestionLi(s) {
   });
   actions.appendChild(why);
 
+  // WO-064. Queueing is a claim on your own time, so it is one press and it is
+  // reversible from here: pressing again takes it back out.
+  const q = document.createElement("button");
+  q.type = "button";
+  q.className = "btn-icon btn-queue";
+  q.dataset.vid = s.video_id;
+  const setQueueState = () => {
+    const on = queuedSet.has(s.video_id);
+    q.title = on ? "Remove from watch queue" : "Add to watch queue";
+    q.setAttribute("aria-label", q.title);
+    q.setAttribute("aria-pressed", on ? "true" : "false");
+    q.innerHTML = on ? QUEUE_ICON_ON : QUEUE_ICON_OFF;
+  };
+  setQueueState();
+  q.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const wasQueued = queuedSet.has(s.video_id);
+    const call = wasQueued
+      ? rpc("QUEUE_REMOVE", { index: queueIndexOf(s.video_id) })
+      : rpc("QUEUE_ADD", {
+          video_id: s.video_id,
+          platform: lastPageCache?.platform || "yt",
+        });
+    call
+      .then((r) => renderQueue(r.queue))
+      .catch((err) => console.warn("[Keel panel] queue", err?.message || err));
+  });
+  actions.appendChild(q);
+
   if (s.channel_id && isChannelId(s.channel_id)) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -345,6 +387,160 @@ async function loadBlocklist() {
     renderBlocklist(r.blocklist);
   } catch {
     renderBlocklist([]);
+  }
+}
+
+/* ---------------------------------------------------------------- WO-064:
+ * the watch queue.
+ *
+ * The daemon owns the list and its order. Every mutation returns the whole
+ * queue, so the panel never has to model what a mutation did — it draws what
+ * came back. That is the same reason the blocklist works this way, and it is
+ * what keeps the extension free of stored state (DESIGN_v2 §2.1).
+ *
+ * This is deliberately not YouTube's "Up next". Theirs is another surface
+ * recommendations arrive on; this one contains only what you chose.
+ */
+
+/** @type {Array<{video_id:string,title:string,platform:string,duration_s:number}>} */
+let queueItems = [];
+
+/** Position of a video in the current queue, or -1. Removal is by position
+ *  because that is what the daemon addresses and what the row represents. */
+function queueIndexOf(videoID) {
+  return queueItems.findIndex((it) => it.video_id === videoID);
+}
+
+/**
+ * Play a queued video.
+ *
+ * `openVideoInActiveTab` deliberately does nothing when the active tab is not
+ * YouTube or TikTok (WO-040) — but from the queue that is indistinguishable
+ * from a broken button, and the queue is the one place the user has already
+ * said what they want to watch. So when there is no page to repoint, open one.
+ */
+async function playQueued(href) {
+  let tab;
+  try {
+    [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  } catch {
+    tab = null;
+  }
+  if (isSupportedSite(tab?.url)) return openVideoInActiveTab(href);
+  if (browser.tabs?.create) await browser.tabs.create({ url: href });
+}
+
+function makeQueueLi(it, index, total) {
+  const li = document.createElement("li");
+  const href = watchUrl(it.video_id, it.platform);
+  li.innerHTML =
+    `<img class="thumb" loading="lazy" decoding="async" referrerpolicy="no-referrer"` +
+    ` alt="" width="72" height="40" data-vid="${encodeURIComponent(it.video_id)}">` +
+    `<div class="row-text">` +
+    `<p class="title"><a href="${href}">${escapeHtml(it.title || "Untitled — no title recorded yet")}</a></p>` +
+    `<div class="sub">${escapeHtml(fmtDuration(it.duration_s) || "")}</div>` +
+    `<span class="row-actions"></span></div>`;
+
+  // Play is ordinary navigation — the same thing clicking a link does. Keel
+  // does not drive the player and does not touch YouTube's own queue.
+  const link = li.querySelector(".title a");
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    playQueued(href).catch(() => {});
+  });
+
+  const actions = li.querySelector(".row-actions");
+  const button = (label, svg, disabled, onClick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-icon btn-" + label.split(" ")[0].toLowerCase();
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.innerHTML = svg;
+    if (disabled) b.disabled = true;
+    else b.addEventListener("click", onClick);
+    actions.appendChild(b);
+  };
+  const arrow = (d) =>
+    `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="${d}"/></svg>`;
+
+  const move = (to) =>
+    rpc("QUEUE_REORDER", { from: index, to })
+      .then((r) => renderQueue(r.queue))
+      .catch((err) => console.warn("[Keel panel] reorder", err?.message || err));
+
+  button("Move up", arrow("M12 19V5M5 12l7-7 7 7"), index === 0, () =>
+    move(index - 1)
+  );
+  button(
+    "Move down",
+    arrow("M12 5v14M19 12l-7 7-7-7"),
+    index === total - 1,
+    () => move(index + 1)
+  );
+  button(
+    "Remove from queue",
+    arrow("M6 6l12 12M18 6L6 18"),
+    false,
+    () =>
+      rpc("QUEUE_REMOVE", { index })
+        .then((r) => renderQueue(r.queue))
+        .catch((err) => console.warn("[Keel panel] unqueue", err?.message || err))
+  );
+
+  const img = li.querySelector("img.thumb[data-vid]");
+  if (img) fillThumb(img, decodeURIComponent(img.dataset.vid || ""));
+  return li;
+}
+
+/** Draw whatever the daemon last said the queue is. */
+function renderQueue(res) {
+  queueItems = (res && res.items) || [];
+  queuedSet = new Set(queueItems.map((it) => it.video_id));
+  if (el.queueCount) {
+    el.queueCount.textContent = queueItems.length ? `(${queueItems.length})` : "";
+  }
+  if (!el.queueList) return;
+  el.queueList.replaceChildren();
+  if (!queueItems.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = "Nothing queued. Add a suggestion to watch it later.";
+    el.queueList.appendChild(empty);
+    syncQueueButtons();
+    return;
+  }
+  queueItems.forEach((it, i) =>
+    el.queueList.appendChild(makeQueueLi(it, i, queueItems.length))
+  );
+  syncQueueButtons();
+}
+
+/**
+ * Resync the add-to-queue buttons in the suggestion list.
+ *
+ * The two lists show the same videos from different angles, so a removal made
+ * in the queue has to be visible in the suggestion row too — otherwise the row
+ * goes on claiming the video is queued and pressing it removes something else.
+ */
+function syncQueueButtons() {
+  const btns = el.list ? el.list.querySelectorAll(".btn-queue[data-vid]") : [];
+  for (const b of btns) {
+    const on = queuedSet.has(b.dataset.vid);
+    if (b.getAttribute("aria-pressed") === String(on)) continue;
+    b.setAttribute("aria-pressed", String(on));
+    b.title = on ? "Remove from watch queue" : "Add to watch queue";
+    b.setAttribute("aria-label", b.title);
+    b.innerHTML = on ? QUEUE_ICON_ON : QUEUE_ICON_OFF;
+  }
+}
+
+async function loadQueue() {
+  try {
+    const r = await rpc("QUEUE_LIST", {});
+    renderQueue(r.queue);
+  } catch {
+    renderQueue(null);
   }
 }
 
@@ -433,7 +629,12 @@ function absorbLastPage(lastPage) {
   const changed =
     !lastPageCache || lastPageCache.pageLoadId !== lastPage.pageLoadId;
   lastPageCache = lastPage;
-  if (changed) refreshSuggestions({ force: true }).catch(() => {});
+  if (changed) {
+    refreshSuggestions({ force: true }).catch(() => {});
+    // Autoplay drains the queue in the daemon, and the navigation it causes is
+    // the only sign the panel gets. Re-read rather than model it here.
+    loadQueue().catch(() => {});
+  }
 }
 
 function renderStats(stats) {
@@ -724,6 +925,15 @@ if (el.entropy) {
   });
 }
 
+// WO-065. Force, always: the point of pressing it is to get a different answer
+// out of the same seed, and the walk is random, so the cache key that normally
+// suppresses a re-run is exactly what has to be bypassed.
+if (el.resuggest) {
+  el.resuggest.addEventListener("click", () => {
+    refreshSuggestions({ force: true }).catch(() => {});
+  });
+}
+
 el.refresh.addEventListener("click", () => refresh());
 
 if (el.blockAddBtn && el.blockInput) {
@@ -770,6 +980,7 @@ setInterval(() => {
 connectPanelPort();
 loadHideMode();
 loadBlocklist();
+loadQueue();
 refresh();
 
 /**

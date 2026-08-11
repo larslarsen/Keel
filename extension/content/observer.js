@@ -526,6 +526,41 @@ document.addEventListener(
   true,
 );
 
+/**
+ * Queue autoplay (WO-064): tell the worker when the watched video finishes.
+ *
+ * This is the one place Keel reads playback state, and it is worth being clear
+ * about why that is allowed here when `watchTitle` explicitly refuses to. The
+ * `ended` event is not recorded, not counted, and never leaves the machine — it
+ * is a trigger for a list the user built by hand. Nothing about the player is
+ * driven: no control is clicked, no autoplay toggle is touched, no API is
+ * called. The daemon decides whether the finished video was queued, and the
+ * only action taken is an ordinary tab navigation, the same one the Play button
+ * performs.
+ *
+ * `ended` does not bubble, so it is caught in the capture phase at the document
+ * — one listener that survives YouTube replacing the <video> element on every
+ * SPA navigation, which a listener bound to the element would not.
+ */
+let lastEndedId = "";
+function watchForEnd() {
+  document.addEventListener(
+    "ended",
+    (e) => {
+      if (orphaned) return;
+      if (!(e.target instanceof HTMLMediaElement)) return;
+      const { platform, surface, context_video_id } = surfaceFromUrl(location.href);
+      if (surface !== "WATCH_NEXT" || !context_video_id) return;
+      // Media elements can fire `ended` more than once for one playthrough, and
+      // a second one would consume the video we just navigated to.
+      if (context_video_id === lastEndedId) return;
+      lastEndedId = context_video_id;
+      send("VIDEO_ENDED", { video_id: context_video_id, platform });
+    },
+    true,
+  );
+}
+
 async function start() {
   if (armed) return;
   armed = true;
@@ -561,6 +596,7 @@ async function start() {
   }
 
   listenSpa();
+  watchForEnd();
   await onNavigate({ force: true });
   console.info(LOG, "observer armed");
 }

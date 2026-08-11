@@ -1,7 +1,7 @@
 # WO-064: Watch queue (persistent, daemon-owned, ordered)
 
 **Addressee:** Sr Dev (Opus)
-**Status:** Open
+**Status:** Done — daemon-owned `watch_queue` table, four RPCs, panel section (2026-08-10)
 **Depends on:** existing `BLOCK_CHANNEL` RPC path (WO-016) — mirror it.
 
 ## What to build

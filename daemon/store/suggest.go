@@ -260,28 +260,28 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 
 	var ranked []scored
 	for id, sc := range rank {
-	if id == seed || id == HomeFrom || sc <= 0 {
-		continue
-	}
-	ranked = append(ranked, scored{id: id, score: sc})
+		if id == seed || id == HomeFrom || sc <= 0 {
+			continue
+		}
+		ranked = append(ranked, scored{id: id, score: sc})
 	}
 	// A corpus too small to reach past one hop would otherwise show nothing at
 	// all. An empty panel is worse than a familiar one, so fall back — and the
 	// caller is told, so the interface can say why.
 	// Nothing at all: the corpus cannot reach past this rail yet.
 	if len(ranked) == 0 {
-	out.RailOnly = true
-	for id, sc := range rank {
-		if id == seed || id == HomeFrom || sc <= 0 {
-			continue
+		out.RailOnly = true
+		for id, sc := range rank {
+			if id == seed || id == HomeFrom || sc <= 0 {
+				continue
+			}
+			ranked = append(ranked, scored{id: id, score: sc})
 		}
-		ranked = append(ranked, scored{id: id, score: sc})
-	}
 	}
 
 	meta, err := s.videoMeta(platform, ids(ranked))
 	if err != nil {
-	return nil, err
+		return nil, err
 	}
 
 	// Serendipity: at high entropy, damp by popularity so the walk surfaces
@@ -289,13 +289,13 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// crypto — is what delivers the anti-popularity promise (§3).
 	pop := float64(entropy) / 100.0
 	for i := range ranked {
-	m := meta[ranked[i].id]
-	if m == nil {
-		continue
-	}
-	if pop > 0 && m.views > 0 {
-		ranked[i].score /= math.Pow(math.Log10(m.views+10), pop)
-	}
+		m := meta[ranked[i].id]
+		if m == nil {
+			continue
+		}
+		if pop > 0 && m.views > 0 {
+			ranked[i].score /= math.Pow(math.Log10(m.views+10), pop)
+		}
 	}
 
 	// A stream that has finished is a bad recommendation: hours long, titled as
@@ -305,15 +305,15 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// right answer, it just should not lead.
 	pastLive, err := s.everLive(platform)
 	if err != nil {
-	return nil, err
+		return nil, err
 	}
 	for i := range ranked {
-	switch {
-	case live[ranked[i].id]:
-		ranked[i].score *= liveBoost
-	case pastLive[ranked[i].id]:
-		ranked[i].score *= finishedLivePenalty
-	}
+		switch {
+		case live[ranked[i].id]:
+			ranked[i].score *= liveBoost
+		case pastLive[ranked[i].id]:
+			ranked[i].score *= finishedLivePenalty
+		}
 	}
 	// Cap how much of the panel live streams may take.
 	//
@@ -326,23 +326,23 @@ ORDER BY observed_at DESC LIMIT 1`).Scan(&seed); err != nil && err != sql.ErrNoR
 	// boost and the exemption, so it competes on merit like anything else.
 	shown := 0
 	for i := range ranked {
-	if !live[ranked[i].id] {
-		continue
-	}
-	shown++
-	if shown > maxLivePromoted {
-		ranked[i].score /= liveBoost
-	}
+		if !live[ranked[i].id] {
+			continue
+		}
+		shown++
+		if shown > maxLivePromoted {
+			ranked[i].score /= liveBoost
+		}
 	}
 
 	// Rank by merit alone. Rail items compete for the top slots on their own
 	// score — the user explicitly wants the panel to reorder what YouTube
 	// showed rather than hold the rail behind a novelty reservation.
 	sort.Slice(ranked, func(a, b int) bool {
-	if ranked[a].score != ranked[b].score {
-		return ranked[a].score > ranked[b].score
-	}
-	return ranked[a].id < ranked[b].id // stable for tests
+		if ranked[a].score != ranked[b].score {
+			return ranked[a].score > ranked[b].score
+		}
+		return ranked[a].id < ranked[b].id // stable for tests
 	})
 
 	for _, r := range ranked {

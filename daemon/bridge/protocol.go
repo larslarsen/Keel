@@ -186,6 +186,48 @@ type ChannelBlockPayload struct {
 	ChannelID string `json:"channel_id"`
 }
 
+// QueuePayload is the QUEUE_ADD request body (WO-064).
+//
+// The watch queue is user intent rather than observation, which is why it is a
+// separate table and a separate set of verbs: nothing here was recorded from a
+// page, and nothing here is ever published.
+type QueuePayload struct {
+	VideoID  string `json:"video_id"`
+	Platform string `json:"platform"`
+}
+
+// QueueIndexPayload addresses an entry by its position in the current order.
+//
+// By position rather than by video id because that is what the interface shows
+// — the user points at a row, and a row is a position.
+type QueueIndexPayload struct {
+	Index int `json:"index"`
+	From  int `json:"from"`
+	To    int `json:"to"`
+}
+
+// QueueItem is one entry, carrying whatever the corpus already knows about the
+// video so the panel does not have to ask again per row.
+type QueueItem struct {
+	VideoID  string  `json:"video_id"`
+	Title    string  `json:"title"`
+	Position int     `json:"position"`
+	AddedAt  int64   `json:"added_at"`
+	Platform string  `json:"platform"`
+	Duration float64 `json:"duration_s,omitempty"`
+}
+
+// QueueResultPayload is the QUEUE_RESULT body: every queue verb answers with
+// the whole resulting queue, so the caller never has to infer what changed.
+//
+// Next is set only by QUEUE_ADVANCE, and only when the finished video was
+// queued and something follows it. Null means "do not navigate" — which is the
+// answer for a video that was never in the queue, and for the last one in it.
+type QueueResultPayload struct {
+	Items []QueueItem `json:"items"`
+	Next  *QueueItem  `json:"next,omitempty"`
+}
+
 // ExplainVideoPayload is EXPLAIN_VIDEO request (WO-018).
 type ExplainVideoPayload struct {
 	VideoID string `json:"video_id"`

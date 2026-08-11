@@ -536,5 +536,40 @@ h2 {
   font-size: 11px; margin-right: 2px;
 }
 #list .btn-icon { padding: 2px; line-height: 0; }
-#list .btn-why, #list .btn-block { width: 20px; height: 20px; }
+#list .btn-why, #list .btn-block, #list .btn-queue { width: 20px; height: 20px; }
 #list .btn-icon svg { width: 12px; height: 12px; }
+
+/* Watch queue (WO-064). Same row shape as the suggestion list, so the two read
+   as one interface, with the position buttons in the same right-edge column. */
+.fold-count { color: var(--muted); font-weight: 400; }
+
+#queue-list { list-style: none; margin: 0; padding: 0; }
+#queue-list li {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 0; border-top: 1px solid var(--border);
+}
+#queue-list li:first-child { border-top: none; }
+#queue-list .thumb {
+  flex: 0 0 auto; width: 72px; height: 40px;
+  object-fit: cover; border-radius: 5px; background: var(--border);
+}
+#queue-list .row-text { min-width: 0; flex: 1 1 auto; }
+#queue-list .title {
+  margin: 0; font-size: 12px; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+#queue-list .title a { color: inherit; text-decoration: none; cursor: pointer; }
+#queue-list .title a:hover { text-decoration: underline; }
+/* Four controls in a row under the title, not a column beside it — a column of
+   four would make each queue row taller than its own thumbnail. */
+#queue-list .row-actions {
+  margin: 3px 0 0;
+  display: flex; flex-direction: row; gap: 4px;
+}
+#queue-list .btn-icon { width: 20px; height: 20px; padding: 2px; line-height: 0; }
+#queue-list .btn-icon svg { width: 12px; height: 12px; }
+#queue-list .btn-icon[disabled] { opacity: 0.35; cursor: default; }
+#queue-list .empty {
+  border: none; color: var(--muted); font-size: 11px; display: block;
+}
