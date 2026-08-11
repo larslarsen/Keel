@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +164,8 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		return handleSearch(env, out, st)
 	case "PEER_SEARCH":
 		return handlePeerSearch(env, out, st)
+	case "WORD_STATS":
+		return handleWordStats(env, out, st)
 	case "SUGGEST":
 		return handleSuggest(env, out, st)
 	case "EXPORT_BUNDLE":
@@ -609,6 +612,80 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 	return reply(out, env.ID, "PEER_SEARCH_RESULT", bridge.PeerSearchResultPayload{
 		Query: p.Query, Hits: hits, Available: true, Progress: wireProgress,
 	})
+}
+
+// handleWordStats answers WORD_STATS (WO-068): corpus-wide word % + nested
+// char-token coverage for the query. Display-only; never triggers a shard
+// or word-bucket fetch. Direct peer pack merge when the swarm is up.
+func handleWordStats(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	var p bridge.WordStatsPayload
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "invalid WORD_STATS payload",
+			Code:    "bad_payload",
+		})
+	}
+	if swarmNode == nil {
+		// Local-only fallback so the UI can still show what this device has
+		// observed without implying the swarm answered.
+		local, err := st.LocalWordTelemetry(false)
+		if err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		return reply(out, env.ID, "WORD_STATS_RESULT", wordStatsFromLocal(p.Query, local, st, false))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), peerSearchTimeout)
+	defer cancel()
+	ws, err := swarmNode.FetchWordStats(ctx, p.Query)
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	wire := bridge.WordStatsResultPayload{
+		DistinctWords:  ws.DistinctWords,
+		DistinctGraphs: ws.DistinctGraphs,
+		Peers:          ws.Peers,
+		Available:      ws.Available,
+		Words:          make([]bridge.WordStatWire, 0, len(ws.Words)),
+	}
+	for _, w := range ws.Words {
+		ww := bridge.WordStatWire{Word: w.Word, Pct: w.Pct, Tokens: make([]bridge.TokenCoverageWire, 0, len(w.Tokens))}
+		for _, t := range w.Tokens {
+			ww.Tokens = append(ww.Tokens, bridge.TokenCoverageWire{
+				TokenIndex: t.TokenIndex, Estimate: t.Estimate, Known: t.Known,
+			})
+		}
+		wire.Words = append(wire.Words, ww)
+	}
+	return reply(out, env.ID, "WORD_STATS_RESULT", wire)
+}
+
+func wordStatsFromLocal(query string, local *store.WordTelemetry, st *store.Store, available bool) bridge.WordStatsResultPayload {
+	out := bridge.WordStatsResultPayload{
+		DistinctWords:  local.DistinctWords(),
+		DistinctGraphs: local.DistinctGraphs(),
+		Available:      available,
+		Words:          []bridge.WordStatWire{},
+	}
+	for _, w := range store.FilterStopwords(store.QueryWords(query)) {
+		ww := bridge.WordStatWire{Word: w, Tokens: []bridge.TokenCoverageWire{}}
+		if pct, ok := local.WordPct(w); ok {
+			r := math.Round(pct*10) / 10
+			ww.Pct = &r
+		}
+		for _, tok := range store.CharTokensForWord(w) {
+			idx, ok := store.TokenDictIndex(tok)
+			if !ok {
+				continue
+			}
+			tc := bridge.TokenCoverageWire{TokenIndex: idx}
+			if st != nil {
+				tc.Estimate, tc.Known = st.TokenEstimate(tok)
+			}
+			ww.Tokens = append(ww.Tokens, tc)
+		}
+		out.Words = append(out.Words, ww)
+	}
+	return out
 }
 
 // handleSuggest ranks the co-recommendation graph (WO-023). Read-only.

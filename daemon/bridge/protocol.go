@@ -331,6 +331,36 @@ type TokenProgress struct {
 	Known bool `json:"known"`
 }
 
+// WordStatsPayload is WORD_STATS request body (WO-068): the query whose
+// words the UI wants corpus-frequency bars for. Telemetry only — does not
+// trigger shard or word-bucket fetches.
+type WordStatsPayload struct {
+	Query string `json:"query"`
+}
+
+// WordStatsResultPayload is WORD_STATS_RESULT (WO-068).
+type WordStatsResultPayload struct {
+	DistinctWords  uint64         `json:"distinct_words"`
+	DistinctGraphs uint64         `json:"distinct_graphs"`
+	Peers          int            `json:"peers"`
+	Available      bool           `json:"available"`
+	Words          []WordStatWire `json:"words"`
+}
+
+// WordStatWire is one query word's global % plus nested char-token coverage.
+type WordStatWire struct {
+	Word   string              `json:"word"`
+	Pct    *float64            `json:"pct"`
+	Tokens []TokenCoverageWire `json:"tokens"`
+}
+
+// TokenCoverageWire is one bottom-tier char-token sub-bar (opaque index).
+type TokenCoverageWire struct {
+	TokenIndex int    `json:"token_index"`
+	Estimate   uint64 `json:"estimate"`
+	Known      bool   `json:"known"`
+}
+
 // SuggestPayload is the SUGGEST request body (WO-023).
 //
 // Entropy is the 0–100 focus↔serendipity control from

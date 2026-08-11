@@ -107,6 +107,45 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
 }
 .peer-progress-caption { margin: 4px 0 0; font-size: 11px; }
 
+/* WO-068 corpus telemetry — two-tier word % + char-token sub-bars.
+   Separate from .peer-progress (query-scoped fetch coverage). */
+.word-corpus { margin: 12px 0 0; display: flex; flex-direction: column; gap: 10px; }
+.word-corpus .word-row { display: flex; flex-direction: column; gap: 3px; }
+.word-corpus .word-label { font-size: 12px; color: var(--muted); }
+.word-corpus .word-bar {
+  height: 8px; border-radius: 4px; overflow: hidden;
+  background: color-mix(in srgb, var(--accent, #3987e5) 18%, transparent);
+  position: relative;
+}
+.word-corpus .word-bar .fill {
+  position: absolute; inset: 0; width: 0; border-radius: 4px;
+  background: var(--accent, #3987e5);
+  transition: width .35s ease-out;
+}
+.word-corpus .token-subbars { display: flex; gap: 2px; height: 5px; }
+.word-corpus .token-subbars .seg {
+  flex: 1 1 0; min-width: 2px; height: 100%; border-radius: 3px;
+  position: relative; overflow: hidden;
+  background: color-mix(in srgb, var(--seg-color) 25%, transparent);
+}
+.word-corpus .token-subbars .seg .fill {
+  position: absolute; inset: 0; width: 0; border-radius: 3px;
+  background: var(--seg-color);
+  transition: width .35s ease-out;
+}
+.word-corpus .token-subbars .seg .fill.past {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--seg-color) 80%, white);
+}
+.word-corpus .token-subbars .seg.unknown {
+  background-image: repeating-linear-gradient(
+    45deg, var(--seg-color) 0 2px, transparent 2px 4px);
+  opacity: .45;
+}
+@media (prefers-reduced-motion: reduce) {
+  .word-corpus .word-bar .fill,
+  .word-corpus .token-subbars .seg .fill { transition: none; }
+}
+
 #results { list-style: none; margin: 14px 0 0; padding: 0; }
 #results li { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .r-title { margin: 0 0 2px; }

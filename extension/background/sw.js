@@ -408,6 +408,21 @@ async function handle(message, sender) {
     }
 
     /**
+     * WO-068: corpus-wide word % + nested char-token coverage. Display-only
+     * telemetry (direct peer pack fetch in the daemon) — never a search axis.
+     */
+    case "WORD_STATS": {
+      const query = message.payload?.query;
+      if (typeof query !== "string" || !query.trim()) throw new Error("bad query");
+      if (!bridge.helloOk) throw new Error("daemon not connected");
+      const env = await bridge.request("WORD_STATS", { query });
+      if (env.type === "ERROR") {
+        throw new Error(env.payload?.message || "WORD_STATS failed");
+      }
+      return { word_stats: env.payload };
+    }
+
+    /**
      * DESIGN_v2 §7.5: the live index lives in the daemon's memory, gossiped
      * whole. The query is matched there against records this machine already
      * holds, so nothing about it reaches the network.

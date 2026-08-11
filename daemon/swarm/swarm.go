@@ -62,6 +62,9 @@ var CatalogueProtocol = keelProtocol("catalogue", "1.0.0", store.KeySchemeVersio
 // shard.go in this package for the request/fetch side.
 var ShardProtocol = keelProtocol("shard", "1.0.0", store.KeySchemeVersion)
 
+// WordTelemetryProtocol is declared in words.go (WO-068): on-demand pack
+// fetch for display-only corpus word stats — not a gossip topic.
+
 // maxBlockBytes bounds what a peer can make this node allocate. A block is one
 // video's neighbourhood — a few hundred edges — so anything approaching this is
 // already pathological.
@@ -113,6 +116,8 @@ type Store interface {
 	// stop condition (WO-067) — see daemon/swarm/shard.go.
 	TokenEstimate(token string) (uint64, bool)
 	RecordTokenSearch(token string, foundVideoIDs []string) error
+	// LocalWordTelemetry backs on-demand word corpus stats (WO-068).
+	LocalWordTelemetry(mirrorOnly bool) (*store.WordTelemetry, error)
 }
 
 // Config controls what a node offers and consumes.
@@ -304,6 +309,9 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		h.SetStreamHandler(BlockProtocol, n.handleBlockRequest)
 		h.SetStreamHandler(CatalogueProtocol, n.handleCatalogueRequest)
 		h.SetStreamHandler(ShardProtocol, n.handleShardRequest)
+		// Word telemetry is display-only but still served only when this
+		// node offers anything at all — Level 1 stays silent on every stream.
+		h.SetStreamHandler(WordTelemetryProtocol, n.handleWordTelemetry)
 		// Relay service is cheap and makes the network work for people whose
 		// routers do not cooperate. Only serving nodes run it.
 		if _, err := relay.New(h); err != nil {

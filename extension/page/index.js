@@ -17,6 +17,8 @@ const el = {
   searchNetwork: document.getElementById("search-network"),
   peerProgress: document.getElementById("peer-progress"),
   peerProgressCaption: document.getElementById("peer-progress-caption"),
+  wordCorpus: document.getElementById("word-corpus"),
+  wordCorpusMeta: document.getElementById("word-corpus-meta"),
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
@@ -461,18 +463,114 @@ function renderPeerProgress(progress) {
   });
 }
 
+// renderWordCorpus draws WO-068's two-tier bars: top = per-word global % of
+// observed graphs; bottom = per ShardK char-token coverage from gossiped
+// token sketches. Separate from renderPeerProgress (query-scoped fetch
+// coverage). Word strings shown on the top tier are the user's own query
+// words; token sub-bars stay unlabeled (color only).
+function renderWordCorpus(stats) {
+  if (!el.wordCorpus) return;
+  el.wordCorpus.replaceChildren();
+  if (!stats || !stats.words?.length) {
+    el.wordCorpus.hidden = true;
+    el.wordCorpus.setAttribute("aria-hidden", "true");
+    if (el.wordCorpusMeta) el.wordCorpusMeta.hidden = true;
+    return;
+  }
+
+  const maxTok = Math.max(
+    1,
+    ...stats.words.flatMap((w) => (w.tokens || []).map((t) => (t.known ? Number(t.estimate) || 0 : 0)))
+  );
+
+  for (const w of stats.words) {
+    const row = document.createElement("div");
+    row.className = "word-row";
+
+    const label = document.createElement("div");
+    label.className = "word-label";
+    const pctText =
+      typeof w.pct === "number" ? `~${w.pct}% of observed graphs` : "no estimate yet";
+    label.textContent = `${w.word} — ${pctText}`;
+    row.appendChild(label);
+
+    const bar = document.createElement("div");
+    bar.className = "word-bar";
+    const fill = document.createElement("div");
+    fill.className = "fill";
+    fill.style.width = "0%";
+    bar.appendChild(fill);
+    row.appendChild(bar);
+
+    const sub = document.createElement("div");
+    sub.className = "token-subbars";
+    const fills = [[fill, typeof w.pct === "number" ? Math.min(100, w.pct) : 0]];
+    for (const t of w.tokens || []) {
+      const color =
+        PEER_PROGRESS_COLORS[Math.abs(t.token_index || 0) % PEER_PROGRESS_COLORS.length];
+      const seg = document.createElement("div");
+      seg.style.setProperty("--seg-color", color);
+      if (t.known) {
+        const est = Number(t.estimate) || 0;
+        const pct = Math.round((est / maxTok) * 100);
+        const past = est > maxTok; // defensive; maxTok is max of estimates
+        const tf = document.createElement("div");
+        tf.className = "fill" + (past ? " past" : "");
+        tf.style.width = "0%";
+        seg.className = "seg";
+        seg.appendChild(tf);
+        seg.title = past
+          ? `est. ${est} graphs (past peer scale)`
+          : `est. ${est} graphs for this part of the word`;
+        fills.push([tf, Math.min(100, pct)]);
+      } else {
+        seg.className = "seg unknown";
+        seg.title = "No network estimate yet for this part of the word";
+      }
+      sub.appendChild(seg);
+    }
+    row.appendChild(sub);
+    el.wordCorpus.appendChild(row);
+
+    requestAnimationFrame(() => {
+      for (const [f, pct] of fills) f.style.width = pct + "%";
+    });
+  }
+
+  el.wordCorpus.hidden = false;
+  el.wordCorpus.setAttribute("aria-hidden", "false");
+  if (el.wordCorpusMeta) {
+    const bits = [];
+    if (stats.distinct_words > 0) {
+      bits.push(`~${stats.distinct_words.toLocaleString()} distinct words in the swarm's view`);
+    }
+    if (stats.peers > 0) bits.push(`${stats.peers} peer pack(s)`);
+    else if (stats.available === false) bits.push("local catalogue only");
+    el.wordCorpusMeta.textContent = bits.join(" · ");
+    el.wordCorpusMeta.hidden = !bits.length;
+  }
+}
+
 el.form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const query = el.q.value.trim();
   if (!query) return;
   el.meta.textContent = "Searching…";
   renderPeerProgress(null);
+  renderWordCorpus(null);
   try {
     const r = await rpc("SEARCH", { query, limit: 100 });
     renderHits(r.search);
   } catch (err) {
     el.meta.textContent = `Search failed: ${err.message}`;
     return;
+  }
+  // Corpus bars are independent of network-search checkbox: telemetry only.
+  try {
+    const r = await rpc("WORD_STATS", { query });
+    if (r.word_stats) renderWordCorpus(r.word_stats);
+  } catch {
+    // Optional display; local search already succeeded.
   }
   if (!el.searchNetwork?.checked) return;
   try {
