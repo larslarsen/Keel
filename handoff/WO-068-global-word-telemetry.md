@@ -41,13 +41,26 @@ Two outputs:
   set emerges from observation. (Contrast with the character scheme's fixed
   `TokenDictSize = 27^3` dictionary, which exists only because the yield vector
   needs predetermined bit slots — irrelevant here, no yield vector for words.)
-- **HLL sketch, periodic, gossip-merged.** Each node maintains a local HLL of the
-  distinct words it has observed. On a timer (bounded-fanout rebroadcast, same
-  family as the yield-gossip invention) it merges peers' HLLs into a swarm-wide
-  estimate. HLL merge reveals only combined cardinality — no individual video,
-  no raw observation, no "was word X in your graph." Fits the design rule
-  (live.go:13) and violates no no-raw-data rule. Reuses Opus's existing sketch
-  code.
+- **No fixed word dictionary, and no plaintext words on the wire — by design.**
+  The HLL is CONTENT-ADDRESSED BY HASH: each observed word is normalized
+  (shared rule, WO-060) and hashed locally into register positions; the word
+  string is consumed and never leaves the node. What gossips is the 256-byte
+  register array (`R []byte`, `P=8` → 2^8=256 registers, 1 byte each — same
+  shape as store.TokenSketch), never the word "trading". Nodes agree on register
+  positions because they agree on the HASH FUNCTION + normalization rule, not on
+  a vocabulary. Merge = HLL max-register union (sketch_store MergeTokenSketch
+  pattern); neither side sends word strings. This is why no fixed word
+  dictionary is needed: the character scheme's dictionary exists only to map
+  tokens → fixed yield-vector slots, which words don't use.
+- **Gossip cost is trivial via ONE merged global word-HLL, not per-word.**
+  Gossip a single per-node word-HLL (~256B) on a slow timer (e.g. once/min),
+  not one sketch per word. Merging N peers' single HLLs yields the global
+  distinct-word estimate in one round. Contrast per-word sketches (256B × N_words,
+  throttled to 20/tick in the token scheme — slow to converge over a huge
+  vocabulary). The merged-HLL approach is ~256B/min — negligible, and the
+  minimal-leak option (registers only, no word strings). Aggregate
+  distinct-word count + per-word frequency ARE the feature and are intentionally
+  visible to peers; the design hides only which graphs / who observed what.
 - **Per-word percentage** = (distinct graphs containing w) / (distinct graphs
   total). distinct-graphs-containing-w from the word HLL; distinct-graphs-total
   from a graph-level HLL. Approximate (~1-2% HLL error) — label as estimate.
