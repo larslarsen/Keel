@@ -31,10 +31,17 @@ FETCH KEY must be versioned and agreed:
   fetching" flag. Nodes MUST agree on the dictionary (word list AND ordering) or
   the yield vector is gibberish across peers — bit N means different things on
   different nodes. So the dictionary is a key-deriving constant, versioned like k.
-  It is local/fixed at each node (never sent on the wire; only the bit vector
+  it is local/fixed at each node (never sent on the wire; only the bit vector
   travels), but the WORD LIST and its ORDERING are protocol constants, not
   per-node choices. Bumping the dictionary (adding/removing words, re-ordering) is
   a protocol version bump, applied uniformly in a release.
+- **The k=1 word dictionary (WO-067).** A fixed shared list of single words used
+  ONLY for global-corpus telemetry (distinct-word count, per-word percentage in
+  the search UI) — NOT for storage/fetch keys (Keel serves k=3 token buckets, not
+  k=1). Still a protocol constant: every node must agree on the word list (and
+  stopword exclusions) or the global word percentage is computed against
+  different vocabularies across nodes and is not comparable. Compiled-in,
+  version-bumped with the protocol, never per-node or negotiated. See WO-067.
 
 A node that computes a different key than its peers is silently partitioned from
 them — it fetches and finds nothing, serves and is queried for nothing. Worse

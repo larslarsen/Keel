@@ -82,3 +82,4 @@ log has not been made — it will drift out from under whoever is implementing i
 | 065 | Refresh suggestions button (re-draw via SUGGEST, same entropy) | Sr Dev (Opus) | **Done** |
 | 066 | Live detection false-positive: non-live video flagged LIVE (loose `liveLoose`/thumbnail matcher) | Sr Dev (Hermes) | **Resolved** |
 | 067 | Distributed search: yield-gossip, global count, coverage UI, hardening (split from 059) | Sr Dev | **Open** |
+| 068 | Global word-level corpus telemetry: k=1 dictionary (telemetry only) + periodic HLL → distinct-word count, coverage %, per-word % bar in search UI | Sr Dev (Opus) | **Open** |
