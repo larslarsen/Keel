@@ -289,8 +289,11 @@ export function extractBadges(el, cfg = DEFAULT_SELECTORS) {
     if (mt.sponsored.test(t)) out.add("SPONSORED");
     if (mt.ageGated.test(t)) out.add("AGE_GATED");
   }
-  const overlay = pick(el, cfg.badges.overlay);
-  if (mt.liveLoose.test(overlay?.textContent || "")) out.add("LIVE");
+  // NOTE: only the word-bounded `mt.live` (above, on badge containers) sets
+  // LIVE. A loose substring match on arbitrary overlay/description text
+  // (the old `mt.liveLoose`) flagged non-live VODs whose title/description
+  // contained "live"/"livestream"/"live chat" as LIVE — see WO-066. The live
+  // badge is the only authoritative signal; precision over recall here.
   return [...out];
 }
 

@@ -149,7 +149,12 @@ function fieldsFromCompact(r) {
     const label = String(
       b.metadataBadgeRenderer?.label || b.metadataBadgeRenderer?.tooltip || ""
     ).toUpperCase();
-    if (label.includes("LIVE")) badges.push("LIVE");
+    // Only a genuine LIVE *broadcast* badge counts. Reject labels that merely
+    // contain "LIVE" as part of "LIVESTREAM"/"LIVE replay"/"Live chat replay"
+    // (WO-066). Require the standalone LIVE word, reject replay/chat variants.
+    if (/\bLIVE\b/.test(label) && !/REPLAY|CHAT|STREAM/.test(label)) {
+      badges.push("LIVE");
+    }
     if (label.includes("VERIFIED") || label.includes("OFFICIAL")) {
       badges.push("VERIFIED");
     }
@@ -299,7 +304,13 @@ function fieldsFromLockup(r) {
       o.animatedThumbnailOverlayViewModel?.text;
     const d = parseDuration(badge);
     if (d != null) duration_s = d;
-    if (/LIVE/i.test(badge || "")) badges.push("LIVE");
+    // Only a genuine LIVE *broadcast* badge counts. YouTube also renders
+    // "LIVE replay" / "Live chat replay" thumbnails for ended/premiere VODs;
+    // those must NOT be flagged live (WO-066). Require the standalone LIVE
+    // word and reject replay/chat variants.
+    if (/\bLIVE\b/i.test(badge || "") && !/replay|chat/i.test(badge || "")) {
+      badges.push("LIVE");
+    }
   }
 
   return {
