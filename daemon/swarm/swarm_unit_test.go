@@ -128,13 +128,13 @@ func TestTrimLineBoundaries(t *testing.T) {
 		{"a3f\n", "a3f"},
 		{"a3f\r\n", "a3f"},
 		{"a3f ", "a3f"},
-		{"  a3f  ", "  a3f"},   // leading spaces kept, trailing stripped
-		{"\r\n", ""},           // pure CRLF -> empty
-		{"   ", ""},            // pure spaces -> empty
+		{"  a3f  ", "  a3f"}, // leading spaces kept, trailing stripped
+		{"\r\n", ""},         // pure CRLF -> empty
+		{"   ", ""},          // pure spaces -> empty
 		{"", ""},
 		{"a3f	", "a3f	"},     // tab is NOT in the trim set; preserved
-		{"\na3f\n", "\na3f"},   // leading newline kept
-		{"a3f\r", "a3f"},       // trailing \r stripped
+		{"\na3f\n", "\na3f"}, // leading newline kept
+		{"a3f\r", "a3f"},     // trailing \r stripped
 	}
 	for _, c := range cases {
 		if got := trimLine(c.in); got != c.want {

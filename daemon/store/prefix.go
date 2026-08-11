@@ -58,7 +58,7 @@ func BlockPrefix(videoID string, bits int) string {
 	if bits <= 0 || bits > 64 {
 		bits = DefaultPrefixBits
 	}
-	sum := sha256.Sum256([]byte("keel/block/1/" + videoID))
+	sum := sha256.Sum256([]byte(blockDomain + videoID))
 	// Take whole bytes covering the requested bits, then mask the remainder so
 	// the string is a faithful rendering of exactly `bits` bits.
 	nbytes := (bits + 7) / 8

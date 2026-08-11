@@ -62,6 +62,9 @@ var (
 // that publishes a funnel and is why it is a separate, explicit choice.
 func swarmConfigFor(level int) swarm.Config {
 	return swarm.Config{
+		// Announced to peers so they can tell whether they are behind us or
+		// incompatible with us (WO-061).
+		AppVersion:           version,
 		Serve:                level >= store.LevelMirror,
 		Fetch:                level >= store.LevelMirror,
 		ServeOwnObservations: level >= store.LevelCohort,
@@ -206,6 +209,10 @@ func swarmStatus() map[string]any {
 		// number a person should be shown.
 		"keel_peers": swarmNode.KeelPeers(),
 		"id":         swarmNode.ID().String(),
+		// What the versions around us look like (WO-061). Reported even when
+		// everything agrees, because "no update needed" is itself the answer
+		// to the question a person is asking when they look at this.
+		"versions": swarmNode.Versions(version),
 	}
 	if li := swarmNode.Live(); li != nil {
 		out["live_indexed"] = li.Size()

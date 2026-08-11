@@ -186,3 +186,17 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
 #live-table .r-sub {
   opacity: 0.7;
 }
+
+/* Update notice (WO-061). Set apart from the surrounding meta text, because it
+   asks the reader to do something, but not alarm-coloured unless the node is
+   actually cut off from its peers. */
+.notice {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 6px;
+}
+.notice.warn { border-left-color: #e0af68; }

@@ -1,0 +1,60 @@
+# Tests, race detector, and the coverage ratchet (WO-062).
+#
+# This one DOES gate, unlike security.yml. The difference is that a failing test
+# names a specific thing that is broken and can be fixed, whereas the security
+# scan reports a known-unfixable upstream issue and would sit permanently red.
+#
+# The coverage check is a ratchet rather than WO-062's 80% target: two of the
+# three packages are below 80% today, and a gate the repository fails on its
+# first run is one everybody learns to ignore. See scripts/check-coverage.sh.
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No version here: go.mod pins the toolchain, so CI builds with the same
+      # compiler and standard library as everyone else.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+
+      # The race detector is the point of running these in CI at all. The swarm
+      # package spawns real libp2p nodes across goroutines, which is exactly
+      # where a data race hides from a single-threaded local run.
+      - name: go test -race
+        working-directory: daemon
+        run: go test -race -count=1 ./...
+
+      - name: coverage ratchet
+        run: ./scripts/check-coverage.sh
+
+      # Bounded, so a fuzz target that finds nothing does not hold up a push.
+      # Any crasher found is written to testdata/ and becomes a normal test.
+      - name: fuzz (bounded)
+        working-directory: daemon
+        run: |
+          set -e
+          for pkg in ./store ./swarm ./bridge; do
+            for target in $(go test "$pkg" -list 'Fuzz.*' | grep '^Fuzz' || true); do
+              echo "--- $pkg $target"
+              go test "$pkg" -run "^$" -fuzz "^${target}$" -fuzztime 30s
+            done
+          done
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test

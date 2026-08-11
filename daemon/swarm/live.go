@@ -78,6 +78,12 @@ const LiveTopic = "keel/live/1"
 // Requesting it leaks nothing: there is no query, the whole index is asked for
 // every time, and it is the same index every node holds. This is §7.3a tier 1,
 // the same shape as the seed pack.
+//
+// No key scheme in this id, unlike the block and catalogue protocols (WO-060).
+// The live index is not bucketed — entries are keyed by platform and video id,
+// which no constant in the key scheme touches — so widening prefix buckets or
+// changing the tokenizer would partition the live mesh for no reason. It is the
+// feature that most needs every node it can get.
 const LiveSnapshotProtocol = protocol.ID("/keel/live-snapshot/1.0.0")
 
 // maxSnapshotBytes bounds a snapshot reply.

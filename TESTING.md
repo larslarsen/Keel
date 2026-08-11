@@ -79,3 +79,28 @@ go tool cover -func=cover.out   # fail if store/bridge/swarm < 80%
   tokenizer, version negotiation). Their acceptance criteria already include
   determinism and fuzz-style checks.
 - WO-003 / WO-004 — the bug list that seeds `BUG_REGRESSIONS.md`.
+
+## Standing rules (WO-062, 2026-08-10)
+
+**Falsify a test before trusting it.** A test that passes whether or not the
+thing works is worse than no test, because it retires the question. The
+discovery test in `daemon/swarm/discovery_test.go` was checked by suppressing
+the announce and confirming it failed; do the same for anything asserting that a
+distributed path works.
+
+**Beware assertions that a correct implementation fails.** Two independent
+12-bit hashes of the same input agree once per ~4096 inputs. A property stated
+as "these never match" fails on working code; state it as a rate.
+
+**Watch for silently-zero paths.** `Node.Fetch` returns `(0, nil)` when
+`Config.Fetch` is false, and a test that polls for a non-zero result against
+that config passes its own loop while proving nothing. Any assertion of the form
+"eventually N > 0" needs a companion check that N *can* be > 0.
+
+**Fuzz targets share one store.** Opening a SQLite file per iteration caps
+throughput around 30 executions a second, which finds nothing in a 30-second CI
+budget. Hoist the store outside `f.Fuzz`.
+
+**Coverage is a ratchet, not a target.** `scripts/check-coverage.sh` holds
+per-package floors just below current. Raise them as tests land; never lower one
+without saying why in the commit that does it.

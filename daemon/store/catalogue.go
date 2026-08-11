@@ -49,7 +49,7 @@ func CataloguePrefix(videoID string, bits int) string {
 	if bits <= 0 || bits > 64 {
 		bits = DefaultPrefixBits
 	}
-	sum := sha256.Sum256([]byte("keel/catalogue/1/" + videoID))
+	sum := sha256.Sum256([]byte(catalogueDomain + videoID))
 	nbytes := (bits + 7) / 8
 	buf := make([]byte, nbytes)
 	copy(buf, sum[:nbytes])

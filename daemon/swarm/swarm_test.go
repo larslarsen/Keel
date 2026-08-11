@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/keel-app/keel/daemon/bridge"
@@ -443,13 +444,13 @@ func TestHandleBlockRequestFaultInjection(t *testing.T) {
 	defer cNode.Close()
 
 	hostile := []string{
-		"",                           // empty line -> no-op
-		"   ",                        // whitespace only
-		strings.Repeat("x", 300),     // over the 256-byte read limit
-		"../../../etc/passwd",        // path traversal attempt
-		"\x00\x01\x02binary",         // embedded NULs / binary
-		"a3f\n\r\r\n",                // CRLF noise
-		"seedaaaaaaa",                // a real key the server DOES have
+		"",                       // empty line -> no-op
+		"   ",                    // whitespace only
+		strings.Repeat("x", 300), // over the 256-byte read limit
+		"../../../etc/passwd",    // path traversal attempt
+		"\x00\x01\x02binary",     // embedded NULs / binary
+		"a3f\n\r\r\n",            // CRLF noise
+		"seedaaaaaaa",            // a real key the server DOES have
 	}
 	for _, key := range hostile {
 		// A known, directly-connected peer is asked. For hostile keys the
@@ -464,5 +465,68 @@ func TestHandleBlockRequestFaultInjection(t *testing.T) {
 			}()
 			_, _ = cNode.FetchFrom(ctx, sNode.AddrInfo(), key)
 		}()
+	}
+}
+
+// TestDifferentKeySchemeCannotBeServed is WO-060's acceptance test: a node that
+// derives keys differently must fail to connect, not connect and be told
+// nothing exists.
+//
+// The distinction is the whole ticket. Both outcomes return no data, but only
+// one is diagnosable — "protocol not supported" names the problem, whereas an
+// empty result is indistinguishable from an empty network (WO-058), which is
+// exactly how a silent partition survives for months.
+func TestDifferentKeySchemeCannotBeServed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	server := newStore(t, "ks-server.sqlite")
+	seed(t, server, "seedaaaaaaa", "targetaaaa1", 0)
+	sNode, err := Start(ctx, server, isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	// A bare host, so the test speaks to the server's protocol ids directly
+	// rather than through a Node that would only ever use the matching one.
+	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if err := h.Connect(ctx, sNode.AddrInfo()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The scheme this build agrees on: the stream opens.
+	s, err := h.NewStream(ctx, sNode.AddrInfo().ID, BlockProtocol)
+	if err != nil {
+		t.Fatalf("matching key scheme %q was refused: %v", BlockProtocol, err)
+	}
+	_ = s.Close()
+
+	// A future scheme, connected to the same peer over the same open
+	// connection: refused before any request is made.
+	other := keelProtocol("block", "2.0.0", store.KeySchemeVersion+1)
+	if other == BlockProtocol {
+		t.Fatalf("the key scheme is not present in the protocol id %q", BlockProtocol)
+	}
+	if _, err := h.NewStream(ctx, sNode.AddrInfo().ID, other); err == nil {
+		t.Errorf("a node on key scheme %d served a peer on scheme %d",
+			store.KeySchemeVersion, store.KeySchemeVersion+1)
+	}
+
+	// The catalogue is partitioned by the same number, for the same reason.
+	otherCat := keelProtocol("catalogue", "1.0.0", store.KeySchemeVersion+1)
+	if _, err := h.NewStream(ctx, sNode.AddrInfo().ID, otherCat); err == nil {
+		t.Errorf("catalogue served across key schemes")
+	}
+
+	// The live index is deliberately NOT partitioned by key scheme: it is not
+	// bucketed, so a scheme bump must not cost it peers.
+	if strings.Contains(string(LiveSnapshotProtocol), "ks") {
+		t.Errorf("live snapshot protocol %q carries a key scheme it does not need",
+			LiveSnapshotProtocol)
 	}
 }

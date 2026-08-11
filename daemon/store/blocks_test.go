@@ -37,7 +37,9 @@ func seedEdge(t *testing.T, st *Store, from, to string, slot int) {
 	}
 }
 
-func openStore(t *testing.T, name string) *Store {
+// testing.TB rather than *testing.T so fuzz targets can use it too — *testing.F
+// satisfies the same interface.
+func openStore(t testing.TB, name string) *Store {
 	t.Helper()
 	st, err := Open(filepath.Join(t.TempDir(), name))
 	if err != nil {

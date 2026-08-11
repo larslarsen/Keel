@@ -539,6 +539,41 @@ function renderSwarm(sw) {
   parts.push(`${dht} DHT connection${dht === 1 ? "" : "s"} (network plumbing).`);
   if (sw.id) parts.push(`This node: ${String(sw.id).slice(-8)}`);
   row.textContent = parts.join(" ");
+  renderUpdateNotice(sw.versions);
+}
+
+/**
+ * Tell the user when the network has moved on without them (WO-061).
+ *
+ * Two different messages, because they need two different responses. A newer
+ * version among peers is worth knowing and can wait. Peers on a different key
+ * scheme cannot be exchanged with at all — that node is alone on the network
+ * however many peers it can see, and without this line the symptom is
+ * indistinguishable from nobody else being online (WO-058).
+ *
+ * Shown here rather than in the side panel on purpose: this is where network
+ * state lives, and the panel was decluttered for a reason (WO-041). Nothing is
+ * blocked either way — Keel's local recording and suggestions work whatever the
+ * rest of the network is running.
+ */
+function renderUpdateNotice(v) {
+  const row = document.getElementById("update-row");
+  if (!row) return;
+  if (!v || (!v.update_advised && !v.update_required)) {
+    row.hidden = true;
+    row.textContent = "";
+    return;
+  }
+  const latest = v.latest_seen ? ` (peers are on ${v.latest_seen})` : "";
+  row.hidden = false;
+  row.className = v.update_required ? "notice warn" : "notice";
+  row.textContent = v.update_required
+    ? `Most Keel nodes you can see are running an incompatible version${latest}. ` +
+      "They compute storage keys differently, so nothing can be exchanged with " +
+      "them until this copy is updated. Recording and your own suggestions are " +
+      "unaffected."
+    : `A newer Keel is out${latest}. Yours still works and still connects — ` +
+      "updating gets you whatever the newer version added.";
 }
 
 async function refreshConsent() {

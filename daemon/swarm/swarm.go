@@ -50,10 +50,10 @@ import (
 // BlockProtocol is the stream protocol for block requests. Versioned in the
 // name so a future incompatible shape can run alongside this one — the
 // extension is frozen, but the daemon is not, and peers will run old builds.
-const BlockProtocol = protocol.ID("/keel/block/2.0.0")
+var BlockProtocol = keelProtocol("block", "2.0.0", store.KeySchemeVersion)
 
 // CatalogueProtocol carries titles, which travel separately from the graph.
-const CatalogueProtocol = protocol.ID("/keel/catalogue/1.0.0")
+var CatalogueProtocol = keelProtocol("catalogue", "1.0.0", store.KeySchemeVersion)
 
 // maxBlockBytes bounds what a peer can make this node allocate. A block is one
 // video's neighbourhood — a few hundred edges — so anything approaching this is
@@ -92,6 +92,11 @@ type Store interface {
 
 // Config controls what a node offers and consumes.
 type Config struct {
+	// AppVersion is the daemon version announced to peers (WO-061). Empty
+	// means unknown, which peers treat as "not comparable" rather than as
+	// version zero — an unset field must never make everyone else look newer.
+	AppVersion string
+
 	// Serve advertises this node's blocks and answers requests. False at
 	// contribution Level 1, which offers nothing.
 	Serve bool
@@ -186,6 +191,10 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		// and hole punching to upgrade a relayed connection to a direct one.
 		libp2p.NATPortMap(),
 		libp2p.EnableRelay(),
+		// Announce what this build is, so peers can tell whether they are
+		// behind us or incompatible with us (WO-061). libp2p exchanges this on
+		// connect via identify, which is why there is no Keel handshake.
+		libp2p.UserAgent(AgentVersion(cfg.AppVersion)),
 		libp2p.EnableHolePunching(),
 		libp2p.EnableNATService(),
 	}
@@ -293,8 +302,25 @@ func (n *Node) Close() error {
 // Buckets rather than individual videos is the whole point: a provider record
 // says "this node holds something in bucket a3f", which thousands of videos
 // share, instead of naming a neighbourhood the node's user watched.
+// keelProtocol builds a stream protocol id carrying the key scheme (WO-060).
+//
+// Putting the scheme in the protocol id rather than in a handshake message is
+// what makes a mismatch fail structurally: libp2p refuses to open a stream for
+// a protocol the remote does not speak, so two nodes that derive keys
+// differently never exchange a byte. The alternative — connect, then compare
+// versions — has to be remembered at every call site, and the cost of
+// forgetting is the silent partition this whole file exists to prevent.
+//
+// The service version and the key scheme are separate numbers on purpose. A
+// change to what a block *contains* bumps the former; a change to how its key
+// is *derived* bumps the latter. They break compatibility for different
+// reasons and would otherwise be conflated.
+func keelProtocol(name, version string, scheme int) protocol.ID {
+	return protocol.ID(fmt.Sprintf("/keel/%s/%s/ks%d", name, version, scheme))
+}
+
 func prefixCID(prefix string) (cid.Cid, error) {
-	sum, err := mh.Sum([]byte("keel/prefix/1/"+prefix), mh.SHA2_256, -1)
+	sum, err := mh.Sum([]byte(fmt.Sprintf("%sks%d/%s", store.PrefixDomain, store.KeySchemeVersion, prefix)), mh.SHA2_256, -1)
 	if err != nil {
 		return cid.Undef, err
 	}

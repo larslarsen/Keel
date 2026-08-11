@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Open** |
+| **Status** | **Done** (2026-08-10) — key scheme versioned and carried in protocol ids; tokenizer/dictionary items land with WO-059 |
 | **Date** | 2026-08-08 |
 | **Source** | Lars, 2026-08-08 (P2P determinism discussion, WO-059 tokenizer) |
 
@@ -111,3 +111,46 @@ release, applied uniformly because it's compiled in.
 - [ ] Yield-gossip dictionary (word list + ordering) is a compile-time `const`,
       identical across all builds of a version; a dictionary change is a protocol
       version bump, not a per-node or negotiated choice.
+
+
+## What was built (2026-08-10)
+
+- `daemon/store/keyscheme.go` — `KeySchemeVersion`, plus every domain separator
+  that feeds a key derivation (`blockDomain`, `catalogueDomain`, `PrefixDomain`),
+  gathered in one file with the reasoning for why none of them is negotiated.
+- `daemon/swarm/swarm.go` — `keelProtocol(name, version, scheme)` builds
+  `/keel/block/2.0.0/ks1` and `/keel/catalogue/1.0.0/ks1`. The scheme rides in
+  the **protocol id**, not in a handshake message, so a mismatch fails when the
+  stream is opened rather than at every call site that someone might forget to
+  guard. Service version and key scheme are separate numbers: one changes when a
+  block's contents change, the other when its key derivation does.
+- The DHT provider domain now carries the scheme too, so provider records for
+  two schemes never collide.
+- **`LiveSnapshotProtocol` deliberately does not carry the scheme.** The live
+  index is not bucketed — entries are keyed by platform and video id — so a
+  scheme bump would partition the live mesh for no reason. Asserted in the test,
+  because the natural instinct on the next bump is to add it everywhere.
+- `daemon/store/keyscheme_test.go` — golden vectors pinning the actual digests
+  for scheme 1. This is the only thing that can catch the failure: changing a
+  domain string is valid Go, and every single-node test keeps passing because a
+  node always agrees with itself.
+- `daemon/swarm/swarm_test.go:TestDifferentKeySchemeCannotBeServed` — a bare
+  libp2p host connects to a serving node and is accepted on `ks1`, refused on
+  `ks2`, over the same connection.
+
+### Transition rule
+
+No migration is needed. Bucket keys are computed at request time and never
+persisted — there is no prefix column in SQLite — so a bump re-keys a node's
+whole view on the next advertisement. The cost of a bump is *peers*, not data:
+old-scheme nodes are on different protocol ids and unreachable. A release that
+cannot afford that can register handlers for both schemes for one window, which
+is only possible because keys are derived rather than stored. Documented in
+`keyscheme.go` alongside a warning against caching computed prefixes.
+
+### Not done here (belongs to WO-059)
+
+Tokenizer `k`, normalisation, letters-only, and the yield-gossip dictionary do
+not exist in code. `keyscheme.go` names them as the constants that must join the
+scheme when WO-059 is built, including why the dictionary's *ordering* is
+protocol state even though the dictionary never travels on the wire.

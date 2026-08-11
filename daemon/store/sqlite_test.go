@@ -1347,15 +1347,15 @@ func TestAnalysisTopChannelsUseName(t *testing.T) {
 	ctx := "ctxvid001"
 	// Same channel, two impressions, name present on both.
 	base := bridge.Impression{
-		PageLoadID:  "11111111-1111-4111-8111-111111111111",
-		ObservedAt:  time.Now().UnixMilli(),
-		Surface:     "WATCH_NEXT",
+		PageLoadID:     "11111111-1111-4111-8111-111111111111",
+		ObservedAt:     time.Now().UnixMilli(),
+		Surface:        "WATCH_NEXT",
 		ContextVideoID: &ctx,
-		VideoID:     "vidA",
-		ChannelID:   &ch,
-		ChannelName: &name,
-		Title:       "A video",
-		Badges:      []string{},
+		VideoID:        "vidA",
+		ChannelID:      &ch,
+		ChannelName:    &name,
+		Title:          "A video",
+		Badges:         []string{},
 	}
 	other := base
 	other.PageLoadID = "22222222-2222-4222-8222-222222222222"
@@ -1397,15 +1397,15 @@ func TestAnalysisTopChannelsNameFallback(t *testing.T) {
 	ch := "@norecordname"
 	ctx := "ctxvid002"
 	imp := bridge.Impression{
-		PageLoadID:  "11111111-1111-4111-8111-111111111111",
-		ObservedAt:  time.Now().UnixMilli(),
-		Surface:     "WATCH_NEXT",
+		PageLoadID:     "11111111-1111-4111-8111-111111111111",
+		ObservedAt:     time.Now().UnixMilli(),
+		Surface:        "WATCH_NEXT",
 		ContextVideoID: &ctx,
-		VideoID:     "vidX",
-		ChannelID:   &ch,
-		ChannelName: nil, // not a first-paint card
-		Title:       "A video",
-		Badges:      []string{},
+		VideoID:        "vidX",
+		ChannelID:      &ch,
+		ChannelName:    nil, // not a first-paint card
+		Title:          "A video",
+		Badges:         []string{},
 	}
 	if _, err := st.PutImpressions([]bridge.Impression{imp}); err != nil {
 		t.Fatal(err)

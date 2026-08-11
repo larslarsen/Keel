@@ -44,15 +44,15 @@ func ytID(seed int) string {
 // detects logical corruption of the min-StartedAt accumulation.
 func TestLiveIndexStressConcurrentMergeSearch(t *testing.T) {
 	li := &LiveIndex{
-		entries:    map[string]*liveEntry{},
+		entries:     map[string]*liveEntry{},
 		localSeenAt: map[string]int64{},
-		retired:    map[string]time.Time{},
-		logf:       func(string, ...any) {},
+		retired:     map[string]time.Time{},
+		logf:        func(string, ...any) {},
 	}
 	now := time.Now()
 
 	var mu sync.Mutex
-	seenStart := map[string]int64{} // key -> min StartedAt we've sent
+	seenStart := map[string]int64{}  // key -> min StartedAt we've sent
 	seenSeenAt := map[string]int64{} // key -> max SeenAt we've sent
 	var panics int64
 

@@ -2,6 +2,7 @@
 package store
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/keel-app/keel/daemon/bridge"
@@ -111,4 +112,83 @@ func TestImportBlockRejectsForged(t *testing.T) {
 			t.Errorf("case %d: forged/unsigned block was merged", i)
 		}
 	}
+}
+
+// FuzzBlocksInPrefix fuzzes the bucket-serving path (WO-062 §1).
+//
+// The prefix in a peer's request is fully attacker-controlled: it arrives over
+// the wire from a stranger and is parsed before anything else happens. A
+// malformed one must produce an error, never a panic that takes the daemon down
+// — a node that can be crashed by one request is a node anyone can remove from
+// the network.
+func FuzzBlocksInPrefix(f *testing.F) {
+	f.Add("12:35f0")
+	f.Add("8:35")
+	f.Add("")
+	f.Add(":")
+	f.Add("12:")
+	f.Add("0:00")
+	f.Add("65:ffff")
+	f.Add("-1:ff")
+	f.Add("12:zzzz")
+	f.Add("99999999999999999999:ff")
+
+	st := openStore(f, "fuzz-prefix.sqlite")
+	ctx := "seedaaaaaaa"
+	if _, err := st.PutImpressions([]bridge.Impression{{
+		PageLoadID: "33333333-3333-4333-8333-333333333333",
+		ObservedAt: 1, Surface: "WATCH_NEXT",
+		ContextVideoID: &ctx, SlotIndex: 0, VideoID: "targetaaaa1", Title: "t",
+	}}); err != nil {
+		f.Fatal(err)
+	}
+
+	f.Fuzz(func(t *testing.T, prefix string) {
+		blocks, err := st.BlocksInPrefix(prefix, "", false, 8)
+		if err != nil {
+			return
+		}
+		// A prefix good enough to serve must be good enough to parse back, or
+		// the node is answering under a key it could not itself request.
+		if _, ok := PrefixOf(prefix); !ok {
+			t.Fatalf("served %d blocks for prefix %q that PrefixOf rejects",
+				len(blocks), prefix)
+		}
+		if len(blocks) > 8 {
+			t.Fatalf("limit of 8 returned %d blocks", len(blocks))
+		}
+	})
+}
+
+// FuzzImportCataloguePack fuzzes the other thing a stranger can hand us.
+//
+// Same contract as FuzzImportBlock: garbage in must mean an error out, and
+// anything accepted must leave the store usable afterwards.
+func FuzzImportCataloguePack(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("{}"))
+	f.Add([]byte(`{"schema":1}`))
+	f.Add([]byte(`{"schema":1,"entries":[]}`))
+	f.Add([]byte(`{"schema":999,"entries":[{"video_id":"aaaaaaaaaaa"}]}`))
+	f.Add(bytes.Repeat([]byte("\x00"), 64))
+
+	// One store for the whole run, not one per input. A fresh SQLite file per
+	// iteration caps throughput at a few dozen executions a second, which is far
+	// too slow for fuzzing to reach anything interesting. Sharing it also tests
+	// the more realistic case: importing into a store that already holds data.
+	st := openStore(f, "fuzz-cat.sqlite")
+
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		n, err := st.ImportCataloguePack(raw)
+		if err != nil {
+			return
+		}
+		if n < 0 {
+			t.Fatalf("imported a negative number of entries: %d", n)
+		}
+		// Whatever was accepted, the store must still answer afterwards.
+		if _, err := st.ListQueue(); err != nil {
+			t.Fatalf("store unusable after importing %d entries: %v", n, err)
+		}
+	})
 }
