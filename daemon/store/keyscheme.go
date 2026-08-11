@@ -43,18 +43,23 @@
 // one afterwards — serving both is possible precisely because keys are derived
 // rather than stored, so a node can answer under either.
 //
-// # What joined this file for WO-059, and what still hasn't
+// # What joined this file for WO-059 and WO-067
 //
-// ShardK, ShardM and shardDomain below are the tokenizer/shard half of what
-// this comment used to only earmark — peers must tokenize a title and group
+// ShardK, ShardM and shardDomain are the tokenizer/shard half of what this
+// comment used to only earmark — peers must tokenize a title and group
 // tokens into shards identically, or a shard fetched from one node never
 // matches what another node would have answered.
 //
-// Still missing: the yield-gossip dictionary's word list *and its ordering*
-// (WO-067) — the yield vector is one bit per dictionary position, so a
-// reordered dictionary makes bit N mean something different on each node. The
-// dictionary never travels on the wire, which is exactly why it has to be
-// identical off it.
+// TokenDictAlphabet/TokenDictSize (WO-067) name every token by a fixed
+// integer index instead of shipping a wordlist: the dictionary earlier
+// drafts of this file earmarked turned out not to need one — see
+// tokendict.go — because a base-27 positional encoding over the tokenizer's
+// own alphabet gives every possible ShardK-length token a bit position by
+// construction, identical on every node, with nothing to keep in sync or
+// send on the wire. YieldThreshold and TokenSketchP are the two other
+// WO-067 constants two nodes must agree on to interpret each other's gossip:
+// a yield bit or a merged sketch means something different at a different
+// threshold or precision.
 package store
 
 // KeySchemeVersion is the version of the whole set of constants below.
@@ -118,3 +123,42 @@ const ShardM = 256
 // holds. Exported because the announcement is made in the swarm package, while
 // the bucket it names is computed here — and the two must not drift apart.
 const PrefixDomain = "keel/prefix/1/"
+
+// TokenDictAlphabet is every character a token can contain: space plus
+// a-z, in this exact order. Index 0 is space. tokendict.go's TokenDictIndex
+// uses this ordering to compute a token's bit/slot position by base-27
+// positional encoding — reordering this string changes what every existing
+// index means, exactly like reordering a shipped wordlist would, so it is
+// version-locked the same way.
+const TokenDictAlphabet = " abcdefghijklmnopqrstuvwxyz"
+
+// TokenDictSize is the number of distinct ShardK-length tokens over
+// TokenDictAlphabet: len(TokenDictAlphabet)^ShardK = 27^3 = 19,683. Every
+// token, whether or not it ever actually occurs in any title, has exactly
+// one index in [0, TokenDictSize).
+const TokenDictSize = 27 * 27 * 27
+
+// YieldVectorBytes is the wire/storage size of one full yield vector: one
+// bit per dictionary entry, rounded up to a whole byte.
+const YieldVectorBytes = (TokenDictSize + 7) / 8
+
+// YieldThreshold is the minimum fraction of a token's shard that a node's
+// own held videos must cover before it gossips "worth fetching" for that
+// token (WO-067's yield vector). 10% — one of the doc's own example values
+// ("top 50%/10%/80%"), chosen as a middle point: high enough that a
+// yield-of-1 flag is a real, useful screen (a peer holding a token count
+// under a tenth of its shard is rarely worth a full shard download over a
+// peer holding more), low enough that it does not disqualify most peers
+// with genuinely useful, if partial, coverage.
+const YieldThreshold = 0.10
+
+// TokenSketchP is the HyperLogLog precision (register-index width, see
+// sketch.go) used for gossiped per-token cardinality sketches — deliberately
+// smaller than sketchP (=14, ~16KB, built for WO-052's network-size
+// estimate). At P=8, a sketch is 256 registers (~256 bytes) with ~1.04/√256
+// ≈ 6.5% standard error — plenty for "roughly how many, worth continuing to
+// search," which is what a search's stop condition and coverage bar need,
+// not a billing-grade count. Sketch.Merge requires equal P on both sides
+// (sketch.go), so this has to be one number every node agrees on, not a
+// per-node choice.
+const TokenSketchP = 8

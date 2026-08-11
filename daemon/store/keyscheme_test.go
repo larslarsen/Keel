@@ -74,4 +74,19 @@ func TestKeySchemeGoldenVectors(t *testing.T) {
 	if ShardM != 256 {
 		t.Errorf("ShardM = %d, want 256 for key scheme 1", ShardM)
 	}
+	if TokenDictAlphabet != " abcdefghijklmnopqrstuvwxyz" {
+		t.Errorf("TokenDictAlphabet = %q — every token index moves; bump KeySchemeVersion", TokenDictAlphabet)
+	}
+	if TokenDictSize != 19683 {
+		t.Errorf("TokenDictSize = %d, want 19683 (27^3) for key scheme 1", TokenDictSize)
+	}
+	if YieldVectorBytes != 2461 {
+		t.Errorf("YieldVectorBytes = %d, want 2461 (ceil(19683/8)) for key scheme 1", YieldVectorBytes)
+	}
+	if YieldThreshold != 0.10 {
+		t.Errorf("YieldThreshold = %v, want 0.10 for key scheme 1", YieldThreshold)
+	}
+	if TokenSketchP != 8 {
+		t.Errorf("TokenSketchP = %d, want 8 for key scheme 1", TokenSketchP)
+	}
 }

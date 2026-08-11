@@ -26,6 +26,7 @@ package swarm
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,6 +36,8 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -98,6 +101,9 @@ type Store interface {
 	ShardSlice(shard int, mirrorOnly bool) ([]store.ShardEntry, error)
 	LocalShards(mirrorOnly bool) ([]int, error)
 	BuildShardPack(shard int, mirrorOnly bool, limit int) (*store.ShardPack, error)
+	// LocalYieldVector backs yield-vector gossip (WO-067) — see
+	// daemon/swarm/yield.go.
+	LocalYieldVector(mirrorOnly bool) ([]byte, error)
 }
 
 // Config controls what a node offers and consumes.
@@ -158,7 +164,41 @@ type Node struct {
 	mu       sync.Mutex
 	inflight map[string]chan struct{} // dedupes concurrent fetches of one key
 
-	live *LiveIndex
+	// ps is the one gossipsub instance this node runs. libp2p-pubsub is one
+	// instance per host with many topics joined on it, not one instance per
+	// topic — a second independent pubsub.NewGossipSub call on the same host
+	// would silently break the first by re-registering its stream handler.
+	// live/yield/sketch all join their own topic on this shared instance
+	// (see newPubSub below and each subsystem's start* function). Nil if
+	// construction failed at Start — each subsystem treats that as
+	// "unavailable", the same non-fatal handling Start already gives a
+	// failed startLive.
+	ps *pubsub.PubSub
+
+	live  *LiveIndex
+	yield *YieldIndex
+}
+
+// newPubSub constructs the one gossipsub instance every gossip topic in this
+// package joins. Pulled out of live.go, which used to build its own —
+// options unchanged from what startLive always used.
+func newPubSub(ctx context.Context, h host.Host) (*pubsub.PubSub, error) {
+	return pubsub.NewGossipSub(ctx, h,
+		// No signature and no author: none of live/yield/sketch's messages
+		// should name whoever published them — see live.go's package doc for
+		// why that matters for the live index specifically, and the same
+		// reasoning applies to yield/sketch: a searching node's own gossip
+		// activity must not become a second identity.
+		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
+		pubsub.WithNoAuthor(),
+		// Required once messages have no author, since the default id is
+		// sender plus sequence number. Hashing the payload also makes
+		// identical messages collapse into one, network-wide.
+		pubsub.WithMessageIdFn(func(m *pb.Message) string {
+			sum := sha256.Sum256(m.Data)
+			return string(sum[:])
+		}),
+	)
 }
 
 func (n *Node) logf(format string, args ...any) {
@@ -261,10 +301,23 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		}
 	}
 
+	if ps, err := newPubSub(ctx, h); err != nil {
+		// All of live/yield/sketch ride this one instance; losing it means
+		// losing all three gossip subsystems, not the node — blocks,
+		// catalogue and shard fetch/serve never touch pubsub.
+		n.logf("pubsub unavailable, gossip subsystems disabled: %v", err)
+	} else {
+		n.ps = ps
+	}
+
 	if err := n.startLive(ctx); err != nil {
 		// The live index is additive: without it the rest of the node works.
 		n.logf("live index unavailable: %v", err)
 	}
+	if err := n.startYield(ctx); err != nil {
+		n.logf("yield gossip unavailable: %v", err)
+	}
+	// startSketch is wired in once Build 3 (token-sketch gossip) lands.
 
 	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Serve)
 	for _, a := range h.Addrs() {

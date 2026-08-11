@@ -45,8 +45,8 @@ package swarm
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -55,7 +55,6 @@ import (
 
 	"github.com/keel-app/keel/daemon/store"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -209,29 +208,15 @@ type LiveIndex struct {
 // that is a fair bargain, and it is intrinsic to gossip rather than a policy
 // choice.
 func (n *Node) startLive(ctx context.Context) error {
-	ps, err := pubsub.NewGossipSub(ctx, n.host,
-		// No signature and no author: a report must not name whoever saw the
-		// stream. Neighbours cannot distinguish originating from forwarding, so
-		// publishing discloses nothing and needs no contribution gate.
-		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
-		pubsub.WithNoAuthor(),
-		// Required once messages have no author, since the default id is
-		// sender plus sequence number. Hashing the payload also makes identical
-		// reports collapse into one message network-wide.
-		pubsub.WithMessageIdFn(func(m *pb.Message) string {
-			sum := sha256.Sum256(m.Data)
-			return string(sum[:])
-		}),
-	)
-	if err != nil {
-		return err
+	if n.ps == nil {
+		return fmt.Errorf("pubsub not available")
 	}
 	// Reject junk before it reaches any subscriber, so a malformed flood costs
 	// the network one hop rather than propagating.
-	if err := ps.RegisterTopicValidator(LiveTopic, validateLiveMessage); err != nil {
+	if err := n.ps.RegisterTopicValidator(LiveTopic, validateLiveMessage); err != nil {
 		return err
 	}
-	topic, err := ps.Join(LiveTopic)
+	topic, err := n.ps.Join(LiveTopic)
 	if err != nil {
 		return err
 	}

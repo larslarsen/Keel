@@ -203,6 +203,14 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
 			continue
 		}
+		// Yield screening (WO-067): a known-low-yield peer is skipped before
+		// spending a full shard fetch on it. Unknown (no gossip received yet
+		// from this peer) behaves exactly as before yield gossip existed —
+		// try it; the screen only ever removes candidates it has positive
+		// evidence against, never candidates it merely hasn't heard about.
+		if yield, known := n.yieldGet(p.ID, token); known && !yield {
+			continue
+		}
 		raw, err := n.requestOn(ctx, p, fmt.Sprintf("%d", shard), ShardProtocol)
 		if err != nil {
 			continue
