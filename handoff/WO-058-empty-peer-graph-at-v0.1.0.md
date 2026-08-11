@@ -72,12 +72,20 @@ remaining gap; it is narrower than the original WO-058 framed it.
 2. **Either bootstrap a seed or rename the level.** Options were: (a) publish
    one seed, disclosing one person's funnel as a labelled bootstrap, or
    (b) narrow Level 2's promise in copy to "lend bandwidth for when a graph
-   exists." **Decided 2026-08-11 (Lars): neither — rely on WO-059's
-   self-healing instead.** No seed will be built or published. A node's graph
-   widens gradually as a side effect of ordinary search use, network-wide,
+   exists." **Decided 2026-08-11 (Lars): neither, for now — rely on WO-059's
+   self-healing instead.** No seed will be built or published today. A node's
+   graph widens gradually as a side effect of ordinary search use, network-wide,
    with nobody disclosing anything beyond what search already discloses.
    Copy across README/consent/page now says this explicitly rather than
    leaving the first-run empty-suggestions experience unexplained.
+
+   **Revisit later (Lars, 2026-08-11):** once real usage has accumulated a body
+   of incidental search-bucket data (graph edges cached as a side effect of
+   people searching), a seed built from *that* — rather than from one person's
+   deliberately-disclosed funnel — becomes a cheaper, less-disclosing bootstrap
+   option than option (a) ever was. Not actionable yet; there is no usage to
+   draw it from. Worth remembering as the network grows rather than
+   re-deciding from scratch.
 3. **Decide the real exchange path.** §7.3 already says bundles ship over
    Zenodo/GitHub/Archive (central HTTPS), not the swarm. The swarm is a
    supplement for the tail + livestreams, and the tail needs PIR to be private
