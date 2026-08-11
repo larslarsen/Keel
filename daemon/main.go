@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
@@ -98,7 +99,25 @@ func main() {
 		}
 	}()
 
-	run(os.Stdin, os.Stdout, st)
+	// Wrapped rather than passed raw: WO-069 moves slow handlers (SUGGEST) onto
+	// their own goroutine so they no longer block the single bridge thread, which
+	// means more than one goroutine can now be mid-write to stdout at once. A
+	// length-prefixed frame torn by an interleaved write is a corrupted stream,
+	// not just a corrupted message — every writer needs the same lock.
+	run(os.Stdin, &syncWriter{w: os.Stdout}, st)
+}
+
+// syncWriter serializes writes from multiple goroutines onto one underlying
+// writer. See the comment above main's run() call for why this exists.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 func run(in io.Reader, out io.Writer, st *store.Store) {
@@ -688,7 +707,31 @@ func wordStatsFromLocal(query string, local *store.WordTelemetry, st *store.Stor
 	return out
 }
 
+// suggestTimeout bounds one SUGGEST computation, safely under the
+// extension's 8s client-side request timeout (extension/lib/native.js
+// request(), default 8000ms). WO-069: direct benchmarking of SuggestOn found
+// it fast in every case tried (microseconds on an empty DB, under a
+// millisecond on a synthetic ~40k-edge graph) — the ticket's specific claim
+// that the graph walk itself blocks for seconds on a cold DB did not
+// reproduce, so the real trigger for the reported timeout is still unknown.
+// This guard, and moving the handler off the bridge thread below, are
+// defensive regardless of that: they stop a genuinely slow or hung call from
+// starving the single native-messaging pipe (nothing else could be answered
+// until it returned) and from silently outliving the client's own timeout
+// with no server-side signal.
+const suggestTimeout = 6 * time.Second
+
 // handleSuggest ranks the co-recommendation graph (WO-023). Read-only.
+//
+// Runs on its own goroutine (WO-069): the native-messaging bridge reads and
+// processes one message at a time (see run()), so a synchronous handler here
+// blocked every other RPC — including a cheap STATS or HELLO — for as long as
+// this one took. Returning nil immediately and replying from the goroutine
+// once done (or once suggestTimeout fires, whichever is first) frees the
+// bridge thread to keep reading. main() wraps stdout in syncWriter for
+// exactly this: replies can now arrive out of request order and from more
+// than one goroutine at once, and the underlying writer needs serializing to
+// keep frames from interleaving.
 func handleSuggest(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	var p bridge.SuggestPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -697,35 +740,61 @@ func handleSuggest(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 			Code:    "bad_payload",
 		})
 	}
-	// Hand the store whatever the swarm currently believes is live, so the walk
-	// can rank running streams first. Local LIVE badges cover the no-peers case
-	// on their own; this adds streams other people are seeing.
-	if swarmNode != nil && swarmNode.Live() != nil {
-		entries := swarmNode.Live().Search("", 5000)
-		// The index deliberately keeps records for hours, so a stream can still
-		// be found after it ends. Promoting one to the top of the panel is a
-		// stronger claim than listing it, so only recent sightings qualify.
-		cutoff := time.Now().Add(-store.LiveRecency).UnixMilli()
-		ids := make([]string, 0, len(entries))
-		for _, e := range entries {
-			// SeenAt, not LastSeen. LastSeen is when gossip about this stream
-			// last arrived, and records are re-announced as they age, so a
-			// stream that ended hours ago keeps a warm LastSeen for as long as
-			// anyone is still passing it around. Promoting on that put
-			// six-hour-old streams at the top of the panel while the stated
-			// rule was one hour.
-			if e.SeenAt >= cutoff {
-				ids = append(ids, e.VideoID)
-			}
-		}
-		st.SetLiveVideos(ids)
-	}
 
-	res, err := st.SuggestOn(p.Platform, p.SeedVideoID, p.Entropy, p.Limit)
-	if err != nil {
-		return replyErr(out, env.ID, err)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Hand the store whatever the swarm currently believes is live, so the
+		// walk can rank running streams first. Local LIVE badges cover the
+		// no-peers case on their own; this adds streams other people are seeing.
+		if swarmNode != nil && swarmNode.Live() != nil {
+			entries := swarmNode.Live().Search("", 5000)
+			// The index deliberately keeps records for hours, so a stream can
+			// still be found after it ends. Promoting one to the top of the
+			// panel is a stronger claim than listing it, so only recent
+			// sightings qualify.
+			cutoff := time.Now().Add(-store.LiveRecency).UnixMilli()
+			ids := make([]string, 0, len(entries))
+			for _, e := range entries {
+				// SeenAt, not LastSeen. LastSeen is when gossip about this
+				// stream last arrived, and records are re-announced as they
+				// age, so a stream that ended hours ago keeps a warm LastSeen
+				// for as long as anyone is still passing it around. Promoting
+				// on that put six-hour-old streams at the top of the panel
+				// while the stated rule was one hour.
+				if e.SeenAt >= cutoff {
+					ids = append(ids, e.VideoID)
+				}
+			}
+			st.SetLiveVideos(ids)
+		}
+
+		res, err := st.SuggestOn(p.Platform, p.SeedVideoID, p.Entropy, p.Limit)
+		if err != nil {
+			_ = replyErr(out, env.ID, err)
+			return
+		}
+		_ = reply(out, env.ID, "SUGGEST_RESULT", res)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(suggestTimeout):
+		// The goroutine above is not canceled — SuggestOn takes no context,
+		// so there is nothing to signal it with — it keeps running and its
+		// eventual reply is simply a second write under the same
+		// correlation id, which the client has already stopped listening
+		// for. Replying now, rather than leaving the client to hit its own
+		// 8s timeout with no daemon-side signal at all, is the actual fix:
+		// the client gets a clean, attributable error before its own timer
+		// fires instead of a bare "timeout" with nothing behind it.
+		log.Printf("SUGGEST %s exceeded %v, replying with timeout rather than blocking further", env.ID, suggestTimeout)
+		_ = reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: fmt.Sprintf("suggestion walk exceeded %v", suggestTimeout),
+			Code:    "suggest_timeout",
+		})
 	}
-	return reply(out, env.ID, "SUGGEST_RESULT", res)
+	return nil
 }
 
 // cohortFromEnv returns the coarse cohort for measurement tuples.
