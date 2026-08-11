@@ -56,13 +56,21 @@ func (s *Store) SetDiskBudget(bytes int64) (int64, error) {
 		metaBudgetKey, strconv.FormatInt(bytes, 10)); err != nil {
 		return 0, err
 	}
-	return bytes, s.evictThumbnails(bytes)
+	return bytes, s.evictCache(bytes)
 }
 
-// CacheUsage reports current cache size and item count.
+// CacheUsage reports current cache size and item count, across every
+// evictable resource under the disk-budget slider — thumbnails and, since
+// WO-067, gossiped token sketches. Both are refetchable (the CDN refills a
+// dropped thumbnail, gossip refills a dropped sketch), which is what makes
+// them evictable at all; nothing here is observation data.
 func (s *Store) CacheUsage() (bytes int64, items int64, err error) {
-	err = s.db.QueryRow(
-		`SELECT COALESCE(SUM(size), 0), COUNT(*) FROM thumbnails`).Scan(&bytes, &items)
+	err = s.db.QueryRow(`
+SELECT COALESCE(SUM(size), 0), COUNT(*) FROM (
+  SELECT size FROM thumbnails
+  UNION ALL
+  SELECT size FROM token_sketches
+)`).Scan(&bytes, &items)
 	return
 }
 
@@ -97,7 +105,7 @@ ON CONFLICT(video_id) DO UPDATE SET
 		videoID, raw, len(raw), now, now); err != nil {
 		return "", err
 	}
-	if err := s.evictThumbnails(s.DiskBudget()); err != nil {
+	if err := s.evictCache(s.DiskBudget()); err != nil {
 		return "", err
 	}
 	return dataURL(raw), nil
@@ -132,12 +140,17 @@ func fetchThumbnail(videoID string) ([]byte, error) {
 	return b, nil
 }
 
-// evictThumbnails drops least-recently-used entries until under budget.
+// evictCache drops least-recently-used entries, across every evictable
+// table sharing the budget, until under it.
 //
 // Only the cache is evictable. Observations are never touched here — that
 // distinction is the whole reason the budget exists as a space limit rather
-// than the time-based retention that was deliberately removed.
-func (s *Store) evictThumbnails(budget int64) error {
+// than the time-based retention that was deliberately removed. A single
+// merged LRU ordering across thumbnails and token_sketches (rather than,
+// say, always draining one table before the other) is what makes "the
+// budget" mean one number a user sets once, instead of two they'd have to
+// reason about separately.
+func (s *Store) evictCache(budget int64) error {
 	total, _, err := s.CacheUsage()
 	if err != nil {
 		return err
@@ -145,19 +158,22 @@ func (s *Store) evictThumbnails(budget int64) error {
 	if total <= budget {
 		return nil
 	}
-	rows, err := s.db.Query(
-		`SELECT video_id, size FROM thumbnails ORDER BY last_used_at ASC`)
+	rows, err := s.db.Query(`
+SELECT 'thumb' AS kind, video_id AS id, size, last_used_at FROM thumbnails
+UNION ALL
+SELECT 'sketch' AS kind, CAST(token_index AS TEXT) AS id, size, last_used_at FROM token_sketches
+ORDER BY last_used_at ASC`)
 	if err != nil {
 		return err
 	}
 	type victim struct {
-		id   string
-		size int64
+		kind, id string
+		size     int64
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
-		if err := rows.Scan(&v.id, &v.size); err != nil {
+		if err := rows.Scan(&v.kind, &v.id, &v.size, new(int64)); err != nil {
 			rows.Close()
 			return err
 		}
@@ -171,7 +187,16 @@ func (s *Store) evictThumbnails(budget int64) error {
 		if total <= budget {
 			break
 		}
-		if _, err := s.db.Exec(`DELETE FROM thumbnails WHERE video_id = ?`, v.id); err != nil {
+		var q string
+		switch v.kind {
+		case "thumb":
+			q = `DELETE FROM thumbnails WHERE video_id = ?`
+		case "sketch":
+			q = `DELETE FROM token_sketches WHERE token_index = ?`
+		default:
+			continue
+		}
+		if _, err := s.db.Exec(q, v.id); err != nil {
 			return err
 		}
 		total -= v.size

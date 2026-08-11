@@ -80,7 +80,11 @@ func TestYieldGetUnknownBeforeAnyGossip(t *testing.T) {
 	}
 	defer n.Close()
 
-	yield, known := n.yieldGet(n.host.ID(), " rec")
+	// " re" (3 chars) is a real ShardK-length token — using anything else
+	// would pass for the wrong reason: TokenDictIndex rejects a mis-length
+	// string regardless of gossip state, which would make this test true
+	// vacuously rather than because no vector has arrived yet.
+	yield, known := n.yieldGet(n.host.ID(), " re")
 	if known {
 		t.Error("yieldGet reported known=true for a peer that never gossiped anything")
 	}

@@ -127,6 +127,41 @@ func TestSketchRejectsMismatch(t *testing.T) {
 	}
 }
 
+// TestSketchPAtNonDefaultPrecision is WO-067's reason NewSketchP exists:
+// Add previously hardcoded the package's sketchP constant for its bit
+// arithmetic regardless of the instance's own P, which panicked (index out
+// of range) the moment a sketch was built at any other precision — dormant
+// until TokenSketchP gave this a second precision to run at. Covers the bug
+// directly: build, populate and estimate a sketch at TokenSketchP, smaller
+// than the package default.
+func TestSketchPAtNonDefaultPrecision(t *testing.T) {
+	sk := NewSketchP(KindToken, TokenSketchP)
+	if got, want := len(sk.Registers), 1<<TokenSketchP; got != want {
+		t.Fatalf("NewSketchP(_, %d) has %d registers, want %d", TokenSketchP, got, want)
+	}
+	const n = 500
+	for i := 0; i < n; i++ {
+		sk.Add(fmt.Sprintf("video%06d", i))
+	}
+	// TokenSketchP is deliberately low-precision (~6.5% standard error) —
+	// a generous tolerance here is the point, not a weak test.
+	if e := relErr(sk.Count(), n); e > 0.20 {
+		t.Errorf("n=%d at P=%d: estimated %d, off by %.1f%%", n, TokenSketchP, sk.Count(), e*100)
+	}
+}
+
+// TestSketchMergeRequiresEqualPrecision: two sketches of the same Kind but
+// different P must not merge — Merge already checks len(Registers), this
+// pins that a TokenSketchP sketch specifically cannot merge against a
+// default-precision one of a hypothetical matching kind.
+func TestSketchMergeRequiresEqualPrecision(t *testing.T) {
+	small := NewSketchP(KindToken, TokenSketchP)
+	big := NewSketchP(KindToken, sketchP)
+	if err := small.Merge(big); err == nil {
+		t.Fatal("merging sketches of different precision was allowed")
+	}
+}
+
 // TestSketchRevealsNoMembership is the privacy claim, asserted rather than
 // asserted-in-a-comment: a populated sketch must not contain any key it was
 // given, so possessing one cannot leak what a node watched.

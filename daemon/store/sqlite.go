@@ -243,6 +243,24 @@ CREATE TABLE IF NOT EXISTS thumbnails (
   last_used_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_thumb_lru ON thumbnails(last_used_at);
+-- Gossiped per-token cardinality sketches (WO-067) — the local half of the
+-- distributed search's global-count mechanism. Evictable under the same
+-- disk budget as thumbnails, not because it is observation data (it is
+-- not — see sketch.go's doc comment on why a sketch cannot be enumerated or
+-- tested for membership) but because it is refetchable: gossip refills it,
+-- the same way the CDN refills a dropped thumbnail.
+CREATE TABLE IF NOT EXISTS token_sketches (
+  token_index INTEGER PRIMARY KEY,
+  p INTEGER NOT NULL,
+  registers BLOB NOT NULL,
+  size INTEGER NOT NULL,
+  last_observed INTEGER,
+  last_observed_at INTEGER,
+  due_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_token_sketches_lru ON token_sketches(last_used_at);
+CREATE INDEX IF NOT EXISTS idx_token_sketches_due ON token_sketches(due_at);
 CREATE TABLE IF NOT EXISTS channel_blocklist (
   channel_id TEXT PRIMARY KEY,
   blocked_at INTEGER NOT NULL

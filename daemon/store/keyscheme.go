@@ -96,7 +96,7 @@ const (
 // ShardK is the tokenizer's fixed window width: every text is normalized
 // (lowercased, non-letters collapsed to single spaces, padded with a leading
 // and trailing space) and then sliced into every consecutive ShardK-character
-// run, e.g. " rec" from " recommendation " — a plain fixed-size sliding
+// run, e.g. " re" from " recommendation " — a plain fixed-size sliding
 // window over space-including text, not a per-word scheme. See
 // daemon/store/shard.go's tokenize doc comment for the exact algorithm.
 //

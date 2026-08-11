@@ -62,6 +62,13 @@ const (
 	// KindTuple counts distinct §6.2 measurement tuples, including surface,
 	// slot bucket, day bucket and cohort.
 	KindTuple SketchKind = "tuple"
+	// KindToken counts distinct video ids matching one search token, gossiped
+	// (WO-067) to approximate a global per-keyword count without any node
+	// asking another "how many for token K" — see sketch_store.go. Built at
+	// TokenSketchP, not sketchP: WO-052's precision is overkill (and far too
+	// large to gossip one sketch per token) for a "roughly how many, worth
+	// continuing to search" signal.
+	KindToken SketchKind = "token"
 )
 
 // Sketch is a HyperLogLog over observation keys.
@@ -74,9 +81,19 @@ type Sketch struct {
 	Encoded string `json:"registers"`
 }
 
-// NewSketch returns an empty sketch.
+// NewSketch returns an empty sketch at the package's default precision
+// (sketchP=14), used by the WO-052 edge/tuple network-size estimate.
 func NewSketch(kind SketchKind) *Sketch {
-	return &Sketch{Kind: kind, P: sketchP, Registers: make([]byte, sketchM)}
+	return NewSketchP(kind, sketchP)
+}
+
+// NewSketchP returns an empty sketch at an explicit precision. Merge
+// requires both sides to share P (and therefore register count) exactly, so
+// two sketches of the same Kind gossiped or compared across nodes must all
+// be built at the same, network-agreed P — a per-node choice would silently
+// make Merge start failing between nodes that picked differently.
+func NewSketchP(kind SketchKind, p uint8) *Sketch {
+	return &Sketch{Kind: kind, P: p, Registers: make([]byte, 1<<p)}
 }
 
 // Add records one key.
@@ -97,8 +114,13 @@ func (sk *Sketch) Add(key string) {
 	x ^= x >> 33
 
 	// Top P bits choose the register; the rest supplies the leading-zero run.
-	idx := x >> (64 - sketchP)
-	rest := x<<sketchP | (1 << (sketchP - 1)) // sentinel bit bounds the run
+	// Uses this instance's own P, not the package's sketchP default — a
+	// sketch built by NewSketchP at a different precision (WO-067's
+	// TokenSketchP) has fewer registers than sketchP would index into, and
+	// using the wrong shift here would either index out of range or leave
+	// most of a smaller register array untouched.
+	idx := x >> (64 - sk.P)
+	rest := x<<sk.P | (1 << (sk.P - 1)) // sentinel bit bounds the run
 	rank := uint8(bits.LeadingZeros64(rest)) + 1
 	if rank > sk.Registers[idx] {
 		sk.Registers[idx] = rank
