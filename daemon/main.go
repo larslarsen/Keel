@@ -161,6 +161,8 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		return handleWipe(env, out, st)
 	case "SEARCH":
 		return handleSearch(env, out, st)
+	case "PEER_SEARCH":
+		return handlePeerSearch(env, out, st)
 	case "SUGGEST":
 		return handleSuggest(env, out, st)
 	case "EXPORT_BUNDLE":
@@ -559,6 +561,48 @@ func handleSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 		return replyErr(out, env.ID, err)
 	}
 	return reply(out, env.ID, "SEARCH_RESULT", res)
+}
+
+// peerSearchTimeout bounds one PEER_SEARCH request. Unlike Prewarm, this is
+// user-triggered and answered synchronously over the bridge, so it needs its
+// own bound rather than running in the background indefinitely.
+const peerSearchTimeout = 30 * time.Second
+
+// handlePeerSearch searches the swarm's token shards for a query (WO-059),
+// distinct from handleSearch's purely local catalogue lookup.
+func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	var p bridge.SearchPayload
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "invalid PEER_SEARCH payload",
+			Code:    "bad_payload",
+		})
+	}
+	if swarmNode == nil {
+		// Mirrors handleLiveSearch: no swarm running means unavailable, not
+		// an empty result — the interface must not read this as "the network
+		// has nothing for this query."
+		return reply(out, env.ID, "PEER_SEARCH_RESULT", bridge.PeerSearchResultPayload{
+			Query: p.Query, Hits: []bridge.SearchHit{}, Available: false,
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), peerSearchTimeout)
+	defer cancel()
+	ids, err := swarmNode.PeerSearch(ctx, p.Query)
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	hits, err := st.TitlesFor(ids)
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	if p.Limit > 0 && len(hits) > p.Limit {
+		hits = hits[:p.Limit]
+	}
+	return reply(out, env.ID, "PEER_SEARCH_RESULT", bridge.PeerSearchResultPayload{
+		Query: p.Query, Hits: hits, Available: true,
+	})
 }
 
 // handleSuggest ranks the co-recommendation graph (WO-023). Read-only.

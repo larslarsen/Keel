@@ -290,6 +290,23 @@ type SearchResultPayload struct {
 	Truncated bool        `json:"truncated"`
 }
 
+// PeerSearchResultPayload is PEER_SEARCH_RESULT body (WO-059).
+//
+// A separate type from SearchResultPayload, not a shared one, because the
+// two searches answer different questions: SEARCH is what this device has
+// already seen, PEER_SEARCH is what the network holds regardless of local
+// history. Reusing SearchHit's shape keeps the panel's existing render path
+// usable for both; Total/Truncated are absent because peer search has no
+// single-source count to report — see Available.
+type PeerSearchResultPayload struct {
+	Query string      `json:"query"`
+	Hits  []SearchHit `json:"hits"`
+	// Available is false when the swarm isn't running or fetching is off
+	// (contribution Level 1) — distinct from a true empty result, so the
+	// interface can say why rather than imply the network has nothing.
+	Available bool `json:"available"`
+}
+
 // SuggestPayload is the SUGGEST request body (WO-023).
 //
 // Entropy is the 0–100 focus↔serendipity control from

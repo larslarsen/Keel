@@ -389,6 +389,25 @@ async function handle(message, sender) {
     }
 
     /**
+     * WO-059: search the swarm's token shards, not just this device's own
+     * catalogue. A separate RPC from SEARCH because it can reach the
+     * network — SEARCH never does.
+     */
+    case "PEER_SEARCH": {
+      const query = message.payload?.query;
+      if (typeof query !== "string" || !query.trim()) throw new Error("bad query");
+      if (!bridge.helloOk) throw new Error("daemon not connected");
+      const env = await bridge.request("PEER_SEARCH", {
+        query,
+        limit: Number(message.payload?.limit) || 100,
+      });
+      if (env.type === "ERROR") {
+        throw new Error(env.payload?.message || "PEER_SEARCH failed");
+      }
+      return { peer_search: env.payload };
+    }
+
+    /**
      * DESIGN_v2 §7.5: the live index lives in the daemon's memory, gossiped
      * whole. The query is matched there against records this machine already
      * holds, so nothing about it reaches the network.

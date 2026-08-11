@@ -65,4 +65,13 @@ func TestKeySchemeGoldenVectors(t *testing.T) {
 	if catalogueDomain != "keel/catalogue/1/" {
 		t.Errorf("catalogueDomain = %q — every catalogue bucket moves; bump KeySchemeVersion", catalogueDomain)
 	}
+	if shardDomain != "keel/shard/1/" {
+		t.Errorf("shardDomain = %q — every shard bucket moves; bump KeySchemeVersion", shardDomain)
+	}
+	if ShardK != 3 {
+		t.Errorf("ShardK = %d, want 3 for key scheme 1", ShardK)
+	}
+	if ShardM != 256 {
+		t.Errorf("ShardM = %d, want 256 for key scheme 1", ShardM)
+	}
 }

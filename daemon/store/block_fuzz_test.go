@@ -160,6 +160,52 @@ func FuzzBlocksInPrefix(f *testing.F) {
 	})
 }
 
+// FuzzShardSlice fuzzes the token-shard serving path (WO-059), mirroring
+// FuzzBlocksInPrefix: the shard number in a peer's request is fully
+// attacker-controlled, so an out-of-range or adversarial value must produce a
+// clean error, never a panic, and whatever is served must actually belong to
+// the shard that was asked for.
+func FuzzShardSlice(f *testing.F) {
+	f.Add(0)
+	f.Add(255)
+	f.Add(ShardM - 1)
+	f.Add(ShardM)
+	f.Add(-1)
+	f.Add(1 << 30)
+	f.Add(-(1 << 30))
+
+	st := openStore(f, "fuzz-shard.sqlite")
+	ctx := "seedaaaaaaa"
+	if _, err := st.PutImpressions([]bridge.Impression{{
+		PageLoadID: "44444444-4444-4444-8444-444444444444",
+		ObservedAt: 1, Surface: "WATCH_NEXT",
+		ContextVideoID: &ctx, SlotIndex: 0,
+		VideoID: "targetaaaa1", Title: "Recommendation systems explained",
+	}}); err != nil {
+		f.Fatal(err)
+	}
+
+	f.Fuzz(func(t *testing.T, shard int) {
+		entries, err := st.ShardSlice(shard, false)
+		if err != nil {
+			if shard >= 0 && shard < ShardM {
+				t.Fatalf("in-range shard %d returned an error: %v", shard, err)
+			}
+			return
+		}
+		if shard < 0 || shard >= ShardM {
+			t.Fatalf("out-of-range shard %d was served instead of rejected", shard)
+		}
+		for _, e := range entries {
+			for _, tok := range e.Tokens {
+				if ShardOf(tok) != shard {
+					t.Fatalf("shard %d served token %q, which hashes to shard %d", shard, tok, ShardOf(tok))
+				}
+			}
+		}
+	})
+}
+
 // FuzzImportCataloguePack fuzzes the other thing a stranger can hand us.
 //
 // Same contract as FuzzImportBlock: garbage in must mean an error out, and

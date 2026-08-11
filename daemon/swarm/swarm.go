@@ -55,6 +55,10 @@ var BlockProtocol = keelProtocol("block", "2.0.0", store.KeySchemeVersion)
 // CatalogueProtocol carries titles, which travel separately from the graph.
 var CatalogueProtocol = keelProtocol("catalogue", "1.0.0", store.KeySchemeVersion)
 
+// ShardProtocol carries token shards for distributed search (WO-059). See
+// shard.go in this package for the request/fetch side.
+var ShardProtocol = keelProtocol("shard", "1.0.0", store.KeySchemeVersion)
+
 // maxBlockBytes bounds what a peer can make this node allocate. A block is one
 // video's neighbourhood — a few hundred edges — so anything approaching this is
 // already pathological.
@@ -88,6 +92,10 @@ type Store interface {
 	SwarmIdentity() ([]byte, error)
 	EphemeralSwarmIdentity() ([]byte, error)
 	Cohort() string
+	// ShardSlice and LocalShards back distributed token-shard search
+	// (WO-059) — see shard.go in this package for the request/fetch side.
+	ShardSlice(shard int, mirrorOnly bool) ([]store.ShardEntry, error)
+	LocalShards(mirrorOnly bool) ([]int, error)
 }
 
 // Config controls what a node offers and consumes.
@@ -243,6 +251,7 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 	if cfg.Serve {
 		h.SetStreamHandler(BlockProtocol, n.handleBlockRequest)
 		h.SetStreamHandler(CatalogueProtocol, n.handleCatalogueRequest)
+		h.SetStreamHandler(ShardProtocol, n.handleShardRequest)
 		// Relay service is cheap and makes the network work for people whose
 		// routers do not cooperate. Only serving nodes run it.
 		if _, err := relay.New(h); err != nil {
@@ -539,8 +548,32 @@ func (n *Node) Announce(ctx context.Context) error {
 		default:
 		}
 	}
-	n.logf("announced %d/%d graph buckets, %d/%d catalogue buckets",
-		announced, len(keys), catAnnounced, len(catKeys))
+	// Shards are announced separately again, same reasoning: a node's title
+	// index and its shard index are recomputed from the same source but are
+	// their own namespace (shardCID, shard.go), so a shard fetch and a
+	// catalogue fetch for the same node never correlate.
+	shardKeys, err := n.st.LocalShards(!n.cfg.ServeOwnObservations)
+	if err != nil {
+		return err
+	}
+	var shardAnnounced int
+	for _, sh := range shardKeys {
+		c, err := shardCID(sh)
+		if err != nil {
+			continue
+		}
+		if err := n.dht.Provide(ctx, c, true); err != nil {
+			continue
+		}
+		shardAnnounced++
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+	n.logf("announced %d/%d graph buckets, %d/%d catalogue buckets, %d/%d shards",
+		announced, len(keys), catAnnounced, len(catKeys), shardAnnounced, len(shardKeys))
 	return nil
 }
 

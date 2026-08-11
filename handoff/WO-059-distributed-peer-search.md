@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Open** (proposal, user-invented, not in repo) |
+| **Status** | **Phase 1+2 done** (2026-08-11) — tokenizer, shard grouping, serve/fetch RPC, minimal search UI landed; yield-gossip, global count, coverage UI, and hardening split to WO-067. |
 | **Date** | 2026-08-08 |
 | **Source** | Lars, 2026-08-08 |
 
@@ -906,3 +906,77 @@ not accidentally make it impossible.
       vector; per-fetch identity is off so identity-churn is not a k-driver).
       COMPILE-TIME constant, identical on all nodes, versioned per WO-060. Any k
       change is a developer release, never network-driven.
+
+## What was built (2026-08-11) — Phase 1+2
+
+Built the fully-specified half of this design: tokenizer, shard grouping,
+serve/fetch RPC, minimal search UI. Deliberately deferred the optimization/
+hardening layer (yield-gossip, global count, coverage UI, per-fetch identity,
+poisoning consensus) to **WO-067**, since those sub-parts were themselves
+marked open/TBD in this document and each needs its own scoping pass.
+
+- **Tokenizer & shard math — `daemon/store/shard.go`.** `tokenize`/
+  `TokenizeQuery` implement Construction B exactly as specified, with one
+  clarification the original spec left implicit: only a word's *first*
+  k-gram carries the leading-space anchor; interior k-grams do not. Anchoring
+  every window (as a literal reading of "space-aware tokens" might suggest)
+  would make the space a constant prefix that anchors nothing — the working
+  case is a query word like "men" (→ anchored `" men"`) not colliding with
+  the interior run "men" inside "recommendation" (→ unanchored `"men"`, no
+  space). This makes attack #7's "minimal, not zero" residual bleed literal:
+  interior runs are still a shared, unanchored space.
+- **Constants** `ShardK=3`, `ShardM=256` and `shardDomain` live in
+  `daemon/store/keyscheme.go` per WO-060's own convention (that file already
+  earmarked the space). No `KeySchemeVersion` bump — a new domain, not a
+  change to an existing one.
+- **`ShardSlice`/`LocalShards` are computed at request time**, not a
+  persisted table, mirroring how `buildBlock` derives its reply from
+  `impressions`/`peer_edges` on the fly. `mirrorOnly` threads through exactly
+  like `heldCatalogue`'s rule 2 (Level 2 serves `peer_catalogue` only, never
+  own impressions) — reused `heldCatalogue` directly rather than duplicating
+  the source-selection logic.
+- **`ShardProtocol` (`daemon/swarm/shard.go`)** mirrors `BlockProtocol`/
+  `CatalogueProtocol`: own protocol id via `keelProtocol`, own DHT domain
+  (`shardCID`), own `Announce` loop, gated at `cfg.Serve`/`ServeOwnObservations`
+  exactly like block/catalogue serving. **Shard replies are unsigned** —
+  a deliberate v1 simplification, not an oversight: nothing is persisted or
+  re-served from a shard reply (self-filtered and discarded per search), so
+  trusting a forged one costs "one wrong search result," not propagated
+  poison. Revisit if/when WO-067 adds caching.
+- **`FetchShard`/`PeerSearch`** implement the tag-self-filter + union +
+  saturation-stop design (this document's "Refined query/serving/coverage/
+  disk model" section) at the granularity a v1 without the global count can
+  support: 3-consecutive-miss saturation or a 20-peer cap, not the
+  target-based stop condition. Peer selection is the same naive
+  DHT-provider + known-peers fallback as block fetch — the yield-vector
+  screening this document specifies needs the gossip layer WO-067 covers.
+- **`PEER_SEARCH` daemon RPC + a "search the network" checkbox** on the full
+  page (`extension/page/index.html`/`index.js`), reusing the existing
+  `renderHits` row markup with a distinct provenance string ("found on the
+  network") rather than "seen N×"/"from a shared bundle" — a peer-search hit
+  is not a claim this device watched or even has fully catalogued the video.
+- **`TitlesFor` deliberately does not backfill titles via a live catalogue
+  fetch** for videos found only through peer search. Fetching catalogue
+  buckets for exactly a search result's ids would bind that fetch pattern to
+  the query — the same correlation `MissingCataloguePrefixes`' doc comment
+  warns against (it requires a whole graph bucket's targets, never a
+  subset). So an untitled find comes back as a real hit with an empty title
+  rather than being silently dropped, and rather than being titled via a
+  fetch that would leak more than the shard fetch itself did. Flagged in
+  WO-067 as needing its own privacy pass if wanted.
+- **Found while building:** `Sketch.Merge`/`Overlap` (`daemon/store/
+  sketch.go`, built for WO-052's network-size estimation) already provide the
+  exact register-wise HLL union this document's "global count — mechanism
+  TBD, delegate to an HLL expert or cut the feature" needed. Not wired up
+  here (serving a per-token sketch needs its own leak analysis first), but
+  recorded in WO-067 so nobody re-derives it as unsolved.
+- **Tests:** `daemon/store/shard_test.go` (tokenizer, shard determinism,
+  domain independence, uniform population, `ShardSlice`/`mirrorOnly`,
+  `TitlesFor`), `FuzzShardSlice` in `block_fuzz_test.go`, `daemon/swarm/
+  shard_test.go` (`parseShard` malformed input, tag-self-filter, and a
+  DHT-discovery round trip in the same falsifiable style as
+  `TestFetchViaDiscoveryNotManualDial` — the client never learns the
+  server's address directly), `daemon/peer_search_test.go` (RPC-layer
+  round trip through `handleRaw`, plus the `Available:false` contract when
+  no swarm is running), `test/peer-search.test.js` (the SW's `PEER_SEARCH`
+  relay, including that an untitled hit survives the relay).

@@ -14,6 +14,7 @@ const el = {
   q: document.getElementById("q"),
   meta: document.getElementById("search-meta"),
   results: document.getElementById("results"),
+  searchNetwork: document.getElementById("search-network"),
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
@@ -341,6 +342,28 @@ el.liveQ.addEventListener("input", () => {
 
 /* ---------- search ---------- */
 
+// hitRow builds one result <li>. provenance is the trailing "how do we know
+// this" text — local search and peer search mean different things by it, so
+// the caller decides rather than this function guessing from the hit shape.
+function hitRow(h, provenance) {
+  const li = document.createElement("li");
+  const dur = fmtDuration(h.duration_s);
+  const views = typeof h.view_count === "number" ? `${fmtCount(h.view_count)} views` : "";
+  const bits = [views, h.published_at || "", dur].filter(Boolean).join(" · ");
+  li.innerHTML =
+    `<div class="row-main">${thumbHtml(h.video_id)}<div class="row-text">` +
+    `<p class="r-title"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(h.video_id)}"` +
+    ` target="_blank" rel="noreferrer">${escapeHtml(h.title || h.video_id)}</a></p>` +
+    `<p class="r-sub">${escapeHtml(bits)}` +
+    (bits ? " · " : "") +
+    provenance +
+    (h.channel_id ? ` · ${escapeHtml(h.channel_id)}` : "") +
+    `</p></div></div>`;
+  const im = li.querySelector("img.thumb[data-vid]");
+  if (im) fillThumb(im, decodeURIComponent(im.dataset.vid || ""));
+  return li;
+}
+
 function renderHits(res) {
   el.results.replaceChildren();
   const hits = res?.hits || [];
@@ -355,24 +378,22 @@ function renderHits(res) {
     (res.truncated ? ` · showing ${hits.length}` : "");
 
   for (const h of hits) {
-    const li = document.createElement("li");
-    const dur = fmtDuration(h.duration_s);
-    const views = typeof h.view_count === "number" ? `${fmtCount(h.view_count)} views` : "";
-    const bits = [views, h.published_at || "", dur].filter(Boolean).join(" · ");
-    // seen = how many times Keel observed this being recommended. That is the
-    // corpus's own signal and the reason results are ordered this way.
-    li.innerHTML =
-      `<div class="row-main">${thumbHtml(h.video_id)}<div class="row-text">` +
-      `<p class="r-title"><a href="https://www.youtube.com/watch?v=${encodeURIComponent(h.video_id)}"` +
-      ` target="_blank" rel="noreferrer">${escapeHtml(h.title || h.video_id)}</a></p>` +
-      `<p class="r-sub">${escapeHtml(bits)}` +
-      (bits ? " · " : "") +
-      (h.seen > 0 ? `seen ${h.seen}×` : `from a shared bundle`) +
-      (h.channel_id ? ` · ${escapeHtml(h.channel_id)}` : "") +
-      `</p></div></div>`;
-    el.results.appendChild(li);
-    const im = li.querySelector("img.thumb[data-vid]");
-    if (im) fillThumb(im, decodeURIComponent(im.dataset.vid || ""));
+    // seen = how many times Keel observed this being recommended. That is
+    // the corpus's own signal and the reason local results are ordered this
+    // way.
+    const provenance = h.seen > 0 ? `seen ${h.seen}×` : `from a shared bundle`;
+    el.results.appendChild(hitRow(h, provenance));
+  }
+}
+
+// appendPeerHits adds network-found rows after whatever local search already
+// rendered, tagged distinctly. A peer-search hit is not a claim this device
+// watched or even has seen the video — it may not even have a title (WO-059:
+// the daemon does not fetch one just to label a search result, since that
+// would bind a catalogue fetch to this exact query).
+function appendPeerHits(hits) {
+  for (const h of hits || []) {
+    el.results.appendChild(hitRow(h, "found on the network"));
   }
 }
 
@@ -386,6 +407,18 @@ el.form.addEventListener("submit", async (e) => {
     renderHits(r.search);
   } catch (err) {
     el.meta.textContent = `Search failed: ${err.message}`;
+    return;
+  }
+  if (!el.searchNetwork?.checked) return;
+  try {
+    const r = await rpc("PEER_SEARCH", { query, limit: 100 });
+    if (r.peer_search?.available) {
+      appendPeerHits(r.peer_search.hits);
+    }
+  } catch {
+    // Network search is a bonus on top of local results already shown;
+    // failing quietly here is the right default rather than replacing a
+    // working local result with an error.
   }
 });
 

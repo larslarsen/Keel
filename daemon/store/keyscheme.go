@@ -43,17 +43,18 @@
 // one afterwards — serving both is possible precisely because keys are derived
 // rather than stored, so a node can answer under either.
 //
-// # What must join this file when it is built
+// # What joined this file for WO-059, and what still hasn't
 //
-// WO-059's distributed search adds two more, and they belong here rather than
-// beside the search code:
+// ShardK, ShardM and shardDomain below are the tokenizer/shard half of what
+// this comment used to only earmark — peers must tokenize a title and group
+// tokens into shards identically, or a shard fetched from one node never
+// matches what another node would have answered.
 //
-//   - the tokenizer's k, normalisation, and letters-only flag — peers must
-//     tokenize a title identically or the bucket keys never meet;
-//   - the yield-gossip dictionary's word list *and its ordering* — the yield
-//     vector is one bit per dictionary position, so a reordered dictionary makes
-//     bit N mean something different on each node. The dictionary never travels
-//     on the wire, which is exactly why it has to be identical off it.
+// Still missing: the yield-gossip dictionary's word list *and its ordering*
+// (WO-067) — the yield vector is one bit per dictionary position, so a
+// reordered dictionary makes bit N mean something different on each node. The
+// dictionary never travels on the wire, which is exactly why it has to be
+// identical off it.
 package store
 
 // KeySchemeVersion is the version of the whole set of constants below.
@@ -66,6 +67,9 @@ package store
 // History:
 //
 //	1 — initial: prefix buckets, catalogue buckets, DHT prefix domain.
+//	    WO-059 added the shard tokenizer/grouping constants below without
+//	    bumping this: they are a new domain, not a change to an existing one,
+//	    so nothing that already agreed on scheme 1 stops agreeing.
 const KeySchemeVersion = 1
 
 // Domain separators. Each hash input is prefixed with a string naming what is
@@ -77,7 +81,31 @@ const (
 	blockDomain = "keel/block/1/"
 	// catalogueDomain keys the searchable-title buckets.
 	catalogueDomain = "keel/catalogue/1/"
+	// shardDomain keys the token-shard buckets (WO-059). Separate from
+	// catalogueDomain even though both derive from titles: a token and a
+	// video id must never land in the same hash space, or a shard fetch and
+	// a catalogue fetch could be correlated against each other.
+	shardDomain = "keel/shard/1/"
 )
+
+// ShardK is the tokenizer's window: every ShardK-letter run of a lowercased
+// word, anchored to the word's start, e.g. " rec" from "recommendation".
+//
+// Fixed at 3 — WO-059's measurement found it the bandwidth/privacy knee:
+// smaller k keeps per-token buckets more private but multiplies per-query
+// bytes roughly 6x going from k=3 to k=2; larger k roughly halves bytes again
+// but leaks more short single-word queries under grouping's per-token
+// tokenizability floor (handoff/WO-059-distributed-peer-search.md, "Empirical
+// tokenizer evaluation"). A change is a protocol version bump, never runtime
+// — see KeySchemeVersion's history above.
+const ShardK = 3
+
+// ShardM is how many shards tokens are grouped into: shard = hash(token) mod
+// ShardM. Measured near-uniform (CV 0.15-0.58) at M=64-256 on a 4,527-title
+// corpus (same doc, "Grouping tokens into uniform shards"); much larger and
+// shards go emptier than the token vocabulary can fill, which is exactly the
+// per-token rarity leak grouping exists to remove. Version-locked with ShardK.
+const ShardM = 256
 
 // PrefixDomain keys the DHT provider records that announce which buckets a node
 // holds. Exported because the announcement is made in the swarm package, while

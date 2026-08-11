@@ -74,10 +74,11 @@ log has not been made — it will drift out from under whoever is implementing i
 | 056 | Implement Option B (data-driven selectors) for YouTube — minimal first bite | Sr Dev | **Open** |
 | 057 | TikTok surface + platform-scoped panel (depends on 056) | Sr Dev | **Open** (blocked on 056) |
 | 058 | Peer graph empty at v0.1.0: no seed, no auto peer data | Sr Dev | **Open** |
-| 059 | Distributed search over peer data via multi-peer superset fetch + local intersection (user-invented) | Sr Dev | **Open** (proposal) |
+| 059 | Distributed search over peer data via multi-peer superset fetch + local intersection (user-invented) | Sr Dev | **Phase 1+2 done** — tokenizer, shards, serve/fetch RPC, search UI; rest split to 067 |
 | 060 | Protocol versioning for deterministic, node-agreeing constants (tokenizer k, bucket params) | Sr Dev | **Done** — key scheme versioned, carried in protocol ids |
 | 061 | Version negotiation, compatibility policy, update UX (connect-if-compatible, warn/auto-update if behind) | Sr Dev | **Done** — identify-based version observation, compat policy, update notice |
 | 062 | Testing strategy: fuzz + property + error-injection + regression, not review models | Sr Dev | **Done** — discovery proven, property tests, wire fuzzing, CI ratchet (80% floor not met; ratchet instead) |
 | 064 | Watch queue: add-to-queue button + daemon-persisted ordered queue + play/remove/reorder | Sr Dev (Opus) | **Done** |
 | 065 | Refresh suggestions button (re-draw via SUGGEST, same entropy) | Sr Dev (Opus) | **Done** |
 | 066 | Live detection false-positive: non-live video flagged LIVE (loose `liveLoose`/thumbnail matcher) | Sr Dev (Hermes) | **Resolved** |
+| 067 | Distributed search: yield-gossip, global count, coverage UI, hardening (split from 059) | Sr Dev | **Open** |
