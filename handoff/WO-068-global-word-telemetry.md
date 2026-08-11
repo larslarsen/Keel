@@ -80,6 +80,19 @@ Two outputs:
   stat and the shown top-words.
 - **TELEMETRY ONLY.** No word bucket fetch/serve. Keel's storage/fetch keys stay
   at k=3 character tokens (WO-059). This layer never triggers a fetch.
+- **Poisoning (defense for accuracy, display-only — Lars, 2026-08-11).** A poisoned
+  word HLL cannot break the app: word bars feed NO search decision (the
+  load-bearing stop-condition reads the TOKEN sketch, WO-067, which already has
+  shard-reply signing + cross-peer poison detection). Word poisoning only shows a
+  wrong percentage. Still defend, for accurate display. HLL merge is a
+  register-MAX union, so an adversary can only INFLATE registers (over-state the
+  corpus), never hide a word — low stakes. Lightweight defense: fetch the word HLL
+  from several peers and MEDIAN / majority-merge the per-peer estimates, ignoring
+  outliers. No authorship or signing needed (messages carry no author, live.go:19)
+  — redundancy suffices because it is display-only. Do NOT pull in WO-051/STAR
+  threshold-encryption: that is for count DISCLOSURE under contribution levels,
+  overkill for a display bar. Contrast WO-067 token poisoning (load-bearing, so
+  signed + cross-peer detected).
 
 ## UI (search page) — two-tier nested percentage bars
 
@@ -139,6 +152,9 @@ loading progressively as swarm data arrives.
       char-token inside the word (from existing `Tokenize`), color-coded, loading
       in parallel, may exceed target. Read-only, no fetch.
 - [ ] Word→char-token membership from `Tokenize(word)`, not a dictionary.
+- [ ] Poisoning defense: fetch word HLL from several peers, median/majority-merge
+      (display-only, no authorship/signing needed); adversary can only inflate,
+      never hide a word. No WO-051/STAR threshold-encryption for this bar.
 - [ ] Stopwords excluded from displayed top-words (display-time filter, WO-060
       rule); no fabricated counts on empty swarm.
 - [ ] Regression test: two in-process nodes merge word HLLs, converge on same
