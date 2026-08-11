@@ -80,4 +80,4 @@ log has not been made — it will drift out from under whoever is implementing i
 | 062 | Testing strategy: fuzz + property + error-injection + regression, not review models | Sr Dev | **Open** |
 | 064 | Watch queue: add-to-queue button + daemon-persisted ordered queue + play/remove/reorder | Sr Dev (Opus) | **Open** |
 | 065 | Refresh suggestions button (re-draw via SUGGEST, same entropy) | Sr Dev (Opus) | **Open** |
-| 066 | Live detection false-positive: non-live video flagged LIVE (loose `liveLoose`/thumbnail matcher) | Sr Dev (Opus) | **Open** |
+| 066 | Live detection false-positive: non-live video flagged LIVE (loose `liveLoose`/thumbnail matcher) | Sr Dev (Hermes) | **Resolved** |
