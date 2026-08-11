@@ -144,6 +144,10 @@ func (s *Store) RecordTokenSearch(token string, foundVideoIDs []string) error {
 	if !ok {
 		return nil // not a dictionary-shaped token; nothing to record
 	}
+	existed, err := s.tokenSketchExists(idx)
+	if err != nil {
+		return err
+	}
 	sk, err := s.loadTokenSketch(idx)
 	if err != nil {
 		return err
@@ -154,12 +158,38 @@ func (s *Store) RecordTokenSearch(token string, foundVideoIDs []string) error {
 	}
 	observed := uint64(len(foundVideoIDs))
 
-	drift := tokenDrift(before, observed)
 	now := time.Now()
-	dueAt := now.Add(gossipBackoff(drift)).UnixMilli()
+	var dueAt int64
+	if !existed {
+		// A token this node had no data on at all, now backed by a real
+		// search, is qualitatively different from an update to a known
+		// estimate: it is new information nobody gossiped yet, worth
+		// sharing at the next opportunity rather than filtered through the
+		// same drift math an update gets.
+		dueAt = now.UnixMilli()
+	} else {
+		dueAt = now.Add(gossipBackoff(tokenDrift(before, observed))).UnixMilli()
+	}
 	obs := int64(observed)
 	obsAt := now.UnixMilli()
 	return s.saveTokenSketch(idx, sk, dueAt, &obs, &obsAt)
+}
+
+// tokenSketchExists reports whether a row already exists for idx, so
+// RecordTokenSearch can tell "brand new discovery" from "update to a known
+// estimate" — loadTokenSketch alone can't distinguish them, since both
+// return a usable (possibly all-zero) sketch either way.
+func (s *Store) tokenSketchExists(idx int) (bool, error) {
+	var x int
+	err := s.db.QueryRow(`SELECT 1 FROM token_sketches WHERE token_index = ?`, idx).Scan(&x)
+	switch {
+	case err == sql.ErrNoRows:
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return true, nil
+	}
 }
 
 // tokenDrift is the relative gap between what was estimated and what a real
@@ -183,18 +213,25 @@ func tokenDrift(estimate, observed uint64) float64 {
 	return float64(diff) / float64(denom)
 }
 
-// gossipBackoff maps a drift ratio to a re-gossip delay: higher drift,
-// sooner; near-zero drift, closer to the base interval extended outward.
-// Clamped at both ends so neither extreme starves bandwidth nor goes silent.
+// gossipBackoff maps a drift ratio to a re-gossip delay by linear
+// interpolation between the two clamps: drift=0 (the last search matched
+// the estimate exactly) gives maxGossipInterval, drift=1 (the theoretical
+// ceiling — tokenDrift's diff can never exceed its own denominator) gives
+// minGossipInterval. A drift/(1+k*drift)-style curve was tried first and
+// was wrong twice over: tokenDrift never actually exceeds 1, so a curve
+// shaped to expect larger inputs left minGossipInterval unreachable by any
+// real call, and the interval it returned at drift=0 was the middle of the
+// range (baseGossipInterval) rather than the slow end — "no discrepancy at
+// all" was getting a moderate schedule instead of the calmest one available.
 func gossipBackoff(drift float64) time.Duration {
-	interval := time.Duration(float64(baseGossipInterval) / (1 + drift*4))
-	if interval < minGossipInterval {
-		interval = minGossipInterval
+	if drift < 0 {
+		drift = 0
 	}
-	if interval > maxGossipInterval {
-		interval = maxGossipInterval
+	if drift > 1 {
+		drift = 1
 	}
-	return interval
+	span := float64(maxGossipInterval - minGossipInterval)
+	return maxGossipInterval - time.Duration(drift*span)
 }
 
 // DueTokenSketches lists tokens whose scheduled re-gossip time has arrived,

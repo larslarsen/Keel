@@ -153,6 +153,30 @@ func TestRecordTokenSearchDriftSchedulesSooner(t *testing.T) {
 	}
 }
 
+// TestRecordTokenSearchBrandNewIsImmediatelyDue: a token this node had no
+// row for at all, now backed by a real search, must be scheduled for the
+// very next publish tick rather than filtered through the same drift math
+// an update to a known estimate gets — new information is worth sharing
+// promptly, not calibrated against a baseline that never existed.
+func TestRecordTokenSearchBrandNewIsImmediatelyDue(t *testing.T) {
+	st := openStore(t, "sketch-new.sqlite")
+	if _, known := st.TokenEstimate(" re"); known {
+		t.Fatal("test assumption broken: token already had a row")
+	}
+	before := time.Now().UnixMilli()
+	if err := st.RecordTokenSearch(" re", []string{"vid00000001"}); err != nil {
+		t.Fatal(err)
+	}
+	idx, _ := TokenDictIndex(" re")
+	var dueAt int64
+	if err := st.db.QueryRow(`SELECT due_at FROM token_sketches WHERE token_index = ?`, idx).Scan(&dueAt); err != nil {
+		t.Fatal(err)
+	}
+	if dueAt > before+1000 { // generous slack for test execution time
+		t.Errorf("brand-new discovery due_at = %d, want ~%d (immediate), not scheduled out via drift math", dueAt, before)
+	}
+}
+
 // TestTokenDriftBothZeroIsNoDrift pins the edge case explicitly: an
 // estimate of nothing and a search that found nothing must not read as
 // maximal drift, or every untouched token would look maximally urgent.

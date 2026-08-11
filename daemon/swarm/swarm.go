@@ -104,6 +104,15 @@ type Store interface {
 	// LocalYieldVector backs yield-vector gossip (WO-067) — see
 	// daemon/swarm/yield.go.
 	LocalYieldVector(mirrorOnly bool) ([]byte, error)
+	// MergeTokenSketch, DueTokenSketches and MarkTokenGossiped back
+	// token-sketch gossip (WO-067) — see daemon/swarm/sketch.go.
+	MergeTokenSketch(idx int, incoming *store.Sketch) error
+	DueTokenSketches(limit int) ([]store.TokenSketchRow, error)
+	MarkTokenGossiped(idx int) error
+	// TokenEstimate and RecordTokenSearch back FetchShard's target-aware
+	// stop condition (WO-067) — see daemon/swarm/shard.go.
+	TokenEstimate(token string) (uint64, bool)
+	RecordTokenSearch(token string, foundVideoIDs []string) error
 }
 
 // Config controls what a node offers and consumes.
@@ -175,8 +184,9 @@ type Node struct {
 	// failed startLive.
 	ps *pubsub.PubSub
 
-	live  *LiveIndex
-	yield *YieldIndex
+	live   *LiveIndex
+	yield  *YieldIndex
+	sketch *SketchIndex
 }
 
 // newPubSub constructs the one gossipsub instance every gossip topic in this
@@ -317,7 +327,9 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 	if err := n.startYield(ctx); err != nil {
 		n.logf("yield gossip unavailable: %v", err)
 	}
-	// startSketch is wired in once Build 3 (token-sketch gossip) lands.
+	if err := n.startSketch(ctx); err != nil {
+		n.logf("sketch gossip unavailable: %v", err)
+	}
 
 	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Serve)
 	for _, a := range h.Addrs() {
