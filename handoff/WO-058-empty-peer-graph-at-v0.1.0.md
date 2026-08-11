@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Open** |
+| **Status** | **Copy + DESIGN_v2 fixed (2026-08-11); one item open** — seed-vs-narrowed-Level-2 is a product decision, not resolved here. |
 | **Date** | 2026-08-08 |
 | **Source** | Lars, 2026-08-08 (audit of README claims vs code) |
 
@@ -65,7 +65,10 @@ remaining gap; it is narrower than the original WO-058 framed it.
 1. **Tell the truth in user-facing copy.** README Research/Status, consent
    menu, and "Your data" must say the peer graph is unpopulated at v0.1.0 and
    the walk stays within your own history until a seed/bundle is imported.
-   (README edits done 2026-08-08; consent + page/index.html still imply relay.)
+   (Done 2026-08-11: all three now scope the "no automatic peer data" claim to
+   the *suggestion walk* specifically, and say search reaches peers on demand
+   via WO-059 with no seed needed — the old wording implied nothing moved
+   automatically at all, which stopped being true once WO-059 shipped.)
 2. **Either bootstrap a seed or rename the level.** Options:
    - Build and publish one seed (someone runs `seed build --own`, ships it via
      §7.3 channel) so Level 2 has something to relay. This discloses that one
@@ -77,12 +80,20 @@ remaining gap; it is narrower than the original WO-058 framed it.
    supplement for the tail + livestreams, and the tail needs PIR to be private
    (seed.go:20-22 — "a much larger piece of machinery," not built). The prose
    should not imply the swarm is the primary graph exchange until that is true.
+   (Done 2026-08-11: DESIGN_v2's tiering table described a never-built plan —
+   a ~50-200GB bulk download of popular search terms — instead of what WO-059
+   actually built. Corrected to the real tier-2 shard mechanism.)
 
 ## Acceptance
 
-- [ ] User-facing copy (README, consent, page) states the peer graph is
+- [x] User-facing copy (README, consent, page) states the peer graph is
       unpopulated at v0.1.0, no false "pull-and-relay" wording.
 - [ ] A seed exists OR Level 2's empty-state behaviour is documented as expected
-      and the level's promise is narrowed to match.
-- [ ] The primary graph-exchange path (bundle over §7.3 channel vs swarm) is
+      and the level's promise is narrowed to match. **Still open — genuine
+      product decision, not a copy fix; see options above. WO-059 adds a third
+      option not in the original framing: since search self-heals a node's
+      graph as a side effect of use (this doc's "Consequence" section), the
+      first-run empty-suggestions gap may narrow on its own as search gets
+      used, without anyone needing to publish a seed at all.**
+- [x] The primary graph-exchange path (bundle over §7.3 channel vs swarm) is
       stated once, consistently, in DESIGN_v2.
