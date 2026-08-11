@@ -171,11 +171,13 @@
           video at a time — so a peer answering you cannot tell which one you
           wanted. Nothing you recorded is included. At v0.1.0 there is no
           published graph to fetch yet, so your suggestions stay within your own
-          history until a seed or bundle is imported. Search works differently:
-          the "search the network" option on the search page reaches peers on
-          demand, using the same bucket privacy shape, with no seed needed — the
-          first search for a term is what populates it. Publishing your own
-          counts needs threshold
+          history until a bundle is imported or the network grows one on its
+          own — no seed is planned; every search caches graph edges as a side
+          effect, so suggestions widen gradually from ordinary use across the
+          network. Search itself needs no seed at all: the "search the
+          network" option on the search page reaches peers on demand, using
+          the same bucket privacy shape — the first search for a term is what
+          populates it. Publishing your own counts needs threshold
           encryption — your report stays sealed unless enough others report the
           same thing — and that is not built, so those settings send nothing of
           yours today.

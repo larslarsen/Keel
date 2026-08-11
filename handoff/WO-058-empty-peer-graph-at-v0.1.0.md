@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Copy + DESIGN_v2 fixed (2026-08-11); one item open** — seed-vs-narrowed-Level-2 is a product decision, not resolved here. |
+| **Status** | **Resolved 2026-08-11** — copy + DESIGN_v2 fixed; decided against publishing a seed, relying on WO-059's self-healing growth instead (Lars). |
 | **Date** | 2026-08-08 |
 | **Source** | Lars, 2026-08-08 (audit of README claims vs code) |
 
@@ -69,12 +69,15 @@ remaining gap; it is narrower than the original WO-058 framed it.
    the *suggestion walk* specifically, and say search reaches peers on demand
    via WO-059 with no seed needed — the old wording implied nothing moved
    automatically at all, which stopped being true once WO-059 shipped.)
-2. **Either bootstrap a seed or rename the level.** Options:
-   - Build and publish one seed (someone runs `seed build --own`, ships it via
-     §7.3 channel) so Level 2 has something to relay. This discloses that one
-     person's funnel — acceptable only as a deliberate, labelled bootstrap.
-   - Or make the default experience honest: Level 2 with no seed is just
-     "lend bandwidth for when a graph exists," which is a null product today.
+2. **Either bootstrap a seed or rename the level.** Options were: (a) publish
+   one seed, disclosing one person's funnel as a labelled bootstrap, or
+   (b) narrow Level 2's promise in copy to "lend bandwidth for when a graph
+   exists." **Decided 2026-08-11 (Lars): neither — rely on WO-059's
+   self-healing instead.** No seed will be built or published. A node's graph
+   widens gradually as a side effect of ordinary search use, network-wide,
+   with nobody disclosing anything beyond what search already discloses.
+   Copy across README/consent/page now says this explicitly rather than
+   leaving the first-run empty-suggestions experience unexplained.
 3. **Decide the real exchange path.** §7.3 already says bundles ship over
    Zenodo/GitHub/Archive (central HTTPS), not the swarm. The swarm is a
    supplement for the tail + livestreams, and the tail needs PIR to be private
@@ -88,12 +91,8 @@ remaining gap; it is narrower than the original WO-058 framed it.
 
 - [x] User-facing copy (README, consent, page) states the peer graph is
       unpopulated at v0.1.0, no false "pull-and-relay" wording.
-- [ ] A seed exists OR Level 2's empty-state behaviour is documented as expected
-      and the level's promise is narrowed to match. **Still open — genuine
-      product decision, not a copy fix; see options above. WO-059 adds a third
-      option not in the original framing: since search self-heals a node's
-      graph as a side effect of use (this doc's "Consequence" section), the
-      first-run empty-suggestions gap may narrow on its own as search gets
-      used, without anyone needing to publish a seed at all.**
+- [x] A seed exists OR Level 2's empty-state behaviour is documented as expected
+      and the level's promise is narrowed to match. Decided: no seed; documented
+      as expected, self-healing via search (WO-059).
 - [x] The primary graph-exchange path (bundle over §7.3 channel vs swarm) is
       stated once, consistently, in DESIGN_v2.

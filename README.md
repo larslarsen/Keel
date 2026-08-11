@@ -33,10 +33,12 @@ is no account, and there is no server to send it to — none exists.
 
 Above the default you can lend disk space to fetch and re-serve the recommendation
 graph *other* people have published. That is what will let your suggestions walk
-past your own history — but at v0.1.0 there is no published seed and no automatic
-peer data for the *suggestion walk*, so it stays within your own history until a
-seed or bundle is imported. Search is different: turning on "search the network"
-reaches peers on demand, with no seed needed — the first search for a term
+past your own history — but at v0.1.0 there is no published seed, so it starts
+within your own history until a bundle is imported or the network grows one on
+its own: every search fetches and caches graph edges as a side effect, so a
+node's suggestions widen gradually from ordinary use, network-wide, with nobody
+publishing anything (WO-058/WO-059). Search itself needs no seed at all — turning
+on "search the network" reaches peers on demand, and the first search for a term
 populates it for whoever searches it next, so coverage grows from use rather than
 from a published dataset. At every level that ships, nothing you
 recorded leaves your machine; publishing your own observations would need
@@ -232,9 +234,10 @@ At v0.1.0 the motivated early adopters are people who want to measure this, not
 casual users. If that is you: install it, run it against your own YouTube, and
 the per-person record is the raw material — the one piece that already works
 fully. The peer graph layer (seed bundle plus swarm relay) is built and passes
-its tests, but there is no published seed and no automatic peer data yet, so the
-suggestion walk reaches past your own history only once a seed or bundle is
-imported. The aggregate that becomes the empirical density estimate of the
+its tests, but there is no published seed, so the suggestion walk starts within
+your own history and widens only once a bundle is imported or the network's
+own search traffic has cached enough graph edges nearby (no seed is planned —
+see WO-058). The aggregate that becomes the empirical density estimate of the
 population manifold is designed-for but not yet populated; when independent
 corpora exist, the pipeline can re-run continuously rather than once, which is
 what resists the one-shot decay that sinks the sockpuppet studies. The design is

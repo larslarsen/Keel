@@ -60,10 +60,12 @@
       you cannot tell which one you actually wanted, and Keel uses a fresh
       network identity each session so requests cannot be linked. At v0.1.0
       there is no published graph to fetch yet, so your suggestions stay within
-      your own history until a seed or bundle is imported. Search is different —
-      turning on "search the network" on the search page reaches peers on
-      demand, no seed needed, using the same bucket-of-many-videos privacy
-      shape.
+      your own history until a bundle is imported or the network grows one on
+      its own — no seed is planned; search caches graph edges as a side
+      effect, so suggestions widen gradually from ordinary use across the
+      network. Search itself needs no seed at all — turning on "search the
+      network" on the search page reaches peers on demand, using the same
+      bucket-of-many-videos privacy shape.
     </p>
     <p class="meta">
       Keel does tell other Keel users when it sees a livestream, so everyone's
