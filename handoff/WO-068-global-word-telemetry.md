@@ -51,16 +51,48 @@ Concretely, two outputs:
   Stopwords are still observed locally; they are just excluded from the published
   global stat.
 
-## UI (search page)
+## UI (search page) — two-tier nested percentage bars
 
-- A per-word **percentage bar** next to a search term: when the user enters a
-  word (or after a k=3 search resolves), show "word — X% of observed graphs".
-  Fed by the swarm-merged global word HLL. Read-only display; does NOT trigger a
-  k=1 fetch.
-- Search UI lives in `extension/sidepanel/index.js` (suggest render) and/or
-  `extension/page/index.js` (search page). Opus picks the exact element; the bar
-  consumes a `GET_STATS`/swarm-status field carrying the global word percentage.
-- Show "~" prefix or "est." label to signal HLL approximation.
+The search UI breaks a query into WORDS and shows global-corpus percentages,
+loading progressively as swarm data arrives.
+
+- **Top tier: one percentage bar per WORD in the query.** Each word bar shows its
+  global frequency: "trading — X% of all observed graphs" (from the k=1 global
+  word HLL). Fills toward the global distinct-word count as data gossiped in.
+- **Bottom tier: nested sub-bars per k=3 TOKEN the word participates in.** Under
+  each word bar, show one smaller bar for every token that word belongs to
+  (e.g. "trading" → "day trading strategy", "trading strategy live",
+  "best trading strategy"), color-coded by token so membership is visible. Each
+  token sub-bar shows that token's global coverage loading up — toward (or past)
+  its target global token count (from WO-067's gossiped token-sketch / yield
+  estimate). All bars load in parallel as the swarm answers.
+- **Color coding = token identity.** Tokens get a fixed color (CVD-safe palette,
+  like WO-067's `PEER_PROGRESS_COLORS`); a word's sub-bars are colored by their
+  token so the user sees which tokens a word spans. Do NOT label sub-bars with
+  the token text in the UI — color carries token identity, same privacy stance as
+  WO-067 (the bar must not be readable back into query structure).
+- **Progressive load.** Word % and token sub-bars fill concurrently as the daemon
+  streams global estimates. A sub-bar may exceed its target (token seen in more
+  graphs than the current estimate assumed) — render that as "past target",
+  not clamped silently.
+- **Telemetry only.** All values are global-corpus estimates (k=1 word HLL +
+  k=3 token sketch). This UI does NOT trigger a k=1 or k=3 bucket fetch; it is a
+  read-only view of what the swarm has observed. Distinct from WO-067's
+  `renderPeerProgress` per-query coverage bar (that one shows how much of a
+  specific search's buckets this node has fetched — query-scoped, not corpus-wide).
+  The two bars coexist in the search UI but consume different data; keep them
+  separate so they are not conflated.
+- Search UI lives in `extension/page/index.js` (search page) — Opus extends the
+  existing `renderPeerProgress` area or adds a sibling renderer. Consumes
+  swarm-status fields: global word % (k=1 HLL) + global token coverage (k=3 sketch).
+- Show "~" / "est." labels to signal HLL approximation.
+
+## Data the UI consumes (must be exposed by the daemon)
+
+- `global_word_pct[word]` — from k=1 word HLL ÷ graph HLL (WO-068 telemetry).
+- `global_token_coverage[token]` + `token_target` — from k=3 token sketch (WO-067
+  gossiped estimate). The word→token membership list comes from the shared
+  tokenizer (k=1 dict knows which tokens each word appears in; WO-060 constant).
 
 ## Depends on
 
@@ -79,8 +111,18 @@ Concretely, two outputs:
 - [ ] Global distinct-word count + dictionary coverage % exposed in swarm status.
 - [ ] Per-word global percentage computed from word HLL ÷ graph HLL; shown as an
       estimate in the UI.
-- [ ] Search UI shows a per-word percentage bar for the entered term; bar is
-      read-only, triggers no k=1 fetch/serve.
+- [ ] Search UI shows a two-tier nested bar for the entered query: top tier one
+      percentage bar per WORD (global word % from k=1 HLL); bottom tier under each
+      word, one color-coded sub-bar per k=3 TOKEN the word belongs to (global token
+      coverage from WO-067 sketch). Bars load progressively in parallel. Read-only,
+      triggers no k=1/k=3 fetch.
+- [ ] Word→token membership (which tokens a word spans) derived from the shared
+      tokenizer (WO-060 constant); sub-bars color-coded by token, not labeled with
+      token text.
+- [ ] Token sub-bar may exceed its target (rendered "past target", not clamped).
+- [ ] WO-067's per-query `renderPeerProgress` coverage bar and this global
+      word/token telemetry bar are distinct renderers consuming distinct data;
+      not conflated in the UI.
 - [ ] Stopwords excluded from displayed top-words and the coverage denominator.
 - [ ] On an empty swarm (WO-058 not populated) the stat reads ~0 / "no data yet";
       no fabricated counts.
