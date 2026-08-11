@@ -1,7 +1,7 @@
 # WO-070 — PEER_SEARCH times out on multi-word queries with no/empty peers (8s bridge cap)
 
 **Addressee:** Sr Dev (Opus)
-**Status:** Open
+**Status:** **Done 2026-08-11** — all three fixes landed, root cause confirmed in code (unlike WO-069).
 **Date:** 2026-08-11
 **Source:** Lars, 2026-08-11 — reproducible. Data page shows NO peers. Single word
 "machine" → 28 local hits, no timeout. Two-word "machine learning" (no quotes) →
@@ -72,3 +72,39 @@ walk on cold DB). This is the SEARCH/PEER_SEARCH instance (multi-token query sta
 on empty/failed shard fetches). Both stem from the single-threaded bridge + 8s
 client cap; fix them with the same principle: the daemon must reply within the cap,
 and must fast-fail when there is nothing to fetch.
+
+## What was built (2026-08-11)
+
+Unlike WO-069, this ticket's root cause reproduced exactly as diagnosed:
+`peerSearchTimeout` was 30s — longer than the 8s client cap by construction,
+so the daemon could never reply in time for a genuinely slow case.
+
+1. **Fast path in `PeerSearch` itself** (`daemon/swarm/shard.go`), not just
+   the RPC handler — any caller benefits from not walking each token's DHT
+   provider lookup and shard-fetch (each bounded by `requestTimeout=20s`)
+   only to discover there was nothing to fetch from. `n.Peers() == 0` short-
+   circuits to `(nil, nil, nil)` before the per-token loop starts.
+2. **`peerSearchTimeout` cut from 30s to 6s** — under the 8s cap, matching
+   WO-069's `suggestTimeout`. Also bounds `handleWordStats` (WO-068), which
+   shares the constant and has the same synchronous-on-the-bridge-thread
+   shape; restructuring that handler is out of this ticket's scope, but
+   flagged in a comment so it isn't rediscovered as a mystery later.
+3. **`handlePeerSearch` moved off the bridge thread**, same goroutine +
+   timeout-race pattern as WO-069's `handleSuggest` — a query with several
+   tokens and live-but-unresponsive peers could still exceed the client cap
+   even with peers connected, and the single-threaded bridge blocked every
+   other RPC meanwhile regardless.
+4. **UI:** no separate fix needed. `renderPeerProgress` (built in WO-067's
+   Build 4) already hides the bar entirely when given an empty `progress`
+   array; since the fast path returns no progress entries for a zero-peer
+   search, the "downloading from a peer that doesn't exist" bar the user saw
+   simply never renders.
+
+Tests: `daemon/swarm/shard_test.go`
+`TestPeerSearchZeroPeersReturnsImmediately` (near-instant, zero ids/progress,
+isolated node never connected to anything — not merely a node whose peers
+don't answer); `daemon/peer_search_test.go`
+`TestPeerSearchZeroPeersRespondsUnderClientCap` (RPC-layer: a running swarm
+with zero peers replies well under 8s, `Available: true`, empty
+hits/progress). Full suite green under `-race`; `npm test` unaffected
+(64/64).

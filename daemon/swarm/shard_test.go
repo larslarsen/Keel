@@ -48,6 +48,44 @@ func TestParseShard(t *testing.T) {
 	}
 }
 
+// TestPeerSearchZeroPeersReturnsImmediately is WO-070's fast path: with no
+// connected peers at all, PeerSearch must not walk each token's DHT
+// provider lookup and shard-fetch machinery (each bounded by
+// requestTimeout=20s) only to discover there was nothing to fetch from —
+// there is nothing to fetch from before trying, by construction, so it
+// returns right away.
+func TestPeerSearchZeroPeersReturnsImmediately(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// isolated + never connected to anything: genuinely zero peers, not
+	// merely zero peers who happen to answer.
+	n, err := Start(ctx, newStore(t, "peersearch-zero.sqlite"), isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	if n.Peers() != 0 {
+		t.Fatalf("test assumption broken: node has %d peers, want 0", n.Peers())
+	}
+
+	start := time.Now()
+	ids, progress, err := n.PeerSearch(ctx, "machine learning")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("PeerSearch returned an error: %v", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("PeerSearch with zero peers took %v, want near-instant — it should not attempt any fetch", elapsed)
+	}
+	if len(ids) != 0 {
+		t.Errorf("PeerSearch with zero peers returned %d ids, want 0", len(ids))
+	}
+	if len(progress) != 0 {
+		t.Errorf("PeerSearch with zero peers returned %d progress entries, want 0 (no phantom progress bar)", len(progress))
+	}
+}
+
 // TestShouldStopOnSaturation covers WO-067's stop-condition rule directly,
 // since real DHT provider ordering can't be controlled from a test — a
 // scenario needing "three empty peers before a fourth that has the answer"

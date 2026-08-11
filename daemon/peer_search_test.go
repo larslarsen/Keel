@@ -110,6 +110,52 @@ func waitUntil(d time.Duration, cond func() bool) bool {
 	return cond()
 }
 
+// TestPeerSearchZeroPeersRespondsUnderClientCap is WO-070's regression: a
+// running swarm with zero connected peers (distinct from no swarm at all,
+// covered above) must reply well under the extension's 8s client-side
+// request timeout, not fall into the slow per-token shard-fetch path only
+// to time out there.
+func TestPeerSearchZeroPeersRespondsUnderClientCap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "peer-search-zero.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	n, err := swarm.Start(ctx, st, swarm.Config{
+		Fetch: true, Bootstrap: []peer.AddrInfo{}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+
+	old := swarmNode
+	swarmNode = n
+	t.Cleanup(func() { swarmNode = old })
+
+	const clientCap = 8 * time.Second
+	start := time.Now()
+	got := callPeerSearch(t, st, "machine learning")
+	elapsed := time.Since(start)
+
+	if elapsed >= clientCap {
+		t.Fatalf("PEER_SEARCH with zero peers took %v, want well under the %v client cap", elapsed, clientCap)
+	}
+	if !got.Available {
+		t.Error("Available = false with a running swarm (just zero peers)")
+	}
+	if len(got.Hits) != 0 {
+		t.Errorf("Hits = %v, want empty with zero peers", got.Hits)
+	}
+	if len(got.Progress) != 0 {
+		t.Errorf("Progress = %v, want empty — a phantom progress bar with no peers to fetch from is the bug this fixes", got.Progress)
+	}
+}
+
 // TestPeerSearchRoundTrip is the RPC-layer half of WO-059: a real (private
 // DHT, loopback) peer holds a video, this daemon's handleRaw dispatches
 // PEER_SEARCH into swarmNode.PeerSearch + st.TitlesFor exactly as the

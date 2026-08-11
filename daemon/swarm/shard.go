@@ -309,9 +309,19 @@ type TokenProgress struct {
 // Construction B's conjunction (WO-059): no peer ever sees more than one
 // shard fetch's worth of information, and a shard groups many tokens, so no
 // single fetch identifies the token, let alone the query.
+//
+// WO-070: with zero connected peers, every token's FetchShard would still
+// walk the DHT provider lookup and shard-fetch machinery before giving up —
+// each one bounded by requestTimeout (20s), so a multi-token query could
+// take minutes to conclude "nothing." A node with no peers at all has
+// nothing to fetch from by construction, so this returns immediately rather
+// than discovering that the slow way per token.
 func (n *Node) PeerSearch(ctx context.Context, query string) ([]string, []TokenProgress, error) {
 	tokens := store.TokenizeQuery(query)
 	if len(tokens) == 0 {
+		return nil, nil, nil
+	}
+	if n.Peers() == 0 {
 		return nil, nil, nil
 	}
 	progress := make([]TokenProgress, 0, len(tokens))

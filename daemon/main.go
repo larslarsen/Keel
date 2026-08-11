@@ -585,13 +585,26 @@ func handleSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	return reply(out, env.ID, "SEARCH_RESULT", res)
 }
 
-// peerSearchTimeout bounds one PEER_SEARCH request. Unlike Prewarm, this is
-// user-triggered and answered synchronously over the bridge, so it needs its
-// own bound rather than running in the background indefinitely.
-const peerSearchTimeout = 30 * time.Second
+// peerSearchTimeout bounds one PEER_SEARCH request's internal work. WO-070:
+// this was 30s, which is longer than the extension's 8s client-side request
+// timeout (extension/lib/native.js request()) by construction — the daemon
+// could never reply in time for a genuinely slow case, only for a fast one,
+// which defeats having a server-side bound at all. Also shared by
+// handleWordStats (WO-068) for the same reason; that handler has the same
+// synchronous-on-the-bridge-thread shape this fix gives handlePeerSearch,
+// but restructuring it is out of this ticket's scope.
+const peerSearchTimeout = 6 * time.Second
 
 // handlePeerSearch searches the swarm's token shards for a query (WO-059),
 // distinct from handleSearch's purely local catalogue lookup.
+//
+// Runs on its own goroutine (WO-070, same reasoning as handleSuggest/
+// WO-069): a synchronous handler here blocks every other RPC for as long as
+// the shard fetches take, and PeerSearch's own per-token loop can run well
+// past the client's 8s cap on a query with several tokens even when peers
+// exist. The zero-peers case is additionally fast-pathed inside PeerSearch
+// itself (swarm/shard.go) rather than only here, since any caller benefits
+// from not walking dead fetches when there is nothing to fetch from.
 func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	var p bridge.SearchPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -609,28 +622,51 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 		})
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), peerSearchTimeout)
-	defer cancel()
-	ids, progress, err := swarmNode.PeerSearch(ctx, p.Query)
-	if err != nil {
-		return replyErr(out, env.ID, err)
-	}
-	hits, err := st.TitlesFor(ids)
-	if err != nil {
-		return replyErr(out, env.ID, err)
-	}
-	if p.Limit > 0 && len(hits) > p.Limit {
-		hits = hits[:p.Limit]
-	}
-	wireProgress := make([]bridge.TokenProgress, 0, len(progress))
-	for _, tp := range progress {
-		wireProgress = append(wireProgress, bridge.TokenProgress{
-			TokenIndex: tp.TokenIndex, Fetched: tp.Fetched, Target: tp.Target, Known: tp.Known,
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), peerSearchTimeout)
+		defer cancel()
+		ids, progress, err := swarmNode.PeerSearch(ctx, p.Query)
+		if err != nil {
+			_ = replyErr(out, env.ID, err)
+			return
+		}
+		hits, err := st.TitlesFor(ids)
+		if err != nil {
+			_ = replyErr(out, env.ID, err)
+			return
+		}
+		if p.Limit > 0 && len(hits) > p.Limit {
+			hits = hits[:p.Limit]
+		}
+		wireProgress := make([]bridge.TokenProgress, 0, len(progress))
+		for _, tp := range progress {
+			wireProgress = append(wireProgress, bridge.TokenProgress{
+				TokenIndex: tp.TokenIndex, Fetched: tp.Fetched, Target: tp.Target, Known: tp.Known,
+			})
+		}
+		_ = reply(out, env.ID, "PEER_SEARCH_RESULT", bridge.PeerSearchResultPayload{
+			Query: p.Query, Hits: hits, Available: true, Progress: wireProgress,
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(peerSearchTimeout + time.Second):
+		// peerSearchTimeout already bounds PeerSearch's own ctx, so this
+		// should only fire if something downstream of it (TitlesFor, a slow
+		// disk) runs long — the extra second is slack for that, not a
+		// second copy of the same budget. Same reasoning as handleSuggest's
+		// guard: reply now with an attributable error rather than leave the
+		// client to hit its own 8s timeout with no daemon-side signal.
+		log.Printf("PEER_SEARCH %s exceeded %v, replying with timeout rather than blocking further", env.ID, peerSearchTimeout)
+		_ = reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: fmt.Sprintf("peer search exceeded %v", peerSearchTimeout),
+			Code:    "peer_search_timeout",
 		})
 	}
-	return reply(out, env.ID, "PEER_SEARCH_RESULT", bridge.PeerSearchResultPayload{
-		Query: p.Query, Hits: hits, Available: true, Progress: wireProgress,
-	})
+	return nil
 }
 
 // handleWordStats answers WORD_STATS (WO-068): corpus-wide word % + nested
