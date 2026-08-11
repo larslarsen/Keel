@@ -59,6 +59,17 @@ Two outputs:
   palette as WO-067). May show unknown/indeterminate when no gossiped token
   sketch yet. Token estimates come from local `TokenEstimate` (push-gossip
   WO-067), not the word-stat fetch.
+- **Inline token coloring in the word itself (Lars, 2026-08-11):** render the
+  searched word with its constituent 3-gram tokens color-coded to match the
+  bottom-tier sub-bars — each character-span of the word tinted by the
+  `token_index` color of the token it belongs to, so the word visually shows
+  which token each part maps to. Alignment is a BEST GUESS: the character n-gram
+  windows overlap (e.g. "trading" → " tra","tra","rad","adi","din","ing"), so a
+  character can belong to up to ShardK windows. Use the existing `tokenize` output
+  to derive the spans; when a character sits in multiple tokens, prefer the
+  left-most / first token's color (deterministic, not random) so the coloring is
+  stable across renders. The color must match the sub-bar color for the same
+  `token_index` — the word and its sub-bars share the palette keyed by token_index.
 - **Separate** from `renderPeerProgress` (query-scoped PEER_SEARCH coverage).
 
 ## What was built (file map)

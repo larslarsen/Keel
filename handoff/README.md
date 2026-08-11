@@ -83,3 +83,4 @@ log has not been made — it will drift out from under whoever is implementing i
 | 066 | Live detection false-positive: non-live video flagged LIVE (loose `liveLoose`/thumbnail matcher) | Sr Dev (Hermes) | **Resolved** |
 | 067 | Distributed search: yield-gossip, global count, coverage UI, hardening (split from 059) | Sr Dev | **Done** |
 | 068 | Global word-level corpus telemetry: space-delimited words + on-demand HLL/CMS pack fetch → distinct-word count, per-word % + nested char-token bars | Sr Dev (Opus) | **Done** |
+| 069 | SUGGEST intermittently times out (8s native-bridge client cap vs synchronous graph walk on cold DB) | Sr Dev (Opus) | **Open** |
