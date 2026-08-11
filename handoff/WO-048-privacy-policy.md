@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Anyone |
-| **Status** | **Open — blocks store submission** |
+| **Status** | **Policy written (`PRIVACY.md`, commit 84a40ad) — not yet published at a stable URL or linked from a store listing. Blocks store submission until hosted.** |
 | **Date** | 2026-08-04 |
 
 The Chrome Web Store requires a hosted privacy-policy URL for any extension that

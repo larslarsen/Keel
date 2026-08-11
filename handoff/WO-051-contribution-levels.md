@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Anyone |
-| **Status** | **Open — blocks store submission** |
+| **Status** | **Levels 1–2 implemented and enforced** (`daemon/store/contribution.go`, `MaxImplementedLevel = LevelMirror`); Level 3 (Cohort) is defined but not yet enforced end-to-end. |
 | **Date** | 2026-08-05 |
 | **Source** | `masterplan.md` contribution levels; `DESIGN_v2` §6 |
 

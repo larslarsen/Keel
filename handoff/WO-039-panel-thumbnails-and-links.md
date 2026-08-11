@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Grok) |
-| **Status** | **Open — current** |
+| **Status** | **Done** — panel titles are links (`extension/sidepanel/index.js`, click handler ~line 742) and thumbnails render via `fillThumb` (line 104). README already listed this Done; the header here was stale. |
 | **Date** | 2026-08-04 |
 | **Source** | Lars, 2026-08-04 |
 

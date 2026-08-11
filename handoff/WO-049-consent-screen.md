@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Anyone |
-| **Status** | **Open — blocks store submission** |
+| **Status** | **Done** — `extension/consent/` first-run gate (commit 3be856b), restored after a regression (commit 3459a78). |
 | **Date** | 2026-08-04 |
 
 `DESIGN_v2` §"Disclosure" requires **an in-extension consent screen**, plus the
