@@ -362,7 +362,17 @@ to what the session actually concluded. Corrected model:
   filter locally) and gives no separate yield signal. So yield can ONLY be learned
   by each node computing its flag locally and PUSHING it via bounded-fanout
   gossip. Pull is not an option. (Earlier "pull-probe alternative" suggestion is
-  RETRACTED — it would leak K.)
+- **Transport split: token gossip vs word direct-fetch (Lars, 2026-08-11).** The
+  token layer (yield flag + count sketch) stays on PUSH gossip for two reasons:
+  (1) the YIELD flag MUST be push-only — a pull-probe would leak K (above); (2)
+  the count sketch is load-bearing for the search stop-condition, needed the instant
+  a search starts, so pre-gossiped convergence is worth the always-on cost. The
+  WORD-level telemetry (WO-068) is the opposite: display-only, never needed during
+  a search, and not attribution-sensitive (fresh per-session identity already
+  decouples it from the node), so it uses a DIRECT ON-DEMAND FETCH (request →
+  peers return their 256B word HLL → merge locally), NOT gossip. Do NOT put word
+  stats on a gossip topic — that wastes always-on bandwidth on a rarely-viewed
+  display stat. Keep the two transports distinct.
 - **Interest-clustering of neighbors (Lars, 2026-08-09):** select neighbors by
   GRAPH SIMILARITY, not randomly. Two effects raise per-fetch yield: (1) you scan
   high-overlap neighbors first (they are already top-half for you), and (2) similar

@@ -41,26 +41,35 @@ Two outputs:
   set emerges from observation. (Contrast with the character scheme's fixed
   `TokenDictSize = 27^3` dictionary, which exists only because the yield vector
   needs predetermined bit slots — irrelevant here, no yield vector for words.)
+- **TRANSPORT: direct on-demand fetch, NOT gossip (Lars, 2026-08-11).** Word
+  stats are display-only — they are never needed during a search (unlike token
+  counts, which drive FetchShard's stop-condition), so there is no reason to
+  continuously gossip them. A node that wants the global word stat sends a direct
+  request to peers (reusing WO-059's peer-fetch path); each responder returns its
+  256-byte word HLL; the requester merges locally. Cost is paid ONLY when the UI
+  actually shows the stat — zero when idle. This is the cheapest bandwidth option
+  and the right one here. (Contrast WO-067 token sketches, which stay on gossip:
+  the token YIELD flag MUST be push-only because pulling it would leak K, and the
+  token count sketch is load-bearing for the search stop-condition, needed the
+  instant a search starts. Words have neither constraint.)
 - **No fixed word dictionary, and no plaintext words on the wire — by design.**
   The HLL is CONTENT-ADDRESSED BY HASH: each observed word is normalized
   (shared rule, WO-060) and hashed locally into register positions; the word
-  string is consumed and never leaves the node. What gossips is the 256-byte
-  register array (`R []byte`, `P=8` → 2^8=256 registers, 1 byte each — same
-  shape as store.TokenSketch), never the word "trading". Nodes agree on register
-  positions because they agree on the HASH FUNCTION + normalization rule, not on
-  a vocabulary. Merge = HLL max-register union (sketch_store MergeTokenSketch
-  pattern); neither side sends word strings. This is why no fixed word
-  dictionary is needed: the character scheme's dictionary exists only to map
+  string is consumed and never leaves the node. What travels on the direct fetch
+  is the 256-byte register array (`R []byte`, `P=8` → 2^8=256 registers, 1 byte
+  each — same shape as store.TokenSketch), never the word "trading". Nodes agree
+  on register positions because they agree on the HASH FUNCTION + normalization
+  rule, not on a vocabulary. Merge = HLL max-register union (sketch_store
+  MergeTokenSketch pattern); neither side sends word strings. This is why no fixed
+  word dictionary is needed: the character scheme's dictionary exists only to map
   tokens → fixed yield-vector slots, which words don't use.
-- **Gossip cost is trivial via ONE merged global word-HLL, not per-word.**
-  Gossip a single per-node word-HLL (~256B) on a slow timer (e.g. once/min),
-  not one sketch per word. Merging N peers' single HLLs yields the global
-  distinct-word estimate in one round. Contrast per-word sketches (256B × N_words,
-  throttled to 20/tick in the token scheme — slow to converge over a huge
-  vocabulary). The merged-HLL approach is ~256B/min — negligible, and the
-  minimal-leak option (registers only, no word strings). Aggregate
-  distinct-word count + per-word frequency ARE the feature and are intentionally
-  visible to peers; the design hides only which graphs / who observed what.
+- **Gossip cost note (why direct beats it here):** per the token scheme,
+  gossiping sketches is throttled to 20/tick (sketch.go) but always-on — every
+  node publishes every tick regardless of demand. A single merged word HLL would
+  be ~256B/min always-on; a direct fetch is ~256B × responders ONLY when the UI
+  requests it. For a stat rarely viewed, direct wins. Aggregate distinct-word
+  count + per-word frequency ARE the feature and are intentionally visible to
+  peers; the design hides only which graphs / who observed what.
 - **Per-word percentage** = (distinct graphs containing w) / (distinct graphs
   total). distinct-graphs-containing-w from the word HLL; distinct-graphs-total
   from a graph-level HLL. Approximate (~1-2% HLL error) — label as estimate.
@@ -78,13 +87,14 @@ The search UI breaks a query into WORDS and shows global-corpus percentages,
 loading progressively as swarm data arrives.
 
 - **Top tier: one percentage bar per WORD in the query.** Each word bar shows its
-  global frequency (from the global word HLL). Fills as data gossiped in.
+  global frequency (from the global word HLL). Fills as data arrives from the
+  direct peer fetch.
 - **Bottom tier: nested sub-bars per ShardK CHARACTER-TOKEN the word contains.**
   A word ("trading") is sliced by the EXISTING character tokenizer into its 3-char
   n-grams (" tra", "tra", "rad", "adi", "din", "ing"). Under the word bar, show
   one smaller bar per such n-gram, color-coded by token, each showing that
   character-token's global coverage loading toward (or past) its target (from
-  WO-067's gossiped token-sketch / yield estimate). All bars load in parallel.
+  WO-067's push-only token-sketch / yield estimate). All bars load in parallel.
   Word→char-token membership is EXACT by construction: the word is the source text
   for those n-grams (run the existing `Tokenize` on the word). Never re-derive
   from a dictionary.
@@ -97,12 +107,14 @@ loading progressively as swarm data arrives.
   two renderers separate, consuming distinct data.
 - Show "~" / "est." labels for HLL approximation.
 
-## Data the UI consumes (daemon-exposed)
+## Data the UI consumes (daemon-exposed, via direct fetch)
 
-- `global_word_pct[word]` — word HLL ÷ graph HLL (WO-068 telemetry).
+- `global_word_pct[word]` — word HLL ÷ graph HLL (WO-068 telemetry), obtained by
+  a direct peer request (NOT gossip) when the UI opens.
 - `global_token_coverage[token]` + `token_target` — from k=3 character sketch
-  (WO-067 gossiped estimate). The word→char-token list is produced by running the
-  existing `Tokenize` on the word; no dictionary lookup.
+  (WO-067 gossiped estimate, push-only per WO-059 §yield-must-be-push). The
+  word→char-token list is produced by running the existing `Tokenize` on the word;
+  no dictionary lookup.
 
 ## Depends on
 
@@ -118,8 +130,9 @@ loading progressively as swarm data arrives.
 
 - [ ] Word tokenizer: space-delimited, shared normalization rule (WO-060),
       NO fixed word dictionary — counts whatever words appear in the corpus.
-- [ ] Local word HLL per node; merged with peers on a timer via bounded-fanout
-      rebroadcast; merge reveals cardinality only (no raw data).
+- [ ] Local word HLL per node; fetched on demand via direct peer request (reusing
+      WO-059 peer-fetch), merged locally — NOT gossiped on a timer. Merge reveals
+      cardinality only (no raw data).
 - [ ] Global distinct-word count exposed in swarm status (NO coverage-% metric).
 - [ ] Per-word global percentage from word HLL ÷ graph HLL; shown as estimate.
 - [ ] Search UI two-tier bar: top = per-WORD global %; bottom = per ShardK
