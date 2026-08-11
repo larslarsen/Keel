@@ -116,9 +116,23 @@ loading progressively as swarm data arrives.
       word, one color-coded sub-bar per k=3 TOKEN the word belongs to (global token
       coverage from WO-067 sketch). Bars load progressively in parallel. Read-only,
       triggers no k=1/k=3 fetch.
-- [ ] Word→token membership (which tokens a word spans) derived from the shared
-      tokenizer (WO-060 constant); sub-bars color-coded by token, not labeled with
-      token text.
+- **Word→token association is a reverse map of the daemon's tokenization, NOT a
+  re-tokenize.** The k=3 tokenizer is space- and position-aware: it slides a
+  3-token window over the normalized stream, so a token only exists when its three
+  words appear consecutively in order. Tokenizing an isolated word ("trading")
+  alone yields NOTHING (a 1-word input can't form a k=3 window) and cannot recover
+  which tokens contain it. So: the query is tokenized ONCE (correctly); the UI
+  takes the produced tokens and reverse-maps each to the words it contains (a
+  token's 3 word-slots are known). Word bars = distinct words across those tokens;
+  under word W, show exactly the tokens that contain W. Never run the tokenizer
+  over a word by itself. This also fixes alignment: since tokens come only from
+  the real full-query tokenization, word↔token membership is exact by construction
+  (the word is literally one of the token's 3 slots) — no risk of a normalized
+  token not lining up with a word start.
+- [ ] Word→token membership (which tokens a word spans) is a reverse map of the
+      daemon's tokenization output (each produced token's 3 word-slots), NOT a
+      re-tokenize of the isolated word; sub-bars color-coded by token, not labeled
+      with token text.
 - [ ] Token sub-bar may exceed its target (rendered "past target", not clamped).
 - [ ] WO-067's per-query `renderPeerProgress` coverage bar and this global
       word/token telemetry bar are distinct renderers consuming distinct data;
