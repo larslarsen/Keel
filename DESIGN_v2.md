@@ -938,10 +938,9 @@ This is why the datasets end up where they do:
 |---|---|---|
 | Live index | ~hundreds of KB | 1 — gossip the whole feed |
 | Seed pack | ~760 MB for a million videos | 1 — identical download |
-| Search slice (popular terms) | ~50–200 GB compressed | 1 — deliberate bulk download |
 | Graph blocks | 2–35 TB | 2 — prefix buckets |
 | Catalogue | large, growing | 2 — prefix buckets |
-| Long-tail search terms | small each, unbounded set | 2, or 3 if it ever matters |
+| Search token shards (WO-059) | shard size scales with corpus/M; M is a version-locked constant | 2 — token grouped into a shard, whole shard fetched and filtered locally |
 
 The seed and the live index are the same idea at two scales, and the reason both
 give a stronger guarantee than the graph does is not cleverness — it is that they
