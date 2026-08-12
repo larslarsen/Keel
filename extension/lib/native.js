@@ -291,9 +291,13 @@ export function createNativeBridge(hooks) {
   function request(type, payload, timeoutMs = 8000) {
     return new Promise((resolve, reject) => {
       if (!port || !helloOk) {
+        // lastHostError first: when the host explained why it exited, that is
+        // the only account of the failure anyone has. The consent screen shows
+        // this string verbatim, and "daemon not connected" told the user
+        // nothing they could act on.
         reject(
           new Error(
-            lastHelloFailure?.reason || "daemon not connected"
+            lastHostError || lastHelloFailure?.reason || "daemon not connected"
           )
         );
         return;

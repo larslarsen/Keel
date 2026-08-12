@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,94 @@ type ownerPaths struct {
 	guard      string
 	secret     string
 	log        string
+	// dbPath keeps the corpus with the credential that guards it. Chosen here
+	// rather than by the store so a fallback cannot separate them.
+	dbPath string
+}
+
+// ownerDirUsable reports whether a directory can hold the owner's state.
+//
+// It performs exactly what prepareOwnerPaths will do — create, apply the
+// owner-only permissions, and write a file — so a directory that passes here
+// cannot fail there. Probing with the real operations is the point: on Windows
+// a directory can exist and still refuse both the DACL and the write.
+func ownerDirUsable(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	if err := secureOwnerPath(dir, true); err != nil {
+		return fmt.Errorf("secure %s: %w", dir, err)
+	}
+	probe := filepath.Join(dir, ".keel-write-probe")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("write to %s: %w", dir, err)
+	}
+	_ = f.Close()
+	_ = os.Remove(probe)
+	return nil
+}
+
+// ownerBaseCandidates lists directories that could hold Keel's state, in
+// preference order, for the case where the user named none.
+//
+// The config directory is where Keel belongs. The rest exist because it is not
+// always openable — a denied ACL, a redirected or roaming profile, a read-only
+// volume — and the daemon dying at startup over it is a far worse outcome than
+// living somewhere else. LOCALAPPDATA is second because the Windows installer
+// already writes and verifies the native-host manifests there, which makes it
+// known-good on exactly the machines where the config directory fails.
+func ownerBaseCandidates() []string {
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		for _, e := range out {
+			if e == p {
+				return
+			}
+		}
+		out = append(out, p)
+	}
+	if base, err := os.UserConfigDir(); err == nil {
+		add(filepath.Join(base, "keel"))
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); v != "" {
+		add(filepath.Join(v, "Keel"))
+	}
+	if exe, err := os.Executable(); err == nil {
+		add(filepath.Join(filepath.Dir(exe), "keel-data"))
+	}
+	add(filepath.Join(os.TempDir(), "keel"))
+	return out
+}
+
+// chooseOwnerBase picks the first candidate that already holds state, else the
+// first that is usable. Continuity first: a corpus must not be stranded because
+// a directory that failed once is writable again now.
+func chooseOwnerBase() (string, error) {
+	candidates := ownerBaseCandidates()
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "keel.sqlite")); err != nil {
+			continue
+		}
+		if err := ownerDirUsable(dir); err == nil {
+			return dir, nil
+		}
+	}
+	var problems []string
+	for _, dir := range candidates {
+		if err := ownerDirUsable(dir); err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		if len(problems) > 0 {
+			log.Printf("state directory: falling back to %s (%s)", dir, strings.Join(problems, "; "))
+		}
+		return dir, nil
+	}
+	return "", fmt.Errorf("no writable location for Keel's data: %s", strings.Join(problems, "; "))
 }
 
 func resolveOwnerPaths() (ownerPaths, error) {
@@ -38,11 +127,11 @@ func resolveOwnerPaths() (ownerPaths, error) {
 			dbIdentity = abs
 			configDir = filepath.Dir(abs)
 		} else {
-			base, err := os.UserConfigDir()
+			base, err := chooseOwnerBase()
 			if err != nil {
 				return ownerPaths{}, err
 			}
-			configDir = filepath.Join(base, "keel")
+			configDir = base
 			dbIdentity = filepath.Join(configDir, "keel.sqlite")
 		}
 	} else if dbIdentity == "" {
@@ -74,6 +163,7 @@ func resolveOwnerPaths() (ownerPaths, error) {
 		guard:      filepath.Join(runtimeDir, "owner-"+id+".election"),
 		secret:     filepath.Join(configDir, "owner-"+id+".secret"),
 		log:        filepath.Join(configDir, "owner-"+id+".log"),
+		dbPath:     dbIdentity,
 	}, nil
 }
 

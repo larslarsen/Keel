@@ -337,7 +337,11 @@ func runOwnerProcess() int {
 
 	// Ownership is established before SQLite or libp2p is touched. Losing
 	// candidates therefore cannot become secondary database/swarm owners.
-	st, err := store.Open(os.Getenv("KEEL_DB"))
+	// p.dbPath, not the environment: resolveOwnerPaths has already chosen a
+	// usable directory, and the corpus must live with the credential that
+	// guards it. Passing an explicit path also means the store will not run its
+	// own fallback and land somewhere else.
+	st, err := store.Open(p.dbPath)
 	if err != nil {
 		log.Printf("store open: %v", err)
 		return 1
