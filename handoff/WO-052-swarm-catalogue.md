@@ -1,5 +1,11 @@
 # WO-052 — Level 2: catalogue sharing over the swarm
 
+> **Current-contract note (2026-08-11):** WO-078 supersedes this completed
+> order's broad “publishes nothing” language. Level 1 remains a full block
+> consumer and serves no graph/catalogue/search blocks, but it does originate
+> live notices and exchanges WO-068's whole word-level HLL/CMS aggregate. It
+> does not join the three-gram yield/token-sketch topics.
+
 | | |
 |---|---|
 | **Addressee** | Sr Dev |

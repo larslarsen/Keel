@@ -1,6 +1,19 @@
 # Roadmap
 
-Updated 2026-08-03.
+Updated 2026-08-11.
+
+## Current stabilization queue
+
+The normative architecture is `ARCHITECTURE_CURRENT.md`. Before more product
+features or external swarm testing, close the architecture-review queue in this
+order: WO-077/078 (Level-1 network boundary), WO-081 (bridge compatibility),
+WO-080 (tab-scoped proof), WO-083 (extension module split), then WO-082 (final
+document audit). WO-079's single daemon owner/proxy foundation is implemented;
+WO-077 supplies its runtime-policy/status integration, and Windows live QA remains.
+
+These are corrections to privacy, process ownership and release boundaries.
+They take precedence over the older “Near queue” preserved below as phase
+history.
 
 The product is **not** "record what YouTube showed you." That is the substrate. The product is a
 recommendation engine drawing on other people's observations to suggest things YouTube would never
@@ -160,8 +173,10 @@ Each needs a design document before any work order:
 - **Prio, alongside STAR** — decided 2026-08-03. STAR ships first; Prio follows in the same stage
   because STAR is blind below K and the findings that matter — rare, harmful pathways — live in the
   tail. Needs a second non-colluding aggregator (see partner requirements).
-- **Contribution levels** — 1 (strictly personal, contributes nothing), 2, 3 (full funnel state).
-  Level 1 must stay fully functional or the privacy promise becomes a toll booth.
+- **Contribution levels** — 1 (full consumer; live + word aggregate outbound,
+  no block service), 2 (mirror cached public blocks), 3 (threshold aggregate),
+  4 (attributed transparency). Level 1 must keep the full product or the privacy
+  promise becomes a toll booth. See `ARCHITECTURE_CURRENT.md` §3.
 - **Semantic graphing and the entropy slider** — how peer paths become a ranking, and what 0% versus
   100% actually computes.
 - **Suppression detection** — the statistical claim being made, and what sample size supports it.

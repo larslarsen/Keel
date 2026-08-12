@@ -7,7 +7,8 @@ log has not been made — it will drift out from under whoever is implementing i
 
 | Document | Role | Changes |
 |---|---|---|
-| `DESIGN_v2.md` | Standing architecture. Why the system is shaped this way. | Rarely, and never silently |
+| `ARCHITECTURE_CURRENT.md` | Normative current architecture. What the system must be now. | Rarely, and never silently |
+| `DESIGN_v2.md` | Architecture rationale and decision history. Why the system is shaped this way. | Preserve history; label superseded claims |
 | `BUILD_P0.md` | Standing spec for the current phase. What "done" means. | Per phase |
 | `handoff/WO-NNN-*.md` | **Work orders.** A specific, bounded change with rationale and acceptance criteria. | One per change |
 
@@ -78,6 +79,7 @@ log has not been made — it will drift out from under whoever is implementing i
 | 060 | Protocol versioning for deterministic, node-agreeing constants (tokenizer k, bucket params) | Sr Dev | **Done** — key scheme versioned, carried in protocol ids |
 | 061 | Version negotiation, compatibility policy, update UX (connect-if-compatible, warn/auto-update if behind) | Sr Dev | **Done** — identify-based version observation, compat policy, update notice |
 | 062 | Testing strategy: fuzz + property + error-injection + regression, not review models | Sr Dev | **Done** — discovery proven, property tests, wire fuzzing, CI ratchet (80% floor not met; ratchet instead) |
+| 063 | TikTok panel: the Mirror (no re-rank rails) | Sr Dev | **Built** — video_id via xgwrapper, hashtags/sound extract, SCROLL_HISTORY + panel history; dwell/engagement observers thin |
 | 064 | Watch queue: add-to-queue button + daemon-persisted ordered queue + play/remove/reorder | Sr Dev (Opus) | **Done** |
 | 065 | Refresh suggestions button (re-draw via SUGGEST, same entropy) | Sr Dev (Opus) | **Done** |
 | 066 | Live detection false-positive: non-live video flagged LIVE (loose `liveLoose`/thumbnail matcher) | Sr Dev (Hermes) | **Resolved** |
@@ -87,3 +89,14 @@ log has not been made — it will drift out from under whoever is implementing i
 | 070 | PEER_SEARCH times out on multi-word queries with no/empty peers (8s bridge cap; token-fetch stall) | Sr Dev (Opus) | **Done** — zero-peers fast path in `PeerSearch`, `peerSearchTimeout` cut to 6s, handler off the bridge thread |
 | 071 | Panel not context-aware per platform: stale YT data on tab switch; TikTok shows YT counts | Sr Dev (Opus) | **Done** — panel gated to YT/TikTok watch pages via `tabs.onUpdated`/`action.onClicked`; TikTok-counts bug was `rememberPage` dropping `platform` on its rail-generation reset |
 | 072 | Same channel name twice in "Channels seen most" (two channel_ids, not canonicalized) | Sr Dev (Opus) | **Open** |
+| 073 | Panel must follow the ACTIVE tab's platform, not the last page any tab reported (context broadcasts + panel consumption; follow-on from 071 live QA) | Sr Dev (Opus) | **Done** 2026-08-11 — SW broadcasts active-tab context (`PANEL_CONTEXT`/`PANEL_CONTEXT_QUERY`, `closePanelInWindow` on leave, wired to onActivated/onUpdated/sweep); panel consumes it, seeds only same-platform proofs, guards absorb; 10 new tests, 87/87; needs live QA |
+| 074 | TikTok's For-You feed must open the panel — WO-071's gate was YouTube-shaped (TikTok never navigates to `/@author/video/…`; FYP URL stays `/`) | Sr Dev (Opus) | **Done** 2026-08-11 — gate now platform-aware via `panelAllowedFor`: YT = WATCH_NEXT only (unchanged), TT = WATCH_NEXT + HOME(FYP); button on FYP opens panel, panel closes only leaving TikTok; 5 new tests, 92/92; needs live QA |
+| 075 | Toolbar button is a toggle — closes an already-open panel (open() was a no-op, panel unclosable from toolbar) | Sr Dev (Opus) | **Done** 2026-08-11 — click handler toggles via `panelOpen()` port counter + `closePanelInWindow`; YT watch + TT FYP covered; 3 new tests, 95/95; needs live QA. Follow-up: per-window toggle via `PANEL_HANDSHAKE` (a panel in one window no longer dead-clicks another window) + 4 tests, 99/99, **live-verified** |
+| 076 | Keel button dead on TikTok `/live`, `/explore`, `/following` — `surfaceFromUrl` maps only `/`, `/foryou`, `/@author/video`, `/@author/live` for tt; everything else is `surface:null` → panel gate closed, observer idle | Sr Dev (Opus) | **Open** — same treatment as WO-074's FYP: classify the three feeds as HOME; panel opens/closes there, WO-063 mirror arms; live-verify card extraction on each page (selector gap → WO-063) |
+| 077 | Contribution-level changes must reconfigure the running swarm | Sr Dev (Claude Sonnet/Opus) | **Done** 2026-08-11 — capability `Policy` replaces Serve/Fetch/ServeOwnObservations; supervisor replaces the node on change (gate shut first, asymmetric persist order); `stored`/`startup` two-value crash safety; L1 now fetches/pre-walks/searches and answers word telemetry but joins no three-gram topic; 14 new tests incl. failure injection + crash points, each verified red-then-green; suite green under `-race`, swarm coverage 81.3→82.2% |
+| 078 | Resolve the Level-1 outbound/privacy-contract contradiction | Sr Dev (Claude Sonnet/Opus) | **Ready** — Level 1 fully consumes/pre-walks, gossips live and exchanges word HLL/CMS; it serves no blocks and joins no three-gram telemetry topic |
+| 079 | One local daemon owns SQLite and the swarm across browsers/profiles | Sr Dev (Codex) | **Owner/proxy implemented** 2026-08-11 — authenticated Unix-socket/Windows-pipe proxy, singleton election, concurrent sessions; WO-077 policy/status integration + Windows live QA pending |
+| 080 | Side-panel page proof must be tab-scoped, not extension-global | Sr Dev (Claude Sonnet/Opus) | **Ready** — state model decided |
+| 081 | Keel Bridge needs real compatibility negotiation | Sr Dev (Claude Sonnet/Opus) | **Ready** — capability protocol decided |
+| 082 | Reconcile the standing architecture and current work-order authority | Architect / Sr Dev | **Architecture done** — final audit after 077–083 implementation |
+| 083 | Split the extension control plane at its existing responsibility boundaries | Sr Dev (Claude Opus) | **Ready after WO-080** — module boundaries decided |

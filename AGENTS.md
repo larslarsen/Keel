@@ -8,11 +8,13 @@ Browser extension + local Go daemon. Gives people control over the video recomme
 
 ## Read before coding
 
-1. `handoff/WO-046-panel-shows-our-suggestions.md` — **current work order. Start here.**
+1. `handoff/WO-077-contribution-level-runtime-boundary.md` — **current work order. Start here.**
    `handoff/README.md` indexes every order and its status.
-2. `ROADMAP.md` — phase state and queue.
-3. `BUILD_P0.md` — P0 spec; §9 is the closed acceptance record.
-4. `DESIGN_v2.md` — architecture and rationale. §2.1, §3, §6.0 are load-bearing.
+2. `ARCHITECTURE_CURRENT.md` — normative current architecture and implementation order.
+3. `ROADMAP.md` — product stages and current stabilization queue.
+4. `BUILD_P0.md` — P0 spec; §9 is the closed acceptance record.
+5. `DESIGN_v2.md` — rationale and history. §2.1, §3, §6.0 remain load-bearing
+   where `ARCHITECTURE_CURRENT.md` does not explicitly amend them.
 
 `handoff/README.md` indexes every work order.
 
@@ -25,6 +27,17 @@ the project, not just the code. If one seems wrong, say so and cite the section 
 
 - **No observation data in browser storage.** Not IndexedDB, not `chrome.storage`, not
   `localStorage`. In-memory only, bounded (~200), flushed on reconnect. (§2.1)
+- **Level 1 is a full consumer and a live-gossip participant.** It may receive
+  the seed, fetch graph/catalogue/search buckets, pre-walk the graph,
+  receive/relay/originate authorless livestream
+  notices, and exchange the whole fixed-shape word-level HLL/CMS telemetry pack.
+  It must not serve cached or own blocks, announce block providers, originate
+  or join three-gram yield/token-sketch topics, or publish recommendation edges.
+  Cached-block service begins at explicit Level 2; own-edge publication begins
+  at Level 3. (`ARCHITECTURE_CURRENT.md` §3)
+- **One per-user daemon owns SQLite and libp2p.** Browser-launched native-host
+  processes are local IPC proxies only; never open the corpus or start a swarm.
+  (`ARCHITECTURE_CURRENT.md` §5)
 - **No MAIN-world scripts. No `fetch`/XHR interception.** Read the rendered DOM. (§4.1)
 - **Never call the YouTube Data API.** Its terms force deletion within 30 days. (§3.2)
 - **Never store a raw search query.** Hash it. (§4.2)

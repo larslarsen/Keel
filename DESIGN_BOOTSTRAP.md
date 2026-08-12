@@ -1,8 +1,7 @@
 # Design note — catalogue vs funnel, and the bootstrap engine
 
-> **Current architecture lives in `DESIGN_v2.md` §7.4.** That section is the
-> single statement of how the swarm, prefix bucketing, the two datasets and the
-> contribution levels actually work as built.
+> **Current normative architecture lives in `ARCHITECTURE_CURRENT.md` §3.**
+> `DESIGN_v2.md` §7.4 contains the rationale and implementation history.
 >
 > What follows is the working record — the reasoning, measurements and reversals
 > that produced it, in the order they happened. Several early passages were
@@ -406,12 +405,14 @@ The long tail still needs fetch-on-demand, and hiding *that* query needs private
 information retrieval — the technique Signal-class systems use for metadata. Real,
 much larger, and not required before the seed exists.
 
-## Consequence for the levels
+## Consequence for the levels *(superseded 2026-08-11)*
 
-This makes Level 1 a clean promise rather than a mostly-true one: **a Level 1
-node asks the network for nothing**, so nothing leaves it, questions included. It
-runs on the seed plus its own recording. Level 2 is where a user opts into the
-query-based system, and the seed is what keeps that exposure to unusual videos.
+This was the interim conclusion. The current decision is the opposite:
+**Level 1 is a full consumer.** It receives the common seed, fetches whole prefix
+buckets and pre-walks the graph; Level 2 adds cached-block service rather than
+access. Level 1 also participates in live gossip and whole word-level HLL/CMS
+telemetry while serving no graph/catalogue/search blocks. See
+`ARCHITECTURE_CURRENT.md` §3 and WO-078.
 
 ## Who the seed is built from — decided 2026-08-05
 

@@ -1,0 +1,96 @@
+# WO-078 — Resolve the Level-1/live-gossip privacy-contract contradiction
+
+| | |
+|---|---|
+| **Addressee** | Sr Dev (Claude Sonnet/Opus) |
+| **Status** | **Architecture decided — ready for Sr Dev (Claude Sonnet/Opus)** |
+| **Date** | 2026-08-11 |
+| **Source** | Architecture review, 2026-08-11 |
+
+## Problem
+
+`DESIGN_v2.md` §6.1 defines Level 1 as “Nothing, ever” leaves the device. §7.5
+and the current implementation publish a livestream's ID and title at every
+level, including Level 1. A message without an application-level author is not
+proof that its origin cannot be inferred from peer topology, connection metadata
+or timing.
+
+The privacy policy discloses an exception, but the product still calls Level 1
+“Strictly Personal” and says recordings do not leave. These statements cannot
+all be true as written.
+
+## Decision — 2026-08-11, Lars
+
+**Level 1 is a full consumer with two narrow outbound data products.** A Level-1 node receives the common seed, fetches whole-prefix
+graph/catalogue/search data and pre-walks the graph so the full consumer product
+works. It does not serve cached blocks, announce itself
+as their provider, or serve/publish its own recommendation observations.
+
+It also discovers peers for the live network, receives and serves the whole
+live index/snapshot, relays gossip, and originates notices for livestreams it
+observes. This is what lets the Live tab contain long-tail streams at the
+default level.
+
+The Level-1 outbound contract is:
+
+- A live notice contains platform, video id, title/channel when known, and a
+  coarse sighting time.
+- It contains no recommendation edge, watched-video context, slot, query,
+  stable application author or watch trail.
+- Level 1 may fetch graph, catalogue, search-shard and word data. Requesting
+  whole prefix buckets exposes peer participation and coarse bucket interests;
+  privacy copy must disclose that cost.
+- Level 1 does not serve graph, catalogue or search-shard blocks, including rows
+  it previously fetched. It makes no provider announcements.
+- Level 1 does not join, relay or originate the three-gram `YieldTopic` or
+  `SketchTopic`, because it serves no searchable blocks. Its fetch path treats
+  the missing optimization/count signals as unknown and continues. Level 2
+  joins those topics for mirrored blocks it actually serves.
+- Level 1 fetches and serves the separate WO-068 whole word-level HLL/CMS pack,
+  including aggregate local-corpus input. It contains no plaintext words, ids,
+  edges or query, but its CMS permits estimates for guessed words. Treat this as
+  an explicit aggregate disclosure, not as “nothing leaves.”
+- Authorless gossip reduces durable attribution but does not erase connection
+  metadata. A direct neighbour may infer an origin from topology and timing;
+  user-facing copy must not claim otherwise.
+
+“Strictly Personal” therefore describes what the node does not contribute:
+neither raw blocks from the durable corpus nor its recommendation trail is
+served. It does not mean offline or zero network traffic. Every short-form claim
+must name peer requests, live notices and the word-level aggregate in the same
+context.
+
+## Required after the decision
+
+- Make `DESIGN_v2.md` §6, §7.4 and §7.5, `PRIVACY.md`, consent copy, level UI,
+  and tests say the same thing.
+- State the residual network-metadata claim conservatively; do not claim that
+  unsigned gossip makes an origin undiscoverable.
+- Add an automated test proving the selected Level-1 outbound behavior.
+
+## Do not
+
+- Do not treat a missing payload author as a complete anonymity proof.
+- Do not describe “Strictly Personal” as zero network traffic or zero outbound
+  data; name live notices and the word-level aggregate.
+- Do not change this contract through UI copy alone.
+
+## Acceptance
+
+- [ ] One unambiguous Level-1 contract exists in all standing and user-facing
+      documents.
+- [ ] A Level-1 test proves graph/catalogue/search consumption, pre-walk and
+      live receive/relay/origination all work, and the policy does not gate the
+      deferred seed-consumer seam.
+- [ ] The same test proves every graph/catalogue/search block-serve and provider
+      path remains disabled, including for data cached by Level 1.
+- [ ] The Level-1 node does not join, relay or originate the three-gram yield/
+      token-sketch topics; peer fetch/search still completes without them.
+- [ ] A Level-1 word-telemetry test proves the whole HLL/CMS pack is exchanged
+      while no plaintext word, id, edge or query appears on the wire.
+- [ ] No live payload contains context video, slot, query or stable author.
+
+## Challenge
+
+If the live payload needs another field, justify why the feed cannot work
+without it and update the privacy copy before code ships.

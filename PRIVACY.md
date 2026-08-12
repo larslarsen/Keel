@@ -1,10 +1,11 @@
 # Keel — Privacy Policy
 
-Last updated: 5 August 2026
+Last updated: 11 August 2026
 
-Keel records which videos YouTube recommends to you, so you can see and control
-your own recommendations. This page describes exactly what it collects, where it
-goes, and what it never does.
+Keel records recommendation surfaces on YouTube and the scrolling feed presented
+to you on TikTok, so you can see and control what recommender systems show you.
+This page describes exactly what it collects, where it goes, and what it never
+does.
 
 Every claim here is a property of how Keel is built, not a promise about how we
 behave. The source is public and each one can be checked.
@@ -14,20 +15,22 @@ behave. The source is public and each one can be checked.
 ## The short version
 
 **Your recording stays on your device.** There is no account, no server
-receiving your data, and no analytics. The record of what you were shown, and of
-which videos you opened, is never sent anywhere at any setting.
+receiving your data, and no analytics. The record of what you were shown, which
+videos you opened, and which TikTok clips the feed presented is never sent as a
+raw history at any setting.
 
 **One thing does leave, at every setting: when Keel sees a livestream it tells
 other Keel users that the stream exists.** That notice is a video id and title
-with no sender attached, so it says a stream is on, not who saw it. It is what
-puts anything in the Live tab. Everything else on this page describes data that
-stays put.
+with no sender field. After it is relayed the payload does not identify who saw
+it, but a directly connected peer may infer an origin from network topology and
+timing. It is what puts anything in the Live tab. Everything else on this page
+describes data that stays put.
 
 ---
 
 ## What Keel records
 
-When you are on a YouTube watch page or the YouTube homepage, Keel records the
+On a YouTube watch page or the YouTube homepage, Keel records the
 videos being **recommended to you**:
 
 - Video ID, title, channel, duration, view count and published date
@@ -35,7 +38,12 @@ videos being **recommended to you**:
 - Which video it appeared beside — the id and title of the video you had open
 - When it was observed
 
-That is the whole of it.
+On supported TikTok feed/video surfaces there is no visible “up next” rail to
+record. Keel instead records the clips the rendered feed presents, in scroll
+order: video id, caption, creator, hashtags and sound id when present, plus when
+the clip was observed. Hashtag and sound clusters stay local. Fields for dwell
+and engagement exist for a future local mirror, but the current observers do not
+reliably collect them; this policy must change before collection does.
 
 ### This means Keel holds a list of videos you opened
 
@@ -54,23 +62,26 @@ computed on your machine like everything else.
 
 ## What Keel does not record
 
-- **Not how you watch.** Keel records *which* videos you opened, because a
+- **Not how you watch.** On YouTube, Keel records *which* videos you opened, because a
   recommendation has to come from somewhere — see below. It records nothing
   about your viewing of them: not whether you pressed play, how long you
   stayed, how far you got, or whether you finished. It cannot tell a video you
   watched to the end from one you closed after a second.
-- **Not videos that recommended nothing.** A video is only noted if Keel
+- **Not YouTube videos that recommended nothing.** A YouTube video is only noted if Keel
   captured recommendations beside it, and it runs only on watch pages and the
   homepage. Anything you reach from search, your subscriptions, a channel page
   or a link leaves no trace unless recommendations were recorded there.
-- **Not your searches.** Search pages are out of scope entirely; Keel does not
-  run there.
+- **Not raw searches.** Current search pages are out of scope. If a later
+  search→feed feature is enabled, only a local cryptographic hash may be stored;
+  the raw query may never be persisted.
 - **Not your identity.** No account, no email, no sign-in, no device
   fingerprint, no advertising ID.
-- **Not your browsing outside YouTube.** The extension runs only on
-  `www.youtube.com`.
-- **Not page content.** Keel reads the rendered list of recommendations. It does
-  not read comments, messages, or anything you type.
+- **Not your browsing outside the named platforms.** The extension has access
+  only to `www.youtube.com` and `www.tiktok.com`, and stays idle off supported
+  surfaces on those sites.
+- **Not unrelated page content.** Keel reads only the rendered recommendation/
+  feed fields listed above. It does not read comments, messages, or anything
+  you type.
 
 ## Where it is stored
 
@@ -79,7 +90,7 @@ program you install and run yourself.
 
 The browser extension stores **no observation data at all** — not in
 `localStorage`, not in IndexedDB, not in extension storage. The only thing the extension
-keeps is one setting: whether recommendations are hidden. Your channel
+keeps is UI preferences and recording consent. Your channel
 blocklist, contribution level and disk-space limit all live in the local
 database.
 
@@ -104,11 +115,12 @@ not ask.
 
 **At every setting, Keel announces livestreams it sees.** When a stream appears
 in your recommendations, Keel tells other Keel users that the stream exists — a
-video id and title. The notice carries **no sender**: not your name, not your
-address, not even an identifier for your copy of Keel. Because of how the
-network passes messages along, a computer receiving one cannot tell whether you
-saw the stream or were simply relaying somebody else's notice. This is what
-fills the Live tab, for you and for everyone.
+video id and title. The notice carries **no sender field**: not your name and not
+an application identifier for your copy of Keel. Once relayed, its payload does
+not say whether you saw the stream or forwarded somebody else's notice. A
+directly connected peer still sees ordinary peer-to-peer connection metadata
+and may infer an origin from topology and timing. This is what fills the Live
+tab, for you and for everyone.
 
 Keel does not use the YouTube API, and never contacts any Keel-operated server,
 because none exists. Peer discovery uses the public IPFS network, which nobody
@@ -119,7 +131,8 @@ in this project runs or controls.
 This is the honest cost of a peer-to-peer design and we would rather state it
 plainly than bury it.
 
-**This does not apply at the default setting**, which asks for nothing.
+At the default setting the block-request paragraph below does not yet apply, but
+the livestream metadata exposure above does.
 
 Above the default, when Keel asks the network about a video, the peers it asks
 can see **your IP address and which video you asked about** — though it asks in
@@ -143,7 +156,8 @@ deliberate choice you make.
 **Level 1 — personal (the default).** Nothing you record leaves your device, and
 Keel asks the network for nothing. It works from what it has recorded here. The
 one exception is the livestream notice described above, which carries nothing
-about you and happens at every setting.
+in its payload about you but retains the network-metadata residual stated above,
+and happens at every setting.
 
 **Level 2 — mirror.** Your computer stores and passes on data *other people*
 published, using the disk space you allot, and asks peers for recommendation

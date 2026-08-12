@@ -1,6 +1,8 @@
-# Keel daemon (P0)
+# Keel desktop owner and native host
 
-Native-messaging host. Owns the SQLite corpus. The browser extension never persists observations.
+One per-user desktop owner holds the SQLite corpus and peer network. Each browser
+native-messaging launch is a thin authenticated local proxy to that owner. The
+browser extension and proxy never persist observations or open the database.
 
 **Target browsers:** Chrome, Chromium, **Brave** (primary QA), Edge, Firefox. Brave is Chromium —
 use `manifest.chrome.json` / `prepare:chrome`. Only the native-messaging host path differs.
@@ -46,6 +48,37 @@ To remove: `./keel-host uninstall` (add `-dry-run` to preview).
 the exact `reg add` commands are printed for you to run.
 
 Then reload the extension. The SidePanel should show **Desktop app connected**.
+
+The first browser connection starts the owner if necessary. Closing the browser
+ends only its proxy session; the owner remains alive for live gossip, pre-walk
+and peer-provider work. All supported browsers and profiles for the OS user
+share that owner.
+
+Useful lifecycle commands:
+
+```sh
+./keel-host owner status
+./keel-host owner stop
+```
+
+`uninstall` stops the owner and removes its local authentication credential in
+addition to the browser host registrations. It does not delete `keel.sqlite` or
+your recorded corpus.
+
+### Local owner transport
+
+- Linux/macOS: a mode-`0600` Unix socket in a mode-`0700` Keel runtime
+  directory. A kernel-backed election guard protects stale-socket recovery.
+- Windows: `\\.\pipe\keel-owner-<user SID>-<install id>`, created as the first
+  named-pipe instance with a protected DACL granting only the current user.
+- Both: the proxy must additionally prove a random 256-bit installation secret
+  stored with current-user-only permissions. The first frame negotiates required
+  `owner_ipc:1`; incompatible components fail closed and never start a second
+  database/swarm owner.
+
+Owner diagnostics are appended to a mode-`0600` `owner-<install id>.log` beside
+the database. `KEEL_RUNTIME_DIR` can relocate the Unix runtime directory for
+packaging/tests; it does not relocate the corpus.
 
 ### Manual (reference)
 
@@ -112,6 +145,9 @@ The registry value is the full path to a `com.keel.host.json` file (same JSON sh
 
 ## Protocol
 
-Framed stdio JSON envelopes (`v: 2`) — `DESIGN_v2.md` §8.1 and `extension/lib/protocol.js`.
+Browser ↔ proxy remains framed stdio JSON envelopes (`v: 2`) — `DESIGN_v2.md`
+§8.1 and `extension/lib/protocol.js`. After the authenticated owner handshake,
+the proxy forwards those JSON frames byte-for-byte over the local socket/pipe.
+Correlation IDs stay scoped to that one proxy connection.
 
 P0 types: `HELLO` / `HELLO_ACK`, `IMPRESSIONS` / `IMPRESSIONS_ACK`, `STATS` / `STATS_RESULT`, `ERROR`.

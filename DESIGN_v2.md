@@ -1,6 +1,9 @@
 # Keel — Architecture v2
 
-**Status:** Design proposal, supersedes `/home/lars/EEE/old-strategy/masterplan.md` and the v1 strategy documents.
+**Status:** Architecture rationale and decision history. `ARCHITECTURE_CURRENT.md`
+is the normative current architecture as of 2026-08-11 and wins where this
+historical document conflicts with it. Supersedes
+`/home/lars/EEE/old-strategy/masterplan.md` and the v1 strategy documents.
 **Date:** 2026-08-02
 **Audience:** the implementing agent, and reviewers.
 
@@ -82,7 +85,7 @@ Two trust zones. The browser is assumed hostile; everything that accumulates liv
 │ EXTENSION — thin client. No observation data persisted, ever.     │
 │   content script: read rendered DOM → normalize → in-memory only  │
 │   sidepanel: render what the daemon sends; apply, never decide    │
-│   chrome.storage: blocklist + toggles + consent state ONLY        │
+│   chrome.storage: UI preferences + recording consent ONLY        │
 └───────────────────────────┬───────────────────────────────────────┘
                             │  Keel Bridge (native messaging, §8.1)
                             ▼
@@ -94,11 +97,11 @@ Two trust zones. The browser is assumed hostile; everything that accumulates liv
 │   preservation: records, fingerprints, tombstones (§7)            │
 │   contribution client: STAR (Prio behind the same seam, §6.2)     │
 └───────────────────────────┬───────────────────────────────────────┘
-                            │  opt-in only, default off (§6.1)
+                            │  observation contribution opt-in (§6.1)
                             ▼
 ┌───────────────────────────────────────────────────────────────────┐
-│ L3 → signed public bundles → IPFS                                 │
-│ L2 → STAR → 1 aggregation server + independent OPRF helper        │
+│ L4 → signed public bundles → IPFS                                 │
+│ L3 → STAR → 1 aggregation server + independent OPRF helper        │
 │                    ↓                                              │
 │      signed releases → Zenodo / GitHub / IPFS / BitTorrent        │
 └───────────────────────────────────────────────────────────────────┘
@@ -346,7 +349,8 @@ A one-shot catalogue pass on open updates existing unknowns the same way. No dis
 
 ### 4.3 Local store
 
-- Impressions land in IndexedDB (extension) or SQLite (daemon, when present).
+- Impressions land only in SQLite owned by the local daemon. The extension may
+  hold a bounded in-memory reconnect backlog but never persists observations.
 - **Kept indefinitely by default.** The corpus is the product: recommendation quality depends on
   history depth, and G2 (preservation) requires that a video removed in month *N* still has a record
   in month *N+12*. A 90-day sweep would destroy exactly what this exists to keep.
@@ -496,25 +500,28 @@ for the other.
 
 ### 6.1 Consent — the slider
 
-The v1 Anonymity Slider was right, and its three levels map cleanly onto the three contribution
-paths. Original naming retained. **What v1 got wrong was narrow**: it sent full funnel state
-(video IDs + full cohort ID) at Level 3 *and* claimed K-anonymity protection for those contributors.
-Those cannot both be true. Full disclosure is a legitimate option; it just has to be labelled
+The original three-level slider has since become a four-level ladder so that
+mirroring public data is separate from contributing observations. The current
+contract is normative in `ARCHITECTURE_CURRENT.md` §3. **What v1 got wrong was
+narrow**: it sent full funnel state (video IDs + full cohort ID) at its Level 3
+and claimed K-anonymity protection for those contributors. Those cannot both be
+true. Full disclosure is a legitimate option; it just has to be labelled
 honestly rather than dressed as anonymity.
 
 | Slider setting | What leaves the device | Mechanism | Partner needed |
 |---|---|---|---|
-| **L1 — Strictly Personal** *(default)* | Nothing, ever | — | No |
-| **L2 — Cohort Aggregator** | Aggregate edge counts only | STAR (§6.2) | **Yes** — OPRF helper |
-| **L3 — Transparency Contributor** | Signed public observations, attributed | Direct publish to IPFS | No |
+| **L1 — Strictly Personal** *(default)* | Livestream notices and the whole fixed-shape word HLL/CMS aggregate; no raw words, recommendation edges, watch trail or served blocks | Live gossip/snapshot (§7.5) + WO-068 word telemetry | No Keel-operated partner |
+| **L2 — Mirror** | The same live notices; serves only public data mirrored from others | Prefix buckets (§7.4) | No |
+| **L3 — Cohort** *(not built)* | Threshold-protected aggregate edge measurements | STAR (§6.2) | **Yes** — OPRF helper |
+| **L4 — Transparency** *(not built)* | Signed public observations, attributed | Direct publication | No |
 
 **L1 is and remains the default.** Not only because CWS Limited Use and GDPR both require
 freely-given specific consent rather than a pre-ticked box, but because a transparency tool that
 collects by default is precisely the behaviour we criticise.
 
-**L3 must be labelled as public.** The consent screen must say, in plain words: *this is published,
+**L4 must be labelled as public.** The consent screen must say, in plain words: *this is published,
 it is attributable to you, anyone including YouTube can read it, and it cannot be retracted once
-mirrored.* L3 contributors are exposed to the NYU Ad Observer scenario — platform retaliation
+mirrored.* L4 contributors are exposed to the NYU Ad Observer scenario — platform retaliation
 against identified researchers. That is their informed choice to make; it is not ours to obscure.
 
 **There is no setting that uploads a raw watch trail under a promise of anonymity.** That capability
@@ -599,11 +606,11 @@ developers must *proactively disclose to users if their data handling practices 
 after the initial installation*. Enabling Prio changes what leaves the device. Therefore:
 
 > Switching on an additional backend **requires re-consent**, not a config flip. Users who consented
-> to L2-under-STAR have not consented to L2-under-STAR-plus-Prio. The client must treat an unknown
+> to L3-under-STAR have not consented to L3-under-STAR-plus-Prio. The client must treat an unknown
 > or newly-added backend as **disabled until the user affirmatively re-consents**, and must fail
 > closed if the capability document offers a backend the installed version does not recognise.
 
-Build that re-consent gate in P4 alongside the first backend, while there is only one to reason
+Build that re-consent gate in P5 alongside the first backend, while there is only one to reason
 about. Retrofitting consent state machines is where privacy tools historically break.
 
 #### When to switch collection on — measure, do not guess
@@ -855,11 +862,11 @@ given you.
 |---|---|---|
 | P0–P2 | **\$0** | No network calls at all. Everything is local. |
 | P3 | **\$0** | Optional local daemon; still no network. |
-| P3.5 (L3) | **\$0** | Contributors publish signed bundles themselves; releases go to the free channels above. See open decision 8 — the collection mechanism still needs specifying. |
-| P4 (L2/STAR) | Small | One modest VPS for the aggregation server. The OPRF helper is the partner's cost, not ours. |
-| P5 | **\$0** | Publication uses the free channels above. |
+| P4 (L4 transparency) | **\$0** | Contributors publish signed bundles themselves; releases go to the free channels above. The collection mechanism still needs specifying. |
+| P5 (L3 cohort/STAR) | Small | One modest VPS for the aggregation server. The OPRF helper is the partner's cost, not ours. |
+| P6 | **\$0** | Publication uses the free channels above. |
 
-No phase before P4 requires spending anything. If P4's hosting is ever a barrier, NLnet NGI Zero
+No phase before P5 requires spending anything. If P5's hosting is ever a barrier, NLnet NGI Zero
 and OTF (§11) fund exactly this class of infrastructure.
 
 ---
@@ -1065,28 +1072,40 @@ a node that holds a row never asks again and steady-state catalogue traffic tend
 to zero. `view_count` drifts and is treated as expendable — it is a ranking
 signal, and staleness changes ordering slightly and nothing else.
 
-### What each level does, as implemented
+### Current level contract
+
+Implementation gaps against this contract are listed in
+`ARCHITECTURE_CURRENT.md` §8 and assigned in WO-077/078.
 
 | Level | Asks the network | Serves | Publishes its own observations | Live feed |
 |---|---|---|---|---|
-| 1 Personal | **Nothing** | Nothing | Nothing | Full participant |
-| 2 Mirror | Prefix buckets | Mirrored rows only | Nothing | Full participant |
-| 3 Cohort | Prefix buckets | Own edges too | Aggregate (STAR — not built) | Full participant |
-| 4 Transparency | Prefix buckets | Own edges too | Attributed (not built) | Full participant |
+| 1 Personal | Seed, prefix buckets, word telemetry | Live snapshot + whole word HLL/CMS pack; no graph/catalogue/search blocks | Live notice + aggregate word HLL/CMS only | Full participant |
+| 2 Mirror | Prefix buckets | Mirrored rows only | Live notice + word HLL/CMS; no edges | Full participant |
+| 3 Cohort | Prefix buckets | Mirrored rows only | Word telemetry + STAR aggregate (not built) | Full participant |
+| 4 Transparency | Prefix buckets | Own edges too | Word telemetry + attributed edges (not built) | Full participant |
 
-The live feed is outside the level system entirely, because it discloses nothing
-at any level: there is no per-item query to leak (§7.3a) and reports carry no
-author (§7.5). Level 1 both receives and reports.
+The live feed is outside contribution gating. It avoids per-item query leakage
+because every node requests the whole index (§7.3a), and reports carry no stable
+application author (§7.5). It is still network disclosure: a direct neighbour
+may infer origin from topology and timing. Level 1 both receives and reports.
 
-**Level 1 asks for nothing at all**, and that is a stronger promise than "we do
-not upload anything": a request discloses which video was asked about, so the
-only node that leaks nothing is one that never asks. Level 1 runs on its own
-recording. Consumption above Level 1 is not gated on contributing — a Level 2
-node fetches and benefits while publishing nothing it observed. The privacy
-promise is not a toll booth.
+**Level 1 is a full consumer.** It receives the common seed, requests whole
+graph/catalogue/search prefix buckets and pre-walks the graph. It does not join
+the three-gram yield/token-sketch topics because it serves no blocks; absent
+optimization data is treated as unknown and fetching still works. Requests expose network participation and a
+coarse prefix set, but access is not gated on contribution: the privacy promise
+is not a toll booth.
 
-**Below Level 3, a node serves only what it holds for other people.** Serving
-blocks built from its own `impressions` would publish a funnel; serving catalogue
+Level 1 has two outbound products. It originates/relays live notices, and it
+answers WO-068's whole fixed-shape word HLL/CMS telemetry request, including its
+aggregate local corpus. That pack contains no plaintext word, video id, edge or
+query, but its CMS can answer guesses for known words; it is aggregate
+disclosure, not zero disclosure. Level 1 does not serve graph, catalogue or
+search blocks, including data it fetched and cached, and it makes no provider
+announcement.
+
+**At Level 2, block service includes only what the node holds for other people;
+Level 1 serves no blocks.** Serving blocks built from its own `impressions` would publish a funnel; serving catalogue
 derived from them discloses viewing at *video* granularity, since a requester
 sees exactly which bucket members the node holds. Both are enforced by which
 query runs, not by a caller remembering, and both are tested.
@@ -1142,10 +1161,11 @@ prefix bucket — a chosen slice of the graph becomes unfindable through the DHT
 
 **What it does not cost us.** Nothing about confidentiality or integrity. Blocks
 are digest-checked and signed, so a censored lookup yields *no* data rather than
-false data. The live index rides gossipsub, not the DHT, so it is unaffected —
-and Level 1 does not query the DHT at all.
+false data. The live index rides gossipsub, not provider lookup, so it is
+unaffected. Level 1 also uses the DHT to find and fetch prefix buckets, but never
+publishes provider records or answers a bucket stream.
 
-So the exposure is availability, on one path, above the default setting.
+So the exposure is availability on a fetch path used at every level.
 
 **Mitigation — built.** The DHT is a directory, not a transport (§5b), so a node
 that already knows who holds something can ask directly.
@@ -1319,10 +1339,11 @@ makes that worse by keeping redundant announcements off the wire. A joining node
 therefore asks a connected peer for the whole index over
 `/keel/live-snapshot/1.0.0`.
 
-Requesting it leaks nothing: there is no query, the whole index is asked for
-every time, and it is the same index every node holds — §7.3a tier 1, the same
-shape as the seed pack. Serving it is ungated for the same reason: the records
-are what gossip already broadcast to everyone.
+Requesting it reveals no item-level query: the whole index is asked for every
+time, and it is the same index every node holds — §7.3a tier 1, the same shape
+as the seed pack. It still reveals that the node participates in Keel's live
+network. Serving it is ungated because the records are what gossip already
+broadcast to every participant.
 
 Backfilled records count as **one publisher, the peer that sent them**.
 Inheriting a snapshot's corroboration counts would let a single node manufacture
@@ -1360,15 +1381,16 @@ Level 2. Lars: corroboration kills the feature anyway, because most livestreams
 will never have *k* observers, and the point is to show **all** livestreams —
 which is precisely what YouTube's live search does not.
 
-That is decisive, and it unwinds the whole chain. If corroboration is not
-load-bearing, messages need no author; with no author, publishing discloses
-nothing; with no disclosure, there is nothing to gate. **Product and privacy
-improve together**, which is rare enough to note.
+That is decisive, and it unwinds the corroboration chain. If corroboration is
+not load-bearing, messages need no durable application author. That reduces
+linkability enough to make live participation part of Level 1, but does not make
+publication metadata-free.
 
-In a gossip mesh, originating and forwarding are indistinguishable to
-neighbours. So a node that reports a stream is not distinguishable from one
-relaying somebody else's report, even to a direct peer. Every node receives and
-reports at every level, including the default.
+After relay, an authorless notice has no payload field that distinguishes its
+originator from a forwarder. A direct neighbour can nevertheless combine
+topology and timing to infer an origin probabilistically. Every node receives,
+relays and reports at every level, including the default; consent and privacy
+copy must disclose that residual honestly.
 
 **What this costs.** Records remain unverifiable claims — nothing signs YouTube
 state (§6.4) — and without authorship they cannot be corroborated by counting
@@ -1396,10 +1418,10 @@ that turns out to be wrong.
 
 ### Why this is worth building
 
-It yields a global, real-time livestream search with no central index, no server,
-and the same query privacy as the rest of the system. Nothing else in the design
-produces a live view of the network, and it costs a third namespace on machinery
-that already exists.
+It yields a global, real-time livestream search with no central index or hosted
+Keel server. Its whole-index exchange avoids item-level query disclosure, while
+peer participation and possible direct-origin inference remain explicit
+residuals. Nothing else in the design produces a live view of the network.
 
 ## 8. Native daemon (Go) — required
 
@@ -1415,6 +1437,12 @@ Responsibilities — **everything that touches observation data**:
 - Preservation records, fingerprints, tombstones (§7).
 - STAR client cryptography; later, Prio behind the same seam (§6.2).
 - Batching and scheduling of contributions.
+
+Exactly one daemon owner per OS user holds the Store, swarm runtime and
+contribution state. A browser native-messaging launch creates a thin local IPC
+proxy for that browser connection; it must not open SQLite or construct a swarm.
+The authenticated Unix-socket/named-pipe topology, owner election and lifecycle
+are normative in `ARCHITECTURE_CURRENT.md` §5 and implemented by WO-079.
 
 Not responsibilities: downloading media, running an IPFS node, touching the YouTube API.
 
@@ -1451,6 +1479,13 @@ Rules: validate every message against its schema on both sides and drop non-conf
 (v1 asserted this but never implemented it); reconnect in `onDisconnect`; the daemon must treat all
 extension input as untrusted.
 
+`HELLO` negotiates an API range and named capability schema revisions before
+any application RPC. Envelope `v: 2` is the stable bootstrap framing version,
+not a substitute for payload compatibility. Missing required capabilities or a
+non-overlapping API range fails the session closed; optional UI appears only for
+mutually negotiated capabilities. The exact contract is
+`ARCHITECTURE_CURRENT.md` §6 and WO-081.
+
 ---
 
 ## 9. Build phases
@@ -1463,8 +1498,8 @@ Each phase ships something usable. Phases 0–3 need no server, no partner, and 
 | **P1** | Remaining surfaces (`HOME`, `SEARCH`), export/wipe, user-set retention limit (optional, default off), graceful no-daemon state. | — |
 | **P2** | Utility plane: boolean search, chronological sort, channel hard-block, sanitization, funnel inspector. **Ship to CWS here**, plus installer. | SignPath application (§2.3) |
 | **P3** | Local preservation corpus, fingerprints, organic tombstoning. | — |
-| **P4** | **L3 — Transparency Contributor.** Signed public observation bundles → IPFS. | Open decision 8 |
-| **P5** | **L2 — Cohort Aggregator.** STAR + backend seam + re-consent gate. | OPRF helper host |
+| **P4** | **L4 — Transparency.** Signed public observation bundles → IPFS. | Collection mechanism decision |
+| **P5** | **L3 — Cohort.** STAR + backend seam + re-consent gate. | OPRF helper host |
 | **P6** | Release pipeline, signing, transparency log, multi-channel publication. | — (free channels, §7.3) |
 | **P7** *(deferred)* | Prio/DAP numeric aggregates behind the existing seam. | Second aggregator |
 
@@ -1473,18 +1508,18 @@ messaging bridge, not the DOM parsing. Building the extension fully and bolting 
 would defer that risk to the worst possible moment. One surface, end to end, exercises the bridge,
 the framing, the reconnect path, and the daemon lifecycle while the surface area is still small.
 
-**P4 is the first contribution mode and needs nobody.** L3 is public attributed publication — no
+**P4 is the first observation-contribution mode and needs no privacy partner.** L4 is public attributed publication — no
 aggregator, no OPRF helper, no threshold crypto, because there is no privacy claim to keep. It
 publishes straight to IPFS, which is what content addressing is actually good at. Cost: a
 self-selected, non-representative sample, which must be disclosed in every finding, and contributor
-exposure to platform retaliation (§6.1). Ship it before P4; it produces a real public corpus while
-the L2 dependency is still being negotiated.
+exposure to platform retaliation (§6.1). Ship it as P4; it produces a real public corpus while
+the L3 dependency is still being negotiated.
 
-**P4 is the first mode that needs an outside party**, and only one: the OPRF helper. It must not be
+**P5 is the first mode that needs an outside party**, and only one: the OPRF helper. It must not be
 operated by whoever runs the aggregation server (§6.0).
 
-**P6 is deferred, not excluded.** The backend seam, capability document, and re-consent gate all
-ship in P4 (§6.2) so that adding Prio later is configuration plus a consent flow rather than a
+**P7 is deferred, not excluded.** The backend seam, capability document, and re-consent gate all
+ship in P5 (§6.2) so that adding Prio later is configuration plus a consent flow rather than a
 rewrite. Do not ship an unused Prio implementation in the meantime.
 
 The rule that must not bend: if one organization ends up controlling both Prio aggregators, the
@@ -1524,7 +1559,7 @@ anyway — but it must be stated publicly if they participate.
 | OPRF helper is pressured into quitting by a legal threat letter | Prefer an institution that routinely receives them; make the role swappable in days; allow multiple helpers | Real — a letter needs no valid claim to scare off a volunteer |
 | Re-identification from published releases | Coarse cohorts, day buckets, independent edge submission, no stable pseudonym, no trails (§6.5) | Composition risk across many releases — track a global privacy budget |
 | A future contributor "simplifies" the design to pseudonyms + time delay | §6.5 exists to settle this with citations rather than argument | Recurring; expect it in every review |
-| We become the surveillance system we're auditing | Level 0 default, LIV never leaves device, raw queries never stored, one-click export and wipe | Requires ongoing discipline |
+| We become the surveillance system we're auditing | Level 1 default, LIV never leaves device, raw queries never stored, one-click export and wipe | Requires ongoing discipline |
 
 ---
 
@@ -1532,7 +1567,7 @@ anyway — but it must be stated publicly if they participate.
 
 These need answers before the phases they block:
 
-1. **OPRF helper host** — blocks P4 only. Nothing before P4 needs it, and P3.5 (L3) delivers a
+1. **OPRF helper host** — blocks P5 only. Nothing before P5 needs it, and P4 (L4) delivers a
    public corpus without it. The ask: run one small stateless service, hold a rotating key, keep it
    up, don't log. Candidates: ISRG, EFF, AlgorithmWatch, Panoptykon, a university lab. Approach them
    *after* there are users — nobody partners with a design document. Grant routes for the
@@ -1559,12 +1594,12 @@ These need answers before the phases they block:
    (§3 of the licence), which matters when the adverse party holds a large patent portfolio, and for
    widest adoption. `LICENSE` and `NOTICE` are in the repo. This also satisfies SignPath eligibility
    for free Windows code signing (§2.3) — **apply before P2**, approval takes weeks.
-9. **P3.5 collection mechanism** — L3 contributors publish signed bundles, but *how do the bundles
+9. **P4 collection mechanism** — L4 contributors publish signed bundles, but *how do the bundles
    reach a release?* Options, all zero-cost: contributor uploads to their own IPFS/GitHub and
    submits a CID/URL via a form (highest friction, truly \$0); a GitHub repo where contributions
    arrive as pull requests (free, auditable, rate-limited by GitHub, and the review trail is a
    feature); or a small collector service (lowest friction, first thing that costs money). Decide
-   before P3.5. **Recommendation: pull requests** — free, public by construction which matches L3's
+   before P4. **Recommendation: pull requests** — free, public by construction which matches L4's
    semantics exactly, and spam-resistant without building anything.
 
 ---

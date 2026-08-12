@@ -7,9 +7,9 @@ Level 4, which does not need one.
 
 An incentive must be a benefit that is **intrinsically** unavailable without
 contributing — not a working feature withheld to force a trade. `WO-052` already
-commits to the latter being off the table: a Level 1 node may consume the shared
-catalogue and contribute nothing, because "the privacy promise is not a toll
-booth."
+commits to the latter being off the table: a Level 1 node may receive the seed,
+fetch shared graph/catalogue/search data and pre-walk the graph without serving
+blocks, because "the privacy promise is not a toll booth."
 
 That constraint is worth keeping. Keel's pitch is that recording is for the user;
 the moment privacy costs features, the pitch inverts and every level above 1
@@ -22,7 +22,15 @@ Fortunately the architecture supplies real intrinsic differences.
 **Earns: the funnel inspector.** Already built (WO-018). Your own recommendation
 history, searchable, with channel blocking and hiding.
 
-This is the product. It is complete at Level 1 and must stay that way.
+This is the product. It is complete at Level 1 and must stay that way: peer
+search and suggestions, graph pre-walk, global word statistics and the Live feed
+are consumer features, not rewards for block service.
+
+Level 1 is not offline. It makes whole-prefix requests, participates in live
+gossip, and exchanges WO-068's whole fixed-shape word HLL/CMS aggregate. It does
+not serve graph/catalogue/search blocks or join the three-gram yield/token
+sketch topics that advertise and size those blocks. See
+`ARCHITECTURE_CURRENT.md` §3.
 
 ## Level 2 — mirror the public dataset
 
@@ -41,7 +49,9 @@ No withholding is involved, which is why this rung needs no policy at all.
 
 Note that a Level 1 node still fetches blocks and still gets working suggestions
 (§5d: "out of the box for every user"). Level 2's benefit is latency and depth of
-cache, not access.
+cache, not access. Level 2 also begins serving the cached public blocks and
+originating the three-gram availability/sketch signals that describe what it can
+serve; it still does not serve the user's own observations.
 
 ## Level 3 — cohort
 
