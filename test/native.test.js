@@ -50,28 +50,34 @@ function freshState() {
   };
 }
 
+// chrome.runtime is a singleton: the shim in lib/browser.js binds to it once,
+// at import. A stub that replaced globalThis.browser on every call therefore
+// left the shim pointing at the first object forever, and nothing a later test
+// set on runtime.lastError was ever visible to the code under test. Keep one
+// object and refresh its contents, the way the real API behaves.
+const STUB = { runtime: {}, alarms: {} };
+
 function installStub() {
-  globalThis.browser = {
-    runtime: {
-      id: "test-extension-id",
-      lastError: undefined,
-      onMessage: { addListener() {} },
-      onInstalled: { addListener() {} },
-      // connectNative is called synchronously by native.js (no await), so the
-      // stub must return the port object directly, not a Promise.
-      connectNative(name) {
-        state.connections.push(name);
-        const p = makePort();
-        state.ports.push(p);
-        return p;
-      },
+  Object.assign(STUB.runtime, {
+    id: "test-extension-id",
+    lastError: undefined,
+    onMessage: { addListener() {} },
+    onInstalled: { addListener() {} },
+    // connectNative is called synchronously by native.js (no await), so the
+    // stub must return the port object directly, not a Promise.
+    connectNative(name) {
+      state.connections.push(name);
+      const p = makePort();
+      state.ports.push(p);
+      return p;
     },
-    alarms: {
-      create: async (name, opts) => state.alarmsCreated.push({ name, opts }),
-      clear: async (name) => state.alarmsCleared.push(name),
-      onAlarm: { addListener: (fn) => (state.alarmListener = fn) },
-    },
-  };
+  });
+  Object.assign(STUB.alarms, {
+    create: async (name, opts) => state.alarmsCreated.push({ name, opts }),
+    clear: async (name) => state.alarmsCleared.push(name),
+    onAlarm: { addListener: (fn) => (state.alarmListener = fn) },
+  });
+  globalThis.browser = STUB;
 }
 
 before(async () => {
@@ -480,5 +486,45 @@ describe("a startup ERROR from the host reaches the panel", () => {
     port._onMessage({ v: 2, id, type: "ERROR", payload: { code: "x", message: "per-request" } });
     await p;
     assert.equal(seen.length, before, "a request's own ERROR changed the connection status");
+  });
+});
+
+// lib/browser.js copied chrome.runtime.lastError at module load instead of
+// reading it live. It is set immediately before a callback and cleared right
+// after, so the copy was permanently undefined: every disconnect reported the
+// fallback string "not running" no matter what actually went wrong, and Chrome
+// logged "Unchecked runtime.lastError" against the next API call because
+// nothing ever read it.
+describe("runtime.lastError is read live", () => {
+  it("reflects a value set after module load", async () => {
+    const { browser } = await import("../extension/lib/browser.js");
+    globalThis.browser.runtime.lastError = undefined;
+    assert.equal(browser.runtime.lastError, undefined);
+    globalThis.browser.runtime.lastError = { message: "Specified native messaging host not found." };
+    assert.equal(
+      browser.runtime.lastError?.message,
+      "Specified native messaging host not found.",
+      "lastError is a stale copy, not a live read",
+    );
+    globalThis.browser.runtime.lastError = undefined;
+  });
+
+  it("reports the host's real failure instead of \"not running\"", async () => {
+    state = freshState();
+    installStub();
+    const seen = [];
+    const bridge = createNativeBridge({
+      onStatus: (ok, detail) => seen.push([ok, detail]),
+      onMessage: () => {},
+    });
+    bridge.connect();
+    const port = state.ports.at(-1);
+    globalThis.browser.runtime.lastError = {
+      message: "Specified native messaging host not found.",
+    };
+    port._onDisconnect();
+    globalThis.browser.runtime.lastError = undefined;
+
+    assert.match(seen.at(-1)[1], /native messaging host not found/);
   });
 });

@@ -38,7 +38,23 @@ export const browser = {
     connectNative: (...a) => raw.runtime.connectNative(...a),
     onMessage: raw.runtime.onMessage,
     onConnect: raw.runtime.onConnect,
-    lastError: raw.runtime?.lastError,
+    // A getter, not a copy.
+    //
+    // chrome.runtime.lastError is set immediately before a callback runs and
+    // cleared immediately after. Copying it here captured its value once, at
+    // module load, when it is always undefined — so this was permanently
+    // undefined and every caller silently took its fallback branch.
+    //
+    // Two symptoms, both of which cost a full day of live QA. The panel showed
+    // "not running" for every possible failure, because the disconnect handler
+    // read undefined and fell back to that string instead of reporting
+    // "Specified native messaging host not found". And Chrome never saw
+    // lastError read at all, so it logged its own "Unchecked runtime.lastError"
+    // warning against whatever API call came next — clearReconnectAlarm — which
+    // is the last place anyone would look for a native-messaging failure.
+    get lastError() {
+      return raw.runtime?.lastError;
+    },
   },
   storage: raw.storage
     ? {
