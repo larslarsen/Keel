@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,7 +64,10 @@ func runProxy() int {
 	}
 	conn, err := connectOrSpawnOwner(p, secret)
 	if err != nil {
-		return proxyStartupError("owner_unavailable", err)
+		// The owner logs why it failed and then exits; the proxy sees only a
+		// dead connection. Without this the browser is told "EOF", which is
+		// true and useless. The log is the only account of the actual cause.
+		return proxyStartupError("owner_unavailable", withOwnerLog(p, err))
 	}
 	defer conn.Close()
 
@@ -76,6 +80,55 @@ func runProxy() int {
 		log.Printf("native proxy disconnected: %v", err)
 	}
 	return 0
+}
+
+// withOwnerLog appends the last thing the owner said before it died.
+//
+// The owner is a separate detached process: its stdout and stderr go to
+// owner-<install id>.log beside the database, and nothing ever read that file
+// back. A failure to start therefore reached the user as "EOF" while the real
+// reason — a path, a credential, a locked database — sat in a log they had no
+// reason to know existed.
+func withOwnerLog(p ownerPaths, err error) error {
+	tail := ownerLogTail(p.log, 6)
+	if tail == "" {
+		return err
+	}
+	return fmt.Errorf("%w — the desktop app logged: %s", err, tail)
+}
+
+// ownerLogTail returns the last non-empty lines of the owner log, bounded so a
+// long-running owner's log cannot be read into memory or into an error string.
+func ownerLogTail(path string, maxLines int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	const window = 8 << 10
+	start := fi.Size() - window
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	buf, err := io.ReadAll(io.LimitReader(f, window))
+	if err != nil || len(buf) == 0 {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(string(buf), "\r\n", "\n"), "\n")
+	var keep []string
+	for i := len(lines) - 1; i >= 0 && len(keep) < maxLines; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			keep = append([]string{t}, keep...)
+		}
+	}
+	return strings.Join(keep, " | ")
 }
 
 func proxyStartupError(code string, err error) int {

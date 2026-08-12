@@ -163,7 +163,14 @@ func startOwnerHandshake(conn net.Conn, secret, action string) (ownerHelloAck, e
 	}
 	raw, err := readIPCFrame(conn, ownerHandshakeLimit)
 	if err != nil {
-		return ownerHelloAck{}, err
+		// A bare "EOF" here means the owner accepted the connection and then
+		// went away without answering. The endpoint is created before the
+		// database is opened — deliberately, so ownership is settled first — so
+		// a client can be connected while the owner is still starting, and any
+		// failure after that point looks exactly like this. Say what it means
+		// and let the caller attach the owner's own log.
+		return ownerHelloAck{}, fmt.Errorf(
+			"the desktop app accepted the connection and then stopped during startup: %w", err)
 	}
 	var ack ownerHelloAck
 	if err := json.Unmarshal(raw, &ack); err != nil {
