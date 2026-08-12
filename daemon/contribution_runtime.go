@@ -61,6 +61,28 @@ type contributionState struct {
 	Detail     string `json:"detail,omitempty"`
 }
 
+// contributionStatusPublisher is supplied by the owner session boundary.
+// Standalone bridge tests have no publisher; owner-backed sessions use it to
+// tell every connected browser which policy is now effective after a runtime
+// transition. The event has its own owner-scoped id and never participates in
+// request correlation.
+type contributionStatusPublisher interface {
+	publishContribution(contributionState)
+}
+
+type contributionPublisherContextKey struct{}
+
+func withContributionPublisher(ctx context.Context, p contributionStatusPublisher) context.Context {
+	return context.WithValue(ctx, contributionPublisherContextKey{}, p)
+}
+
+func publishContributionStatus(ctx context.Context, state contributionState) {
+	p, _ := ctx.Value(contributionPublisherContextKey{}).(contributionStatusPublisher)
+	if p != nil {
+		p.publishContribution(state)
+	}
+}
+
 // swarmSupervisor owns the node pointer and every transition of it.
 //
 // Callers fetch the node per operation and must not retain it across a
@@ -158,12 +180,51 @@ func contributionPayload(s contributionState) map[string]any {
 		"detail":          s.Detail,
 		"max_implemented": store.MaxImplementedLevel,
 		"levels_disagree": s.Stored != s.Effective,
+		// The reciprocal-search entitlement travels with contribution state
+		// rather than in its own RPC (WO-085), so the one status broadcast
+		// every browser session already receives after a level change is
+		// enough to re-render the search control everywhere. A second RPC
+		// would be a second chance for the two to disagree.
+		//
+		// Derived from the effective level, not the stored one: the control
+		// must reflect the policy being enforced, for exactly the reason the
+		// radio buttons do.
+		"distributed_search":           swarm.PolicyForLevel(s.Effective).DistributedSearch,
+		"distributed_search_min_level": store.LevelBroad,
 	}
 }
 
 // networkBusy reports whether a network-dependent RPC should decline right
 // now because the node is being replaced.
 func networkBusy() bool { return supervisor.inTransition() }
+
+// effectiveLevel is the contribution policy currently in force. Zero means no
+// node is running at all — see the failure paths below, which set it.
+func (s *swarmSupervisor) effectiveLevel() int {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.effective
+}
+
+// distributedSearchLevel is the entitlement question answered for the RPC
+// layer: may this daemon run a user-triggered distributed search right now,
+// and if not, what is running instead (WO-085)?
+//
+// Asks the node when there is one, because the node's policy is the thing that
+// would actually be enforced a layer down and asking anything else could
+// disagree with it. With no node there is no effective policy to read at all,
+// so it falls back to the user's stored choice: the reply for a node-less
+// daemon is "unavailable" either way, and this only decides which of two true
+// statements the interface is given — "you have not opted in" is the actionable
+// one, and claiming it of a Level-2 user whose network failed to start would
+// not be.
+func distributedSearchLevel(st *store.Store) (allowed bool, level int) {
+	if n := currentSwarmNode(); n != nil {
+		return n.MayDistributedSearch(), supervisor.effectiveLevel()
+	}
+	stored := st.ContributionLevel()
+	return swarm.PolicyForLevel(stored).DistributedSearch, stored
+}
 
 // replyNetworkBusy declines one RPC for the duration of a node replacement.
 //

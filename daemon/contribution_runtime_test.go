@@ -60,7 +60,7 @@ func testStore(t *testing.T, name string) *store.Store {
 // re-gates a capability has to change this table too.
 func TestPolicyForLevelMatchesArchitectureTable(t *testing.T) {
 	one := swarm.PolicyForLevel(store.LevelPersonal)
-	two := swarm.PolicyForLevel(store.LevelMirror)
+	two := swarm.PolicyForLevel(store.LevelBroad)
 
 	// Level 1 is a full consumer. Every one of these being on is the
 	// product-boundary half of WO-077: withholding them would make privacy a
@@ -74,38 +74,80 @@ func TestPolicyForLevelMatchesArchitectureTable(t *testing.T) {
 			t.Errorf("level 1 has %s off; it is a full consumer", name)
 		}
 	}
+	// The one consumer capability Level 1 does not have (WO-085). Asserted
+	// apart from the serving list below because it is not a serving capability
+	// and the reason it is off is different: capacity reciprocity, not
+	// disclosure.
+	if one.DistributedSearch {
+		t.Error("level 1 may run distributed peer search; it is reciprocal with serving (WO-085)")
+	}
+	if !two.DistributedSearch {
+		t.Error("level 2 may not run distributed peer search; it serves the shards those searches read")
+	}
+	if two.DistributedSearch != two.ServeBroadBuckets {
+		t.Error("distributed search and broad serving have come apart; the entitlement is the reciprocity")
+	}
+
 	// And it offers nothing.
 	for name, got := range map[string]bool{
-		"serve_mirrors":         one.ServeMirrors,
-		"announce_providers":    one.AnnounceProviders,
-		"join_search_telemetry": one.JoinSearchTelemetry,
-		"publish_own":           one.PublishOwn,
+		"serve_broad_buckets":         one.ServeBroadBuckets,
+		"include_local_graph":         one.IncludeLocalGraph,
+		"include_local_catalogue":     one.IncludeLocalCatalogue,
+		"announce_providers":          one.AnnounceProviders,
+		"join_search_telemetry":       one.JoinSearchTelemetry,
+		"publish_cohort_measurements": one.PublishCohortMeasurements,
+		"publish_attributed_funnel":   one.PublishAttributedFunnel,
 	} {
 		if got {
 			t.Errorf("level 1 has %s on; level 1 serves nothing", name)
 		}
 	}
+	if !one.GraphSources().Empty() || !one.CatalogueSources().Empty() {
+		t.Error("level 1 selected a served corpus; a non-serving policy must select nothing")
+	}
 
+	// Level 2 serves broad buckets, and what is in them is the union of local
+	// and imported material. WO-077 had the second half wrong.
 	for name, got := range map[string]bool{
-		"serve_mirrors":         two.ServeMirrors,
-		"announce_providers":    two.AnnounceProviders,
-		"join_search_telemetry": two.JoinSearchTelemetry,
+		"serve_broad_buckets":     two.ServeBroadBuckets,
+		"include_local_graph":     two.IncludeLocalGraph,
+		"include_local_catalogue": two.IncludeLocalCatalogue,
+		"announce_providers":      two.AnnounceProviders,
+		"join_search_telemetry":   two.JoinSearchTelemetry,
 	} {
 		if !got {
-			t.Errorf("level 2 has %s off; a mirror serves and is findable", name)
+			t.Errorf("level 2 has %s off; level 2 serves broad buckets containing its own blocks", name)
 		}
 	}
-	// The line that separates a mirror from a publisher.
-	if two.PublishOwn {
-		t.Error("level 2 publishes its own observations; that begins at level 3")
+	if got := two.GraphSources(); !got.Local || !got.Peers {
+		t.Errorf("level 2 graph sources = %+v, want both local and imported (WO-084)", got)
 	}
-	if !swarm.PolicyForLevel(store.LevelCohort).PublishOwn {
-		t.Error("level 3 does not publish own observations")
+	if got := two.CatalogueSources(); !got.Local || !got.Peers {
+		t.Errorf("level 2 catalogue sources = %+v, want both local and imported (WO-084)", got)
 	}
+
+	// The line that separates level 2 from level 3 is STAR, not ordinary graph
+	// service — which level 2 already does.
+	if two.PublishCohortMeasurements {
+		t.Error("level 2 publishes cohort measurements; that begins at level 3")
+	}
+	if !swarm.PolicyForLevel(store.LevelCohort).PublishCohortMeasurements {
+		t.Error("level 3 does not publish cohort measurements; STAR is its whole boundary")
+	}
+	if swarm.PolicyForLevel(store.LevelCohort).PublishAttributedFunnel {
+		t.Error("level 3 publishes an attributed funnel; that is level 4")
+	}
+	if !swarm.PolicyForLevel(store.LevelTransparency).PublishAttributedFunnel {
+		t.Error("level 4 does not publish an attributed funnel")
+	}
+
 	// An unreadable/garbage level must read as the consumer policy, never as
 	// consent to serve.
-	if swarm.PolicyForLevel(0).ServeMirrors || swarm.PolicyForLevel(-3).ServeMirrors {
+	if swarm.PolicyForLevel(0).ServeBroadBuckets || swarm.PolicyForLevel(-3).ServeBroadBuckets {
 		t.Error("an out-of-range level produced a serving policy")
+	}
+	if swarm.PolicyForLevel(0).DistributedSearch || swarm.PolicyForLevel(-3).DistributedSearch {
+		t.Error("an out-of-range level was entitled to distributed search")
 	}
 }
 
@@ -114,12 +156,12 @@ func TestPolicyForLevelMatchesArchitectureTable(t *testing.T) {
 // one value has by definition never been mid-transition.
 func TestStartupLevelDefaultsToStoredForOldDatabases(t *testing.T) {
 	st := testStore(t, "migrate.sqlite")
-	if _, err := st.SetContributionLevel(store.LevelMirror); err != nil {
+	if _, err := st.SetContributionLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
-	if got := st.StartupLevel(); got != store.LevelMirror {
+	if got := st.StartupLevel(); got != store.LevelBroad {
 		t.Fatalf("startup level = %d, want %d (should follow the single stored value)",
-			got, store.LevelMirror)
+			got, store.LevelBroad)
 	}
 }
 
@@ -128,7 +170,7 @@ func TestStartupLevelDefaultsToStoredForOldDatabases(t *testing.T) {
 // safe reading of leftover state is the user's choice.
 func TestStartupLevelNeverExceedsStored(t *testing.T) {
 	st := testStore(t, "clamp.sqlite")
-	if err := st.SetStartupLevel(store.LevelMirror); err != nil {
+	if err := st.SetStartupLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.SetContributionLevel(store.LevelPersonal); err != nil {
@@ -144,7 +186,7 @@ func TestStartupLevelNeverExceedsStored(t *testing.T) {
 // Level 2, because the user has already been told Level 1 is in force.
 func TestDowngradeCommitsBothLevelsTogether(t *testing.T) {
 	st := testStore(t, "downgrade.sqlite")
-	if err := st.SetContributionAndStartupLevel(store.LevelMirror); err != nil {
+	if err := st.SetContributionAndStartupLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
 
@@ -170,7 +212,7 @@ func TestUpgradeKeepsStartupLowUntilActivation(t *testing.T) {
 	}
 
 	// Step one of an upgrade: the explicit choice is durable...
-	if _, err := st.SetContributionLevel(store.LevelMirror); err != nil {
+	if _, err := st.SetContributionLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
 	// ...but a crash here must not escalate.
@@ -179,10 +221,10 @@ func TestUpgradeKeepsStartupLowUntilActivation(t *testing.T) {
 	}
 
 	// Step two: activation commits.
-	if err := st.SetStartupLevel(store.LevelMirror); err != nil {
+	if err := st.SetStartupLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
-	if got := st.StartupLevel(); got != store.LevelMirror {
+	if got := st.StartupLevel(); got != store.LevelBroad {
 		t.Fatalf("after activation startup level = %d, want 2", got)
 	}
 }
@@ -193,7 +235,7 @@ func TestUpgradeKeepsStartupLowUntilActivation(t *testing.T) {
 func TestStartRefusesToResumeAnUnfinishedUpgrade(t *testing.T) {
 	st := testStore(t, "unfinished.sqlite")
 	// Exactly the state a crash mid-upgrade leaves behind.
-	if _, err := st.SetContributionLevel(store.LevelMirror); err != nil {
+	if _, err := st.SetContributionLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.SetStartupLevel(store.LevelPersonal); err != nil {
@@ -207,7 +249,7 @@ func TestStartRefusesToResumeAnUnfinishedUpgrade(t *testing.T) {
 	if got.Effective != store.LevelPersonal {
 		t.Errorf("effective level = %d after an unfinished upgrade, want 1", got.Effective)
 	}
-	if got.Stored != store.LevelMirror {
+	if got.Stored != store.LevelBroad {
 		t.Errorf("stored level = %d, want the user's unchanged choice of 2", got.Stored)
 	}
 	if got.Transition != transitionFailed {
@@ -226,7 +268,7 @@ func TestStartRefusesToResumeAnUnfinishedUpgrade(t *testing.T) {
 // winds down, so the promise is kept by the gate, not by the stop.
 func TestDowngradeShutsTheGateBeforeAnythingElse(t *testing.T) {
 	st := testStore(t, "gate.sqlite")
-	if err := st.SetContributionAndStartupLevel(store.LevelMirror); err != nil {
+	if err := st.SetContributionAndStartupLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
 
@@ -283,7 +325,7 @@ func stubSupervisor(t *testing.T, level int, failAt map[int]error) *swarmSupervi
 // receives.
 func TestDowngradedNodeKeepsEveryConsumerCapability(t *testing.T) {
 	st := testStore(t, "downgrade-caps.sqlite")
-	if err := st.SetContributionAndStartupLevel(store.LevelMirror); err != nil {
+	if err := st.SetContributionAndStartupLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
 	s := freshSupervisor(t)
@@ -310,7 +352,8 @@ func TestDowngradedNodeKeepsEveryConsumerCapability(t *testing.T) {
 		t.Error("the downgraded node stopped exchanging word telemetry")
 	}
 	// ...while offering nothing.
-	if p.ServeMirrors || p.AnnounceProviders || p.JoinSearchTelemetry || p.PublishOwn {
+	if p.ServeBroadBuckets || p.IncludeLocalGraph || p.IncludeLocalCatalogue ||
+		p.AnnounceProviders || p.JoinSearchTelemetry || p.PublishCohortMeasurements {
 		t.Errorf("the downgraded node still offers something: %+v", p)
 	}
 	if n.Serving() {
@@ -318,9 +361,15 @@ func TestDowngradedNodeKeepsEveryConsumerCapability(t *testing.T) {
 	}
 }
 
-// TestUpgradeActivatesServiceButNeverOwnObservations is the 1→2 acceptance
+// TestUpgradeActivatesBroadServiceIncludingLocalBlocks is the 1→2 acceptance
 // criterion, on a real node.
-func TestUpgradeActivatesServiceButNeverOwnObservations(t *testing.T) {
+//
+// It used to assert the opposite of its second half — that an upgrade to
+// Level 2 must not turn on own-observation service. WO-084 corrected that:
+// locally derived blocks are exactly what Level 2 contributes, and an upgrade
+// that left them out would leave the user contributing nothing they did not
+// first download from someone else.
+func TestUpgradeActivatesBroadServiceIncludingLocalBlocks(t *testing.T) {
 	st := testStore(t, "upgrade-caps.sqlite")
 	if err := st.SetContributionAndStartupLevel(store.LevelPersonal); err != nil {
 		t.Fatal(err)
@@ -334,7 +383,7 @@ func TestUpgradeActivatesServiceButNeverOwnObservations(t *testing.T) {
 		t.Fatal("a level 1 node started in a serving state")
 	}
 
-	if _, err := s.apply(t.Context(), st, store.LevelMirror); err != nil {
+	if _, err := s.apply(t.Context(), st, store.LevelBroad); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
 	n := s.currentNode()
@@ -342,19 +391,25 @@ func TestUpgradeActivatesServiceButNeverOwnObservations(t *testing.T) {
 		t.Fatal("no node running after a successful upgrade")
 	}
 	if !n.Serving() {
-		t.Error("the upgraded node is not serving cached blocks")
+		t.Error("the upgraded node is not serving broad buckets")
 	}
 	p := n.Policy()
 	if !p.AnnounceProviders || !p.JoinSearchTelemetry {
 		t.Errorf("the upgraded node is not findable: %+v", p)
 	}
-	// The line a mirror must not cross.
-	if p.PublishOwn {
-		t.Error("an upgrade to level 2 turned on own-observation service")
+	if got := p.GraphSources(); !got.Local || !got.Peers {
+		t.Errorf("an upgrade to level 2 left graph sources at %+v, want both halves", got)
+	}
+	if got := p.CatalogueSources(); !got.Local || !got.Peers {
+		t.Errorf("an upgrade to level 2 left catalogue sources at %+v, want both halves", got)
+	}
+	// STAR is the line level 2 must not cross.
+	if p.PublishCohortMeasurements {
+		t.Error("an upgrade to level 2 turned on STAR cohort publication")
 	}
 	// And the escalation is now durable, so a restart reconstructs it.
 	got := s.state(st)
-	if got.Startup != store.LevelMirror || got.Stored != store.LevelMirror {
+	if got.Startup != store.LevelBroad || got.Stored != store.LevelBroad {
 		t.Errorf("after a successful upgrade state = %+v, want both levels at 2", got)
 	}
 	if got.Transition != transitionIdle {
@@ -370,10 +425,10 @@ func TestUpgradeActivatesServiceButNeverOwnObservations(t *testing.T) {
 // blocks they just withdrew.
 func TestFailedDowngradeStaysStoppedRatherThanResurrectingLevelTwo(t *testing.T) {
 	st := testStore(t, "faildown.sqlite")
-	if err := st.SetContributionAndStartupLevel(store.LevelMirror); err != nil {
+	if err := st.SetContributionAndStartupLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
-	s := stubSupervisor(t, store.LevelMirror,
+	s := stubSupervisor(t, store.LevelBroad,
 		map[int]error{store.LevelPersonal: errInjected})
 
 	if _, err := s.apply(t.Context(), st, store.LevelPersonal); err != nil {
@@ -406,9 +461,9 @@ func TestFailedUpgradeRollsBackAndDoesNotEscalateOnRestart(t *testing.T) {
 	}
 	// Level 2 refuses to start; the Level-1 rollback succeeds.
 	s := stubSupervisor(t, store.LevelPersonal,
-		map[int]error{store.LevelMirror: errInjected})
+		map[int]error{store.LevelBroad: errInjected})
 
-	if _, err := s.apply(t.Context(), st, store.LevelMirror); err == nil {
+	if _, err := s.apply(t.Context(), st, store.LevelBroad); err == nil {
 		t.Fatal("a failed upgrade reported success")
 	}
 
@@ -433,11 +488,11 @@ func TestFailedUpgradeThatCannotRestartEitherReportsStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := stubSupervisor(t, store.LevelPersonal, map[int]error{
-		store.LevelMirror:   errInjected,
+		store.LevelBroad:   errInjected,
 		store.LevelPersonal: errInjected,
 	})
 
-	if _, err := s.apply(t.Context(), st, store.LevelMirror); err == nil {
+	if _, err := s.apply(t.Context(), st, store.LevelBroad); err == nil {
 		t.Fatal("a doubly-failed transition reported success")
 	}
 	got := s.state(st)
@@ -461,10 +516,10 @@ func TestFailedUpgradeThatCannotRestartEitherReportsStopped(t *testing.T) {
 // unsafe resolution.
 func TestDowngradeWithUnwritableStoreKeepsTheGateShut(t *testing.T) {
 	st := testStore(t, "failwrite.sqlite")
-	if err := st.SetContributionAndStartupLevel(store.LevelMirror); err != nil {
+	if err := st.SetContributionAndStartupLevel(store.LevelBroad); err != nil {
 		t.Fatal(err)
 	}
-	s := stubSupervisor(t, store.LevelMirror, nil)
+	s := stubSupervisor(t, store.LevelBroad, nil)
 
 	// Closing the database is a real write failure, not a simulated one.
 	st.Close()
@@ -512,16 +567,93 @@ func TestNetworkRPCsDeclineDuringTransition(t *testing.T) {
 // control must never show the stored choice as though it were in force.
 func TestContributionPayloadReportsEffectiveNotStored(t *testing.T) {
 	p := contributionPayload(contributionState{
-		Stored: store.LevelMirror, Effective: store.LevelPersonal,
+		Stored: store.LevelBroad, Effective: store.LevelPersonal,
 		Startup: store.LevelPersonal, Transition: transitionFailed, Detail: "could not start",
 	})
 	if p["level"] != store.LevelPersonal {
 		t.Errorf(`payload["level"] = %v, want the effective %d`, p["level"], store.LevelPersonal)
 	}
-	if p["effective_level"] != store.LevelPersonal || p["stored_level"] != store.LevelMirror {
+	if p["effective_level"] != store.LevelPersonal || p["stored_level"] != store.LevelBroad {
 		t.Errorf("payload did not carry both levels: %v", p)
 	}
 	if p["levels_disagree"] != true {
 		t.Error("a stored/effective mismatch was not flagged for the interface")
+	}
+	// WO-085: the search entitlement follows the effective level for the same
+	// reason the radio does. A node that stored Level 2 but is running Level 1
+	// cannot search, and a control saying otherwise sends a request the daemon
+	// will refuse.
+	if p["distributed_search"] != false {
+		t.Errorf(`payload["distributed_search"] = %v while level 1 is in force`, p["distributed_search"])
+	}
+	if p["distributed_search_min_level"] != store.LevelBroad {
+		t.Errorf(`payload["distributed_search_min_level"] = %v, want %d`,
+			p["distributed_search_min_level"], store.LevelBroad)
+	}
+}
+
+// TestContributionPayloadCarriesTheSearchEntitlementBothWays is requirement 6's
+// data half: a level change has to reach an already-open search control in
+// every connected browser session, and the only message that reaches them all
+// is the status broadcast this payload builds (WO-079). If the entitlement
+// were not in here, the interface would need a second RPC nobody triggers —
+// and an open search view would keep its stale control until a reload.
+func TestContributionPayloadCarriesTheSearchEntitlementBothWays(t *testing.T) {
+	up := contributionPayload(contributionState{
+		Stored: store.LevelBroad, Effective: store.LevelBroad,
+		Startup: store.LevelBroad, Transition: transitionIdle,
+	})
+	if up["distributed_search"] != true {
+		t.Error("level 2 was not reported as entitled to distributed search")
+	}
+
+	down := contributionPayload(contributionState{
+		Stored: store.LevelPersonal, Effective: store.LevelPersonal,
+		Startup: store.LevelPersonal, Transition: transitionIdle,
+	})
+	if down["distributed_search"] != false {
+		t.Error("level 1 was reported as entitled to distributed search")
+	}
+}
+
+// TestRuntimeLevelChangeFlipsTheSearchEntitlement drives the real transition
+// rather than the payload builder: an upgrade must make distributed search
+// possible without a restart, and a downgrade must remove it immediately.
+//
+// The node is asked directly, because that is the object the RPC path consults
+// (see distributedSearchLevel) and the acceptance criterion is about the
+// running policy, not the stored number.
+func TestRuntimeLevelChangeFlipsTheSearchEntitlement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := freshSupervisor(t)
+	st := testStore(t, "search-entitlement.sqlite")
+	s.start(ctx, st)
+	if s.currentNode() == nil {
+		t.Skip("no swarm node could be started in this environment")
+	}
+	if s.currentNode().MayDistributedSearch() {
+		t.Fatal("a fresh Level-1 node is entitled to distributed search")
+	}
+
+	if _, err := s.apply(ctx, st, store.LevelBroad); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if n := s.currentNode(); n == nil || !n.MayDistributedSearch() {
+		t.Error("after upgrading to level 2 the running node still refuses distributed search")
+	}
+	if state := s.state(st); contributionPayload(state)["distributed_search"] != true {
+		t.Error("the status broadcast after an upgrade would still disable the control")
+	}
+
+	if _, err := s.apply(ctx, st, store.LevelPersonal); err != nil {
+		t.Fatalf("downgrade: %v", err)
+	}
+	if n := s.currentNode(); n != nil && n.MayDistributedSearch() {
+		t.Error("after downgrading to level 1 the running node still permits distributed search")
+	}
+	if state := s.state(st); contributionPayload(state)["distributed_search"] != false {
+		t.Error("the status broadcast after a downgrade would still enable the control")
 	}
 }

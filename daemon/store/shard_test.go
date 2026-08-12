@@ -195,7 +195,7 @@ func TestShardSliceOnlyReturnsMatchingShard(t *testing.T) {
 	seedTitle(t, st, "vid00000003", "Recipe: sourdough bread at home")
 
 	for shard := 0; shard < ShardM; shard++ {
-		entries, err := st.ShardSlice(shard, false)
+		entries, err := st.ShardSlice(shard, AllSources)
 		if err != nil {
 			t.Fatalf("shard %d: %v", shard, err)
 		}
@@ -210,16 +210,20 @@ func TestShardSliceOnlyReturnsMatchingShard(t *testing.T) {
 	}
 }
 
-// TestShardSliceRespectsMirrorOnly mirrors catalogue.go's rule 2 test: below
-// Level 3, a shard reply must never include tokens derived from this node's
-// own impressions, only from peer_catalogue.
-func TestShardSliceRespectsMirrorOnly(t *testing.T) {
-	st := openStore(t, "shard-mirror.sqlite")
+// TestShardSliceFollowsItsSourceSet mirrors catalogue.go's rule 2 test, as
+// WO-084 rewrote it: a shard reply is drawn from exactly the corpus its
+// SourceSet names, and each half is reachable on its own.
+//
+// The Level-2 policy is store.AllSources, not PeerSources — a Level-2 node
+// serves its own titles too. What this holds is that the selector is honest, so
+// LocalShards can announce over the same set the stream will answer from.
+func TestShardSliceFollowsItsSourceSet(t *testing.T) {
+	st := openStore(t, "shard-sources.sqlite")
 	seedTitle(t, st, "ownvideo001", "Owner watched this exact video")
 
 	found := false
 	for shard := 0; shard < ShardM; shard++ {
-		entries, err := st.ShardSlice(shard, true) // mirrorOnly=true, Level 2
+		entries, err := st.ShardSlice(shard, PeerSources)
 		if err != nil {
 			t.Fatalf("shard %d: %v", shard, err)
 		}
@@ -230,18 +234,18 @@ func TestShardSliceRespectsMirrorOnly(t *testing.T) {
 		}
 	}
 	if found {
-		t.Error("ShardSlice(mirrorOnly=true) served a video from this node's own impressions — Level 2 must never disclose own viewing")
+		t.Error("ShardSlice(PeerSources) served a video from this node's own impressions")
 	}
 
-	// The same video must be servable once it exists in peer_catalogue, i.e.
-	// as something mirrored on behalf of someone else.
+	// The same title must be servable once it exists in peer_catalogue, i.e.
+	// as something held on behalf of someone else.
 	if _, _, err := st.ImportEdges("peer-a", nil,
 		[]bridge.CatalogueEntry{{VideoID: "mirroredvid1", Title: "Owner watched this exact video"}}); err != nil {
 		t.Fatal(err)
 	}
 	found = false
 	for shard := 0; shard < ShardM; shard++ {
-		entries, err := st.ShardSlice(shard, true)
+		entries, err := st.ShardSlice(shard, PeerSources)
 		if err != nil {
 			t.Fatalf("shard %d: %v", shard, err)
 		}
@@ -252,7 +256,28 @@ func TestShardSliceRespectsMirrorOnly(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("ShardSlice(mirrorOnly=true) did not serve a video that arrived via peer_catalogue")
+		t.Error("ShardSlice(PeerSources) did not serve a video that arrived via peer_catalogue")
+	}
+
+	// And the union serves both — the property that makes Level 2's announced
+	// shard set match what it answers with.
+	local, imported := false, false
+	for shard := 0; shard < ShardM; shard++ {
+		entries, err := st.ShardSlice(shard, AllSources)
+		if err != nil {
+			t.Fatalf("shard %d: %v", shard, err)
+		}
+		for _, e := range entries {
+			switch e.VideoID {
+			case "ownvideo001":
+				local = true
+			case "mirroredvid1":
+				imported = true
+			}
+		}
+	}
+	if !local || !imported {
+		t.Errorf("ShardSlice(AllSources) returned local=%v imported=%v, want both", local, imported)
 	}
 }
 
@@ -295,7 +320,7 @@ func TestShardPackSignRoundTrip(t *testing.T) {
 	seedTitle(t, st, "vid00000001", "Recommendation systems explained")
 
 	shard := ShardOf(TokenizeQuery("recommendation")[0])
-	pack, err := st.BuildShardPack(shard, false, 0)
+	pack, err := st.BuildShardPack(shard, AllSources, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +342,7 @@ func TestShardPackRejectsForgedContent(t *testing.T) {
 	st := openStore(t, "shard-pack-forge.sqlite")
 	seedTitle(t, st, "vid00000001", "Recommendation systems explained")
 	shard := ShardOf(TokenizeQuery("recommendation")[0])
-	pack, err := st.BuildShardPack(shard, false, 0)
+	pack, err := st.BuildShardPack(shard, AllSources, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

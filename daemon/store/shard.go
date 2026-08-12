@@ -160,22 +160,25 @@ const maxShardEntries = 4096
 // ShardSlice returns every (video, matched tokens) pair this node holds for
 // one shard.
 //
-// mirrorOnly follows catalogue.go's rule 2 exactly: below contribution Level
-// 3, only titles that arrived from other people (peer_catalogue) may be
-// served, never this node's own impressions. Serving tokens derived from a
-// video this node watched would disclose viewing at that granularity — the
-// same leak Level 2's block/catalogue serving already refuses to have.
+// `sources` follows catalogue.go's rule 2 exactly, which WO-084 rewrote: a
+// serving node returns the complete shard over the corpus it actually holds,
+// local titles and imported titles together. It must be the same SourceSet
+// LocalShards announced under — a shard advertised over one corpus and served
+// from another is a provider record that lies.
+//
+// A shard is still whole and still never a token: the requester asks for shard
+// G and gets everything in it, so nothing here reintroduces a per-token path.
 //
 // Computed at request time from the same source SearchVideos and
 // heldCatalogue already read, not a separate persisted table — mirrors
 // buildBlock, which derives its reply from impressions/peer_edges on the fly
 // rather than keeping a redundant index in sync. At a few thousand titles
 // this costs microseconds.
-func (s *Store) ShardSlice(shard int, mirrorOnly bool) ([]ShardEntry, error) {
+func (s *Store) ShardSlice(shard int, sources SourceSet) ([]ShardEntry, error) {
 	if shard < 0 || shard >= ShardM {
 		return nil, fmt.Errorf("shard %d out of range [0,%d)", shard, ShardM)
 	}
-	all, err := s.heldCatalogue(mirrorOnly)
+	all, err := s.heldCatalogue(sources)
 	if err != nil {
 		return nil, err
 	}
@@ -243,8 +246,8 @@ func shardDigest(entries []ShardEntry) (string, error) {
 
 // BuildShardPack assembles and signs everything this node can serve for one
 // shard. Mirrors BuildCataloguePack (catalogue.go) exactly.
-func (s *Store) BuildShardPack(shard int, mirrorOnly bool, limit int) (*ShardPack, error) {
-	entries, err := s.ShardSlice(shard, mirrorOnly)
+func (s *Store) BuildShardPack(shard int, sources SourceSet, limit int) (*ShardPack, error) {
+	entries, err := s.ShardSlice(shard, sources)
 	if err != nil {
 		return nil, err
 	}
@@ -304,8 +307,8 @@ func VerifyShardPack(pack *ShardPack) error {
 // LocalShards lists the shards this node holds anything in — what gets
 // announced, mirroring LocalPrefixes/LocalCataloguePrefixes. ShardM is small
 // (256), so this is cheap even though it retokenizes every held title.
-func (s *Store) LocalShards(mirrorOnly bool) ([]int, error) {
-	all, err := s.heldCatalogue(mirrorOnly)
+func (s *Store) LocalShards(sources SourceSet) ([]int, error) {
+	all, err := s.heldCatalogue(sources)
 	if err != nil {
 		return nil, err
 	}

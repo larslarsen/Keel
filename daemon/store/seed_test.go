@@ -22,7 +22,7 @@ func TestSeedPackRemovesTheQuery(t *testing.T) {
 	seedEdge(t, origin, "othervid001", "popularvid2", 2)
 	seedEdge(t, origin, "popularvid2", "targetaaaa3", 0)
 
-	pack, err := origin.BuildSeedPack(100, "GB-en", false)
+	pack, err := origin.BuildSeedPack(100, "GB-en", AllSources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestSeedPackRejectsForgery(t *testing.T) {
 	origin := openStore(t, "origin.sqlite")
 	seedEdge(t, origin, "othervid001", "popularvid1", 0)
 	seedEdge(t, origin, "popularvid1", "targetaaaa1", 0)
-	pack, err := origin.BuildSeedPack(100, "GB-en", false)
+	pack, err := origin.BuildSeedPack(100, "GB-en", AllSources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestMirrorSeedPackExcludesOwnObservations(t *testing.T) {
 	st := openStore(t, "mirror.sqlite")
 	seedEdge(t, st, "privateseed", "privatevid1", 0)
 
-	if _, err := st.BuildSeedPack(100, "GB-en", true); err == nil {
+	if _, err := st.BuildSeedPack(100, "GB-en", PeerSources); err == nil {
 		t.Fatal("a mirror pack was built out of this node's own observations")
 	}
 }

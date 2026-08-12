@@ -13,6 +13,31 @@ export const MAX_BROWSER_TO_HOST = 64 * 1024 * 1024;
 /** @deprecated use MAX_HOST_TO_BROWSER — was misused for outbound checks */
 export const MAX_HOST_MSG = MAX_HOST_TO_BROWSER;
 
+/** Extension semantic version (diagnostic only; WO-081 uses capabilities). */
+export const CLIENT_VERSION = "0.1.0";
+/** Inclusive API range this extension speaks. */
+export const CLIENT_API = Object.freeze({ min: 1, max: 1 });
+/** Required capability revisions (fail closed if missing). */
+export const CLIENT_REQUIRED = Object.freeze({ core: 1 });
+/** Optional capability ceilings; negotiated map may omit any of these. */
+export const CLIENT_OPTIONAL = Object.freeze({
+  selectors: 1,
+  tiktok: 1,
+  scroll_history: 1,
+  // 2 = reciprocal distributed search (WO-085): the daemon refuses PEER_SEARCH
+  // below contribution level 2 and says so with a contribution_required code.
+  // A negotiated 1 means the daemon predates that rule and still answers at
+  // level 1, so the control must not be presented as level-gated — see
+  // PEER_SEARCH_REV_RECIPROCAL.
+  peer_search: 2,
+  word_stats: 1,
+  queue: 1,
+  contribution_runtime: 1,
+});
+
+/** peer_search revision at which distributed search became Level-2+. */
+export const PEER_SEARCH_REV_RECIPROCAL = 2;
+
 const SURFACES = ["WATCH_NEXT", "HOME", "SEARCH", "CHANNEL", "SHORTS"];
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

@@ -51,6 +51,7 @@ describe("WORD_STATS (WO-068)", () => {
       get connected() {
         return true;
       },
+      hasCapability: () => true,
       request: () => {
         throw new Error("must not call the daemon for a blank query");
       },
@@ -67,6 +68,7 @@ describe("WORD_STATS (WO-068)", () => {
       get connected() {
         return true;
       },
+      hasCapability: () => true,
       request: (type, payload) => {
         lastRequest = { type, payload };
         return Promise.resolve({
@@ -108,6 +110,7 @@ describe("WORD_STATS (WO-068)", () => {
       get connected() {
         return false;
       },
+      hasCapability: () => false,
       request: () => {
         throw new Error("must not call the daemon while disconnected");
       },

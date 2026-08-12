@@ -407,12 +407,13 @@ much larger, and not required before the seed exists.
 
 ## Consequence for the levels *(superseded 2026-08-11)*
 
-This was the interim conclusion. The current decision is the opposite:
-**Level 1 is a full consumer.** It receives the common seed, fetches whole prefix
-buckets and pre-walks the graph; Level 2 adds cached-block service rather than
-access. Level 1 also participates in live gossip and whole word-level HLL/CMS
-telemetry while serving no graph/catalogue/search blocks. See
-`ARCHITECTURE_CURRENT.md` §3 and WO-078.
+This was the interim conclusion. Under the current decision, **Level 1 keeps the
+complete personal recommendation path.** It receives the common seed, fetches
+whole prefix buckets and pre-walks the graph; Level 2 adds broad block service
+and reciprocal user-triggered distributed search rather than gating ordinary
+suggestions. Level 1 also participates in live gossip and whole word-level
+HLL/CMS telemetry while serving no graph/catalogue/search blocks. See
+`ARCHITECTURE_CURRENT.md` §3 and WO-078/085.
 
 ## Who the seed is built from — decided 2026-08-05
 
@@ -427,39 +428,43 @@ Two independent reasons, and the second is the one that would be easy to miss:
    graph for everyone, and every downstream measurement inherits it. A corpus
    of one is not a small sample — it is a systematically skewed one.
 
-So `keel-host seed build --own` stays a local tool for testing. Nothing built
-that way is published.
+So `keel-host seed build` stays a local tool for testing. Nothing built that way
+is published.
 
-### The gap this exposes
+WO-084 changed its default rather than its status: a pack is now built from
+whatever the node's own contribution level already serves on demand, so at
+Level 2 it carries locally derived claims and imported claims together, and at
+Level 1 it refuses to build at all. `--peers-only` produces the old
+imported-only shape. The reasons above are unaffected — they are about
+*publishing* a pack built from one corpus, and a pack names the neighbourhoods
+it carries where a bucket does not.
 
-**Level 2 contributes no data of its own.** It mirrors: it re-serves what other
-people published and publishes nothing it observed. That is what makes it safe,
-and it is also what means a network of Level 1 and Level 2 nodes contains zero
-original edges, however many people join.
+### The gap this exposed *(superseded 2026-08-11 by WO-084)*
 
-Edges enter the network only at Level 3 and above. So "wait until several people
-are at Level 2" cannot produce a seed — there would be nothing for them to
-mirror.
+This section recorded an incorrect mirror-only Level-2 boundary. Lars's
+broadness construction is the contribution mechanism: Level 2 serves complete
+hashed-prefix buckets containing locally produced and cached graph blocks.
+Locally produced blocks are aggregated and stringless; no selected-video
+response or ordered impression trail is published. See
+`ARCHITECTURE_CURRENT.md` §3 and WO-084.
 
-### What that leaves
+Therefore Level-2 nodes do add original edges and can grow the graph from an
+empty network. Level 3 remains the STAR-protected cohort-measurement boundary,
+not the first contribution boundary.
 
-The bootstrap route Lars already identified: a handful of early volunteers run at
-Level 3 or 4, knowingly and permanently, and the first seed is built from their
-combined corpora. Several people is enough to break the single-bubble problem;
-it does not need to be many.
+### What that leaves now
 
-Once the seed exists, Level 1 and Level 2 become genuinely useful and the network
-can grow without anyone else having to publish anything. **The open contribution
-is only needed to start it, not to run it** — which is the argument to make to
-those first volunteers, and it happens to be true.
+The network can bootstrap organically from Level-2 contributors: their broad
+local blocks are original graph input, and other Level-2 nodes cache and re-serve
+that input. A common seed is still useful for instant head coverage and must
+still be built from several contributors to avoid one person's bubble, but the
+network no longer depends on Level-3/4 volunteers merely to contain an edge.
 
-### Open question for Lars
+### Former open question — resolved by WO-084
 
-Whether Level 2 should also publish something of its own — the catalogue is the
-obvious candidate, since video metadata is a public fact rather than an
-observation of a person. It would not help the seed (catalogue carries no edges,
-and the walk reads `peer_edges`), but it would mean Level 2 is contributing data
-rather than only capacity. Currently it is not.
+Level 2 publishes its locally produced graph blocks through the complete broad
+bucket construction, with public catalogue/search companions through their own
+complete broad namespaces. This is no longer open.
 
 ## Searchable data and the same query leak — 2026-08-05
 

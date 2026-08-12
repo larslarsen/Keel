@@ -1,6 +1,6 @@
 # Keel — Privacy Policy
 
-Last updated: 11 August 2026
+Last updated: 12 August 2026
 
 Keel records recommendation surfaces on YouTube and the scrolling feed presented
 to you on TikTok, so you can see and control what recommender systems show you.
@@ -28,7 +28,9 @@ with no sender field; a directly connected peer may still infer an origin from
 network topology and timing after it is relayed. And it exchanges a whole,
 fixed-shape word-popularity pack with peers — no plaintext words, ids, edges or
 query, but not a zero-disclosure aggregate either. These three are detailed
-below. Everything else on this page describes data that stays put.
+below. At Level 2, additional broad recommendation claims derived from the
+recording leave as described under “Contributing”; raw rows and an ordered
+history never do.
 
 ---
 
@@ -114,12 +116,18 @@ including the default. It is not silent there — it just does not serve or
 publish anything of yours.
 
 **At every setting, Keel fetches shared graph, catalogue and search data from
-peers.** This is what makes suggestions and peer search work without a server:
-your computer asks for a bucket of thousands of videos at once — never one
-video by itself — and filters the answer locally, so a peer answering cannot
-tell which one you actually wanted. Requesting a bucket still tells that peer
-you asked, and roughly which coarse slice of the catalogue you're interested
-in; see below for exactly what that discloses.
+peers.** This is what makes suggestions and the shared graph work without a
+server: your computer asks for a bucket of thousands of videos at once — never
+one video by itself — and filters the answer locally, so a peer answering
+cannot tell which one you actually wanted. Requesting a bucket still tells that
+peer you asked, and roughly which coarse slice of the catalogue you're
+interested in; see below for exactly what that discloses.
+
+Searching *other people's* recommendations is the one network feature that
+starts at Level 2 rather than at the default, and the reason is capacity rather
+than privacy: those searches are answered by the machines that have chosen to
+serve, so the level that answers them is the level that can ask. Searching what
+Keel has recorded on your own device works at every setting.
 
 **At every setting, Keel announces livestreams it sees.** When a stream appears
 in your recommendations, Keel tells other Keel users that the stream exists — a
@@ -138,11 +146,13 @@ that a guess at a specific word ("was 'giveaway' common?") can still be checked
 against it. That is an aggregate disclosure, not zero disclosure, and it is why
 this page does not describe the default setting as network-silent.
 
-**None of the above serves, stores or passes on anything for other people.**
-Keel does not answer another peer's request for graph, catalogue or search data
-— including data it has itself fetched and cached — and does not tell the
-network it holds anything, at the default setting. That starts at Level 2,
-below.
+**None of the above makes the default node a graph, catalogue or search
+host.** Keel does not answer another peer's request for those blocks — including
+data it has itself fetched and cached — and does not announce that it holds
+them at the default setting. Level 1 does still relay/serve the shared Live
+snapshot and answer the whole word-aggregate protocol described above.
+Broad graph/catalogue/search service starts at Level 2, below, and so does
+sending recommendation claims derived from the durable recording.
 
 Keel does not use the YouTube API, and never contacts any Keel-operated server,
 because none exists. Peer discovery uses the public IPFS network, which nobody
@@ -162,10 +172,11 @@ visible. This is the same kind of exposure any peer-to-peer system has, and it
 is the one place, beyond the livestream notice and word aggregate above, where
 using Keel is visible to strangers rather than only to YouTube.
 
-What they cannot see: your history, anything you have recorded, what you
-actually watched, or any link between separate requests and a person. Keel's
-network identity is a separate key from the one used to sign anything published,
-so watching the network does not tell anyone what a node has contributed.
+What a bucket request does not reveal is your history, what you actually
+watched, or which member of the bucket you wanted. Separate requests can still
+be linked within a connection or by IP address and timing. Keel's network
+identity is separate from Level-2 claim keys, so a claim carries no durable
+application identity, but that separation does not erase connection metadata.
 
 If this trade is not one you want, the peer network can be turned off entirely
 and Keel keeps working on your own data alone.
@@ -178,23 +189,56 @@ deliberate choice you make.
 **Level 1 — personal (the default).** Nothing you record or watch is published,
 served to another peer, or told to anyone — that is what "personal" means here,
 not "silent." Level 1 is a full participant on the network described above: it
-fetches shared graph/catalogue/search data so suggestions and peer search work,
-announces livestreams it sees, and exchanges the word-popularity aggregate.
-What it never does is answer another peer's request for data, announce itself
-as holding anything, or publish what you recorded.
+fetches shared graph/catalogue/search data so suggestions and graph pre-walk
+work, searches what it has recorded on this device, announces livestreams it
+sees, and exchanges the word-popularity aggregate. What it never does is answer
+another peer's request for data, announce itself as holding anything, or publish
+what you recorded.
 
-**Level 2 — mirror.** Everything at Level 1, plus your computer starts
-**answering** other peers' requests — storing and passing on data *other
-people* published, using the disk space you allot. Nothing you observed is
-published, and the list of data your computer offers contains only what it is
-hosting for others — never what you watched. The trade you are accepting is the
-same request exposure described above, now from the answering side too.
+One feature is held back rather than disclosed differently: searching other
+people's recommendations. Nothing about it would leak more of yours — it is a
+capacity boundary. Those searches are arbitrary, repeatable and answered
+entirely by peers who have chosen to serve, and a network where everyone can
+ask and a handful answer has no way to stay up. So the level that answers
+searches is the level that can run them.
 
-**Levels 3 and 4** would publish aggregate or attributed records of what you
-were recommended. **These are not built and nothing is sent at these settings
-today.** Level 3 will be protected by threshold encryption — a report stays
-sealed unless enough other people report the same thing, so anything only you
-saw cannot be read — and nothing will be sent before that protection exists.
+**Level 2 — broad sharing.** Everything at Level 1, plus searching other
+people's recommendations, plus your computer starts **answering** other peers'
+requests, using the disk space you allot. It answers
+with two things at once, and the answer does not distinguish them: data other
+people published that your computer is passing on, and **aggregated
+recommendation blocks built from what you were shown**.
+
+So at Level 2, something derived from your own recording does leave your
+computer. Here is exactly what, and what keeps it from being a viewing history.
+
+What leaves is a count: "on this video's page, this other video appeared, in
+roughly this position, on roughly this day, this many times." No timestamps, no
+page-visit ids, no titles, no searches, and no order — nothing that reconstructs
+a session or says you watched anything, only that it was recommended alongside
+something.
+
+What carries it is the *batch*. Your computer never offers one video and never
+answers a request for one video. It offers a batch of thousands, and answers
+with everything it has in that batch at once — the same large batches it asks
+in. Each locally produced neighbourhood has an opaque claim key unlinkable to
+the keys for other neighbourhoods; updates preserve that key so an old claim is
+replaced rather than multiplied. The key design does not prevent a peer from
+linking deliveries by connection metadata or timing.
+
+This is not zero disclosure and we will not describe it that way. Whoever
+answers or receives a batch sees your IP address and sees the whole batch you
+returned; timing and connection details can link one delivery to another. What
+they do not get is a list of what you watched, in what order, or when.
+
+**Levels 3 and 4** are not built and nothing is sent at these settings today.
+Level 3 is not "the level where sharing starts" — Level 2 already contributes
+the blocks described above. Level 3 adds a different mechanism: measurements
+protected by threshold encryption, where a report stays sealed unless enough
+other people report the same thing, so anything only you saw cannot be read.
+Nothing will be sent at Level 3 before that protection exists. Level 4 would
+publish records under a name deliberately traceable to you, which is the whole
+point of it.
 
 Anything published to a peer-to-peer network should be treated as permanent:
 once another computer has a copy, it cannot be recalled.

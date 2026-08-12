@@ -68,7 +68,7 @@ func TestBlockBuildEncodeImportRoundTrip(t *testing.T) {
 	seedEdge(t, st, "fromvid001", "tovid0001", 0)
 	seedEdge(t, st, "fromvid001", "tovid0002", 3)
 
-	blk, err := st.buildBlock("fromvid001", "GB-en", false)
+	blk, err := st.BuildBlock("fromvid001", "GB-en")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func FuzzBlocksInPrefix(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, prefix string) {
-		blocks, err := st.BlocksInPrefix(prefix, "", false, 8)
+		bucket, err := st.BlocksInPrefix(prefix, "", AllSources, BucketAnonymityFloor)
 		if err != nil {
 			return
 		}
@@ -152,10 +152,19 @@ func FuzzBlocksInPrefix(f *testing.F) {
 		// the node is answering under a key it could not itself request.
 		if _, ok := PrefixOf(prefix); !ok {
 			t.Fatalf("served %d blocks for prefix %q that PrefixOf rejects",
-				len(blocks), prefix)
+				len(bucket.Blocks), prefix)
 		}
-		if len(blocks) > 8 {
-			t.Fatalf("limit of 8 returned %d blocks", len(blocks))
+		if len(bucket.Blocks) > BucketAnonymityFloor {
+			t.Fatalf("limit of %d returned %d blocks", BucketAnonymityFloor, len(bucket.Blocks))
+		}
+		// The reply must describe itself honestly: a capped bucket says so, and
+		// Held is the real population rather than the truncated one.
+		if bucket.Truncated != (bucket.Held > len(bucket.Blocks)) {
+			t.Fatalf("bucket claims truncated=%v holding %d, serving %d",
+				bucket.Truncated, bucket.Held, len(bucket.Blocks))
+		}
+		if bucket.Prefix != prefix {
+			t.Fatalf("bucket labelled %q for request %q", bucket.Prefix, prefix)
 		}
 	})
 }
@@ -186,7 +195,7 @@ func FuzzShardSlice(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, shard int) {
-		entries, err := st.ShardSlice(shard, false)
+		entries, err := st.ShardSlice(shard, AllSources)
 		if err != nil {
 			if shard >= 0 && shard < ShardM {
 				t.Fatalf("in-range shard %d returned an error: %v", shard, err)

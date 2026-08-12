@@ -117,8 +117,16 @@ describe("native bridge (WO-004 §6.1, §6.2, WO-008)", () => {
     state = freshState();
     const bridge = createNativeBridge({ onStatus() {}, onMessage() {} });
     bridge.connect();
-    state.ports[0]._onMessage(envelope("HELLO_ACK", {})); // hello gate opens
+    state.ports[0]._onMessage(
+      envelope("HELLO_ACK", {
+        ok: true,
+        compatible: true,
+        api: 1,
+        capabilities: { core: 1, queue: 1 },
+      })
+    ); // hello gate opens
     assert.equal(bridge.helloOk, true);
+    assert.equal(bridge.hasCapability("queue"), true);
 
     const originalSetTimeout = globalThis.setTimeout;
     const originalClearTimeout = globalThis.clearTimeout;
@@ -178,7 +186,14 @@ describe("native bridge (WO-004 §6.1, §6.2, WO-008)", () => {
 
     // A successful handshake on the new port clears the outstanding alarm.
     const clearsBeforeAck = state.alarmsCleared.length;
-    state.ports[1]._onMessage(envelope("HELLO_ACK", {}));
+    state.ports[1]._onMessage(
+      envelope("HELLO_ACK", {
+        ok: true,
+        compatible: true,
+        api: 1,
+        capabilities: { core: 1 },
+      })
+    );
     assert.ok(
       state.alarmsCleared.length > clearsBeforeAck,
       "HELLO_ACK must clear the reconnect alarm"
@@ -188,5 +203,62 @@ describe("native bridge (WO-004 §6.1, §6.2, WO-008)", () => {
     // An alarm for anything else must not reconnect.
     state.alarmListener({ name: "some-other-alarm" });
     assert.equal(state.connections.length, 2, "unrelated alarms must be ignored");
+  });
+
+  it("WO-081: HELLO carries api/required/optional capability maps", () => {
+    state = freshState();
+    const bridge = createNativeBridge({ onStatus() {}, onMessage() {} });
+    bridge.connect();
+    const hello = state.ports[0]._sent[0];
+    assert.equal(hello.type, "HELLO");
+    assert.equal(hello.payload.client_version, "0.1.0");
+    assert.deepEqual(hello.payload.api, { min: 1, max: 1 });
+    assert.equal(hello.payload.required.core, 1);
+    assert.equal(hello.payload.optional.contribution_runtime, 1);
+  });
+
+  it("WO-081: incompatible HELLO_ACK does not set connected/ready", () => {
+    state = freshState();
+    const statuses = [];
+    const bridge = createNativeBridge({
+      onStatus(ok, detail, meta) {
+        statuses.push({ ok, detail, meta });
+      },
+      onMessage() {},
+    });
+    bridge.connect();
+    state.ports[0]._onMessage(
+      envelope("HELLO_ACK", {
+        ok: false,
+        compatible: false,
+        code: "api_non_overlap",
+        reason: "desktop app update required: no overlapping API revision",
+      })
+    );
+    assert.equal(bridge.helloOk, false);
+    assert.equal(bridge.connected, false);
+    assert.equal(statuses.at(-1).ok, false);
+    assert.match(statuses.at(-1).detail, /desktop app update required/i);
+    assert.equal(statuses.at(-1).meta?.incompatible, true);
+    // Must keep trying after an incompatible host (user may upgrade).
+    assert.ok(state.alarmsCreated.length >= 1);
+  });
+
+  it("WO-081: compatible partial map exposes only negotiated caps", () => {
+    state = freshState();
+    const bridge = createNativeBridge({ onStatus() {}, onMessage() {} });
+    bridge.connect();
+    state.ports[0]._onMessage(
+      envelope("HELLO_ACK", {
+        ok: true,
+        compatible: true,
+        api: 1,
+        capabilities: { core: 1, queue: 1 },
+      })
+    );
+    assert.equal(bridge.hasCapability("core"), true);
+    assert.equal(bridge.hasCapability("queue"), true);
+    assert.equal(bridge.hasCapability("peer_search"), false);
+    assert.equal(bridge.hasCapability("contribution_runtime"), false);
   });
 });

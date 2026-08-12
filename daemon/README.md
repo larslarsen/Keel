@@ -150,4 +150,19 @@ Browser ↔ proxy remains framed stdio JSON envelopes (`v: 2`) — `DESIGN_v2.md
 the proxy forwards those JSON frames byte-for-byte over the local socket/pipe.
 Correlation IDs stay scoped to that one proxy connection.
 
+The first browser application frame must be `HELLO`. API range plus required
+and optional capability revisions are negotiated before any other RPC; a
+missing `core:1` or non-overlapping API fails that session closed. Optional
+controls are disabled with a reason when their capability is absent. Envelope
+`v: 2` is stable bootstrap framing, not the revision number for every payload.
+
+The owner may send unsolicited `CONTRIBUTION_STATUS` envelopes with reserved
+`owner-event-*` ids after a runtime policy change. Every authenticated browser
+session receives the terminal effective state; these ids never resolve RPCs.
+
 P0 types: `HELLO` / `HELLO_ACK`, `IMPRESSIONS` / `IMPRESSIONS_ACK`, `STATS` / `STATS_RESULT`, `ERROR`.
+
+The current graph stream is `/keel/block/3.0.0`. It serves signed schema-3
+claim buckets with declared `held`/`truncated` state; Level 2 selects the union
+of local and imported claims, while Level 1 registers no graph/catalogue/search
+serve handler or provider announcement.

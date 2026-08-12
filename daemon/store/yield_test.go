@@ -20,7 +20,7 @@ func TestLocalYieldVectorAboveAndBelowThreshold(t *testing.T) {
 	// threshold" case.
 	seedTitle(t, st, "vid00000001", "Recommendation systems explained")
 
-	vec, err := st.LocalYieldVector(false)
+	vec, err := st.LocalYieldVector(AllSources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,21 +64,25 @@ func TestLocalYieldVectorAboveAndBelowThreshold(t *testing.T) {
 	}
 }
 
-// TestLocalYieldVectorRespectsMirrorOnly mirrors ShardSlice's own test: below
-// Level 3, only peer_catalogue titles may contribute, never this node's own
-// impressions.
-func TestLocalYieldVectorRespectsMirrorOnly(t *testing.T) {
-	st := openStore(t, "yield-mirror.sqlite")
+// TestLocalYieldVectorFollowsItsSourceSet mirrors ShardSlice's own test: the
+// vector is computed over exactly the corpus its SourceSet names.
+//
+// That equality is the point (WO-084 requirement 4). A yield bit claims a shard
+// fetch from this node would return something useful, so it has to be computed
+// over the same corpus ShardSlice will actually serve — Policy.CatalogueSources
+// feeds both.
+func TestLocalYieldVectorFollowsItsSourceSet(t *testing.T) {
+	st := openStore(t, "yield-sources.sqlite")
 	seedTitle(t, st, "ownvideo001", "Owner watched this exact video")
 
-	vec, err := st.LocalYieldVector(true) // mirrorOnly=true, Level 2
+	vec, err := st.LocalYieldVector(PeerSources)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tok := range tokenize("owner watched this exact video", ShardK) {
 		idx, ok := TokenDictIndex(tok)
 		if ok && YieldBitSet(vec, idx) {
-			t.Errorf("LocalYieldVector(mirrorOnly=true) set a bit for a token derived from this node's own impressions")
+			t.Errorf("LocalYieldVector(PeerSources) set a bit for a token derived from this node's own impressions")
 		}
 	}
 
@@ -86,7 +90,7 @@ func TestLocalYieldVectorRespectsMirrorOnly(t *testing.T) {
 		[]bridge.CatalogueEntry{{VideoID: "mirroredvid1", Title: "Owner watched this exact video"}}); err != nil {
 		t.Fatal(err)
 	}
-	vec, err = st.LocalYieldVector(true)
+	vec, err = st.LocalYieldVector(PeerSources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +102,26 @@ func TestLocalYieldVectorRespectsMirrorOnly(t *testing.T) {
 		}
 	}
 	if !anySet {
-		t.Error("LocalYieldVector(mirrorOnly=true) set no bits after the same title arrived via peer_catalogue")
+		t.Error("LocalYieldVector(PeerSources) set no bits after the same title arrived via peer_catalogue")
+	}
+
+	// The Level-2 vector covers the local half too: a node that served its own
+	// titles while gossiping a vector that denied holding them would send peers
+	// past material it was ready to answer with.
+	stLocal := openStore(t, "yield-local.sqlite")
+	seedTitle(t, stLocal, "ownvideo001", "Owner watched this exact video")
+	vec, err = stLocal.LocalYieldVector(AllSources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anySet = false
+	for _, tok := range tokenize("owner watched this exact video", ShardK) {
+		idx, ok := TokenDictIndex(tok)
+		if ok && YieldBitSet(vec, idx) {
+			anySet = true
+		}
+	}
+	if !anySet {
+		t.Error("LocalYieldVector(AllSources) set no bits for a title this node holds and would serve")
 	}
 }

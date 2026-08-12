@@ -7,6 +7,10 @@ import {
   envelope,
   envelopeBytes,
   validateEnvelope,
+  CLIENT_VERSION,
+  CLIENT_API,
+  CLIENT_REQUIRED,
+  CLIENT_OPTIONAL,
 } from "./protocol.js";
 
 const LOG = "[Keel native]";
@@ -15,12 +19,16 @@ const ALARM_NAME = "keel-native-reconnect";
 const RECONNECT_DELAY_MIN = 0.5;
 
 /**
- * @param {{ onStatus: (ok: boolean, detail?: string) => void, onMessage: (env: object) => void }} hooks
+ * @param {{ onStatus: (ok: boolean, detail?: string, meta?: object) => void, onMessage: (env: object) => void }} hooks
  */
 export function createNativeBridge(hooks) {
   /** @type {ReturnType<typeof browser.runtime.connectNative> | null} */
   let port = null;
   let helloOk = false;
+  /** @type {Record<string, number>} */
+  let capabilities = Object.create(null);
+  /** @type {{ code?: string, reason?: string } | null} */
+  let lastHelloFailure = null;
   /** @type {Map<string, { resolve: Function, reject: Function, t: ReturnType<typeof setTimeout> }>} */
   const pending = new Map();
 
@@ -66,6 +74,47 @@ export function createNativeBridge(hooks) {
     }
   }
 
+  function helloPayload() {
+    return {
+      client: "keel-extension",
+      client_version: CLIENT_VERSION,
+      version: CLIENT_VERSION,
+      api: { min: CLIENT_API.min, max: CLIENT_API.max },
+      required: { ...CLIENT_REQUIRED },
+      optional: { ...CLIENT_OPTIONAL },
+    };
+  }
+
+  function applyHelloAck(payload) {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const compatible = p.compatible === true && p.ok !== false;
+    if (compatible) {
+      helloOk = true;
+      lastHelloFailure = null;
+      capabilities = Object.create(null);
+      const caps = p.capabilities && typeof p.capabilities === "object" ? p.capabilities : {};
+      for (const [k, v] of Object.entries(caps)) {
+        const n = Number(v);
+        if (k && Number.isFinite(n) && n >= 1) capabilities[k] = n | 0;
+      }
+      clearReconnectAlarm();
+      hooks.onStatus(true, "ok", { capabilities: { ...capabilities } });
+      return;
+    }
+    helloOk = false;
+    capabilities = Object.create(null);
+    const code = typeof p.code === "string" ? p.code : "incompatible";
+    const reason =
+      typeof p.reason === "string" && p.reason
+        ? p.reason
+        : "desktop app update required";
+    lastHelloFailure = { code, reason };
+    // Do not set connected/ready. Surface actionable copy; keep reconnecting
+    // in case the user upgrades the desktop app while the extension stays open.
+    hooks.onStatus(false, reason, { code, reason, incompatible: true });
+    scheduleReconnect();
+  }
+
   function onMessage(msg) {
     const v = validateEnvelope(msg);
     if (!v.ok) {
@@ -74,9 +123,7 @@ export function createNativeBridge(hooks) {
     }
     const env = v.value;
     if (env.type === "HELLO_ACK") {
-      helloOk = true;
-      clearReconnectAlarm();
-      hooks.onStatus(true, "ok");
+      applyHelloAck(env.payload);
     }
     if (env.type === "ERROR") console.error(LOG, "ERROR", env.payload);
     const w = pending.get(env.id);
@@ -104,28 +151,41 @@ export function createNativeBridge(hooks) {
     } catch (err) {
       console.warn(LOG, "connect throw", err?.message || err);
       helloOk = false;
+      capabilities = Object.create(null);
       hooks.onStatus(false, "not running");
       scheduleReconnect();
       return;
     }
     port = p;
+    helloOk = false;
+    capabilities = Object.create(null);
     p.onMessage.addListener(onMessage);
     p.onDisconnect.addListener(() => {
       const err = browser.runtime.lastError;
       console.warn(LOG, "disconnect", err?.message || "closed");
       port = null;
       helloOk = false;
+      capabilities = Object.create(null);
       hooks.onStatus(false, err?.message || "not running");
       rejectPending("disconnected");
       scheduleReconnect();
     });
-    post(envelope("HELLO", { client: "keel-extension", version: "0.1.0" }));
+    post(envelope("HELLO", helloPayload()));
+  }
+
+  function hasCapability(name, minRev = 1) {
+    const n = capabilities[name];
+    return Number.isFinite(n) && n >= minRev;
   }
 
   function request(type, payload, timeoutMs = 8000) {
     return new Promise((resolve, reject) => {
       if (!port || !helloOk) {
-        reject(new Error("daemon not connected"));
+        reject(
+          new Error(
+            lastHelloFailure?.reason || "daemon not connected"
+          )
+        );
         return;
       }
       const env = envelope(type, payload);
@@ -154,11 +214,18 @@ export function createNativeBridge(hooks) {
     connect,
     request,
     post,
+    hasCapability,
     get helloOk() {
       return helloOk;
     },
     get connected() {
       return Boolean(port) && helloOk;
+    },
+    get capabilities() {
+      return { ...capabilities };
+    },
+    get lastHelloFailure() {
+      return lastHelloFailure ? { ...lastHelloFailure } : null;
     },
   };
 }

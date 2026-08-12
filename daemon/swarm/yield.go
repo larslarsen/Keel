@@ -20,10 +20,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// YieldTopic carries yield vectors: a bit per dictionary token saying
-// "worth fetching from me". No per-item query, so — like LiveTopic — every
-// node subscribes regardless of contribution level; publishing is what a
-// level gates, not receiving.
+// YieldTopic carries yield vectors: a bit per dictionary token saying "worth
+// fetching from me". Only policies serving mirrored searchable blocks join,
+// relay and publish this topic; Level 1 deliberately does none of the three
+// (WO-077/078). LiveTopic has a separate every-level disclosure decision.
 const YieldTopic = "keel/yield/1"
 
 // yieldPublishInterval bounds how often this node re-publishes its own
@@ -147,7 +147,7 @@ func (n *Node) publishYield(ctx context.Context) {
 		// than the level split it used to be.
 		return
 	}
-	vec, err := n.st.LocalYieldVector(n.cfg.Policy.MirrorOnly())
+	vec, err := n.st.LocalYieldVector(n.cfg.Policy.CatalogueSources())
 	if err != nil {
 		n.logf("yield: %v", err)
 		return

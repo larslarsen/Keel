@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/keel-app/keel/daemon/bridge"
 	"github.com/keel-app/keel/daemon/store"
+	"github.com/keel-app/keel/daemon/swarm"
 )
 
 func testOwnerPaths(t *testing.T) ownerPaths {
@@ -124,6 +126,23 @@ func TestOwnerMultiplexesSessionsAndSurvivesClientEOF(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// Keep this transport test off the public network while still exercising a
+	// successful runtime transition through the same supervisor path as the
+	// owner. WO-077's real-node policy transitions have their own tests.
+	oldSupervisor := supervisor
+	testSupervisor := &swarmSupervisor{
+		effective: store.LevelPersonal, transition: transitionIdle,
+	}
+	testSupervisor.launchFn = func(
+		context.Context, *store.Store, int,
+	) (*swarm.Node, context.CancelFunc, error) {
+		return nil, func() {}, nil
+	}
+	supervisor = testSupervisor
+	t.Cleanup(func() {
+		testSupervisor.stopAll()
+		supervisor = oldSupervisor
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
@@ -144,20 +163,8 @@ func TestOwnerMultiplexesSessionsAndSurvivesClientEOF(t *testing.T) {
 			}
 			defer conn.Close()
 			id := "client-" + string(rune('A'+i))
-			env, _ := bridge.NewEnvelope(id, "HELLO", map[string]any{})
-			raw, _ := env.Encode()
-			if err := writeIPCFrame(conn, raw, bridge.MaxBrowserToHost); err != nil {
-				errs <- err
-				return
-			}
-			response, err := readIPCFrame(conn, bridge.MaxHostToBrowser)
-			if err != nil {
-				errs <- err
-				return
-			}
-			got, err := bridge.ParseEnvelope(response)
-			if err != nil || got.ID != id || got.Type != "HELLO_ACK" {
-				errs <- errors.New("response crossed owner sessions")
+			if err := negotiateOwnerSession(conn, id); err != nil {
+				errs <- fmt.Errorf("response crossed owner sessions or failed to negotiate: %w", err)
 				return
 			}
 			errs <- nil
@@ -178,17 +185,44 @@ func TestOwnerMultiplexesSessionsAndSurvivesClientEOF(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Close()
+	observer, err := dialTestOwner(p, "shared-secret", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	if err := negotiateOwnerSession(observer, "observer-ready"); err != nil {
+		t.Fatal(err)
+	}
+	// The writer negotiates too. SET_CONTRIBUTION is gated on
+	// contribution_runtime, and an un-negotiated session is not in the
+	// broadcast hub at all (WO-081), so skipping this would leave the reads
+	// below waiting forever on an event that is correctly never sent.
+	if err := negotiateOwnerSession(writer, "writer-ready"); err != nil {
+		t.Fatal(err)
+	}
 	set, _ := bridge.NewEnvelope("set", "SET_CONTRIBUTION", map[string]any{"level": 2})
 	if err := sendAndExpectID(writer, set, "set"); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := dialTestOwner(p, "shared-secret", "session")
-	if err != nil {
-		t.Fatal(err)
+	// The requester gets its correlated result first, then every authenticated
+	// session—including an otherwise idle browser—gets the owner-wide event.
+	for name, conn := range map[string]net.Conn{"requester": writer, "observer": observer} {
+		event, err := readOwnerEnvelope(conn)
+		if err != nil {
+			t.Fatalf("%s contribution event: %v", name, err)
+		}
+		if event.Type != "CONTRIBUTION_STATUS" {
+			t.Fatalf("%s event type = %q, want CONTRIBUTION_STATUS", name, event.Type)
+		}
+		var status struct {
+			Effective int `json:"effective_level"`
+		}
+		if err := json.Unmarshal(event.Payload, &status); err != nil || status.Effective != 2 {
+			t.Fatalf("%s event effective level = %d, err = %v", name, status.Effective, err)
+		}
 	}
-	defer reader.Close()
 	get, _ := bridge.NewEnvelope("get", "GET_CONTRIBUTION", map[string]any{})
-	response, err := sendOwnerRequest(reader, get)
+	response, err := sendOwnerRequest(observer, get)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,11 +270,58 @@ func sendOwnerRequest(conn net.Conn, env *bridge.Envelope) (*bridge.Envelope, er
 	if err := writeIPCFrame(conn, raw, bridge.MaxBrowserToHost); err != nil {
 		return nil, err
 	}
+	return readOwnerEnvelope(conn)
+}
+
+func readOwnerEnvelope(conn net.Conn) (*bridge.Envelope, error) {
 	response, err := readIPCFrame(conn, bridge.MaxHostToBrowser)
 	if err != nil {
 		return nil, err
 	}
 	return bridge.ParseEnvelope(response)
+}
+
+// testHelloPayload is a compatible browser HELLO (WO-081). Written out rather
+// than reusing the daemon's own map so a change to DaemonCaps that silently
+// drops a capability shows up here as a behavioural difference, not as two
+// constants agreeing with each other.
+func testHelloPayload() map[string]any {
+	return map[string]any{
+		"client_version": "0.1.0",
+		"api":            map[string]any{"min": bridge.APIMin, "max": bridge.APIMax},
+		"required":       map[string]any{bridge.CapCore: 1},
+		"optional": map[string]any{
+			bridge.CapSelectors: 1, bridge.CapTikTok: 1, bridge.CapScrollHistory: 1,
+			bridge.CapPeerSearch: 1, bridge.CapWordStats: 1, bridge.CapQueue: 1,
+			bridge.CapContributionRuntime: 1,
+		},
+	}
+}
+
+// negotiateOwnerSession performs the HELLO exchange a real browser session must
+// complete before any application RPC. Every owner test drives it explicitly:
+// the gate is the thing under test, so folding it into dialTestOwner would hide
+// exactly the step that can regress.
+func negotiateOwnerSession(conn net.Conn, id string) error {
+	hello, err := bridge.NewEnvelope(id, "HELLO", testHelloPayload())
+	if err != nil {
+		return err
+	}
+	got, err := sendOwnerRequest(conn, hello)
+	if err != nil {
+		return err
+	}
+	if got.ID != id || got.Type != "HELLO_ACK" {
+		return fmt.Errorf("HELLO answered with %s/%s", got.ID, got.Type)
+	}
+	var ack bridge.HelloAckPayload
+	if err := json.Unmarshal(got.Payload, &ack); err != nil {
+		return err
+	}
+	if !ack.Compatible {
+		return fmt.Errorf("negotiation failed: %s: %s", ack.Code, ack.Reason)
+	}
+	return nil
 }
 
 func sendAndExpectID(conn net.Conn, env *bridge.Envelope, id string) error {
@@ -252,4 +333,106 @@ func sendAndExpectID(conn net.Conn, env *bridge.Envelope, id string) error {
 		return errors.New("wrong response correlation id")
 	}
 	return nil
+}
+
+// TestUnnegotiatedSessionReceivesNoOwnerBroadcast is the hub half of WO-081's
+// gate.
+//
+// Authenticating the transport (`owner_ipc:1`) says a local process is entitled
+// to talk to this owner. It says nothing about what the *browser* behind it can
+// parse. Owner-wide events are unsolicited application frames, so a session
+// that has not agreed an API and capability set — or one we have just told is
+// incompatible — must not be in the hub at all. Otherwise "no RPC is accepted
+// until negotiation succeeds" holds only for the direction the client drives.
+func TestUnnegotiatedSessionReceivesNoOwnerBroadcast(t *testing.T) {
+	p := testOwnerPaths(t)
+	ln, err := listenOwnerEndpoint(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(p.configDir, "owner.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	oldSupervisor := supervisor
+	testSupervisor := &swarmSupervisor{
+		effective: store.LevelPersonal, transition: transitionIdle,
+	}
+	testSupervisor.launchFn = func(
+		context.Context, *store.Store, int,
+	) (*swarm.Node, context.CancelFunc, error) {
+		return nil, func() {}, nil
+	}
+	supervisor = testSupervisor
+	t.Cleanup(func() {
+		testSupervisor.stopAll()
+		supervisor = oldSupervisor
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = serveOwner(ctx, ln, "shared-secret", st) }()
+
+	// silent has completed the owner IPC handshake and nothing more.
+	silent, err := dialTestOwner(p, "shared-secret", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+
+	// stale speaks the pre-WO-081 HELLO: a client string and no capability
+	// negotiation. It gets an ack saying so, and must be treated as absent.
+	stale, err := dialTestOwner(p, "shared-secret", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	legacy, _ := bridge.NewEnvelope("legacy", "HELLO",
+		map[string]any{"client": "keel-extension", "version": "0.1.0"})
+	got, err := sendOwnerRequest(stale, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ack bridge.HelloAckPayload
+	if err := json.Unmarshal(got.Payload, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if ack.Compatible {
+		t.Fatal("a pre-WO-081 HELLO negotiated successfully; it declares no capabilities")
+	}
+
+	driver, err := dialTestOwner(p, "shared-secret", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := negotiateOwnerSession(driver, "driver-ready"); err != nil {
+		t.Fatal(err)
+	}
+	set, _ := bridge.NewEnvelope("set", "SET_CONTRIBUTION", map[string]any{"level": 2})
+	if err := sendAndExpectID(driver, set, "set"); err != nil {
+		t.Fatal(err)
+	}
+	// The driver is negotiated, so it is in the hub and does get the event.
+	event, err := readOwnerEnvelope(driver)
+	if err != nil || event.Type != "CONTRIBUTION_STATUS" {
+		t.Fatalf("negotiated session missed its own broadcast: %v / %v", event, err)
+	}
+
+	// Neither of the others may have been sent anything. Read with a deadline:
+	// a timeout is the pass condition, and any frame at all is the failure.
+	for name, conn := range map[string]net.Conn{"silent": silent, "pre-WO-081": stale} {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		frame, err := readOwnerEnvelope(conn)
+		if err == nil {
+			t.Errorf("%s session received %q without negotiating", name, frame.Type)
+			continue
+		}
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Errorf("%s session read failed for the wrong reason: %v", name, err)
+		}
+	}
 }

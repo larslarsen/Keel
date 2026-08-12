@@ -99,8 +99,14 @@ func PrefixOf(prefix string) (int, bool) {
 // user watched, because a node caches what its user watches. A bucket
 // containing thousands of videos discloses only that the node wanted something
 // in it.
-func (s *Store) LocalPrefixes(bits int, mirrorOnly bool) ([]string, error) {
-	keys, err := s.LocalBlockKeys(mirrorOnly)
+//
+// `sources` must be the same SourceSet BlocksInPrefix will serve under
+// (Policy.GraphSources). Announcing a wider set than the stream returns is a
+// record that costs the requester a round trip and tells an observer the two
+// sets differ; announcing a narrower one hides material this node is serving
+// anyway (WO-084 requirement 4).
+func (s *Store) LocalPrefixes(bits int, sources SourceSet) ([]string, error) {
+	keys, err := s.LocalBlockKeys(sources)
 	if err != nil {
 		return nil, err
 	}
@@ -116,14 +122,53 @@ func (s *Store) LocalPrefixes(bits int, mirrorOnly bool) ([]string, error) {
 	return out, nil
 }
 
-// BlocksInPrefix builds every block this node can serve within one bucket.
+// BucketAnonymityFloor is the smallest reply size this node will serve a bucket
+// under at all.
 //
-// limit bounds the response: a bucket on a large mirror could hold a great many
+// A bucket's privacy is its population: the requester's interest is hidden
+// among the neighbourhoods it did not want. Answering with a handful of blocks
+// gives that away, so a caller that asks for a reply cap below this gets an
+// error instead of a small honest-looking answer. WO-084's rule is to adjust
+// the bucket or the version, never to quietly shrink the anonymity set.
+const BucketAnonymityFloor = 32
+
+// BlockBucket is one complete prefix bucket, as served.
+//
+// It replaced a bare `[]Block` at BlockProtocol 3.0.0 for one reason:
+// truncation used to be invisible. A capped reply is indistinguishable from a
+// small bucket to whoever receives it, so a recipient could not tell whether
+// the anonymity set it was reasoning about was the real one. Held and Truncated
+// say so outright.
+type BlockBucket struct {
+	SchemaVersion int    `json:"schema_version"`
+	Prefix        string `json:"prefix"`
+	// Held is how many claims this node actually has in the bucket, before
+	// any cap. Bucket-level and therefore coarse by construction — it counts
+	// a set of thousands of possible videos, not a video.
+	Held      int     `json:"held"`
+	Truncated bool    `json:"truncated"`
+	Blocks    []Block `json:"blocks"`
+}
+
+// BlocksInPrefix returns every claim this node can serve within one bucket.
+//
+// This is the union WO-084 requires, and it is a union of *claims*, not of
+// edges: this node's own neighbourhood claim for a key and every peer claim it
+// holds for that same key all appear, side by side, unmerged. Merging them
+// would be this node asserting a total it cannot support, and dropping either
+// side is the mirror-only bug the ticket exists to correct.
+//
+// Nothing in the reply says which claims came from this user's observations.
+// They are sorted by (key, claim identity) — deterministic, and independent of
+// who asked — and a local claim's identity is a per-neighbourhood key
+// indistinguishable in kind from a peer's (claim.go).
+//
+// limit bounds the response: a bucket on a large node could hold a great many
 // neighbourhoods, and an unbounded reply is both a memory hazard and a way for
-// one request to consume a node's upstream. Truncation is safe — the requester
-// may not get the specific block it wanted, which is indistinguishable from the
-// node not holding it.
-func (s *Store) BlocksInPrefix(prefix string, cohort string, mirrorOnly bool, limit int) ([]Block, error) {
+// one request to consume a node's upstream. Truncation is deterministic rather
+// than requester-influenced — there is no subset a peer can steer this toward —
+// and is declared in the reply rather than hidden.
+func (s *Store) BlocksInPrefix(prefix string, cohort string, sources SourceSet, limit int) (*BlockBucket, error) {
 	bits, ok := PrefixOf(prefix)
 	if !ok {
 		return nil, fmt.Errorf("malformed prefix %q", prefix)
@@ -131,27 +176,68 @@ func (s *Store) BlocksInPrefix(prefix string, cohort string, mirrorOnly bool, li
 	if limit <= 0 {
 		limit = 256
 	}
-	keys, err := s.LocalBlockKeys(mirrorOnly)
+	if limit < BucketAnonymityFloor {
+		return nil, fmt.Errorf(
+			"reply cap %d is below the bucket anonymity floor of %d: widen the bucket or raise the cap",
+			limit, BucketAnonymityFloor)
+	}
+	bucket := &BlockBucket{
+		SchemaVersion: blockSchemaVersion,
+		Prefix:        prefix,
+		Blocks:        []Block{},
+	}
+	if sources.Empty() {
+		return bucket, nil
+	}
+
+	keys, err := s.LocalBlockKeys(sources)
 	if err != nil {
 		return nil, err
 	}
-
-	out := []Block{}
+	inBucket := make([]string, 0, len(keys))
 	for _, k := range keys {
-		if BlockPrefix(k, bits) != prefix {
-			continue
-		}
-		blk, err := s.buildBlock(k, cohort, mirrorOnly)
-		if err != nil {
-			continue
-		}
-		if len(blk.Edges) == 0 {
-			continue
-		}
-		out = append(out, *blk)
-		if len(out) >= limit {
-			break
+		if BlockPrefix(k, bits) == prefix {
+			inBucket = append(inBucket, k)
 		}
 	}
-	return out, nil
+
+	all := []Block{}
+	if sources.Local {
+		for _, k := range inBucket {
+			blk, err := s.BuildBlock(k, cohort)
+			if err != nil {
+				continue
+			}
+			if len(blk.Edges) == 0 {
+				continue // an empty claim helps nobody and costs bytes
+			}
+			all = append(all, *blk)
+		}
+	}
+	if sources.Peers {
+		claims, err := s.PeerClaimsForKeys(inBucket)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range claims {
+			if len(c.Edges) == 0 {
+				continue
+			}
+			all = append(all, c)
+		}
+	}
+	sort.Slice(all, func(a, b int) bool {
+		if all[a].Key != all[b].Key {
+			return all[a].Key < all[b].Key
+		}
+		return all[a].ClaimID() < all[b].ClaimID()
+	})
+
+	bucket.Held = len(all)
+	if len(all) > limit {
+		all = all[:limit]
+		bucket.Truncated = true
+	}
+	bucket.Blocks = all
+	return bucket, nil
 }

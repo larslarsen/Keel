@@ -93,7 +93,26 @@ func run(in io.Reader, out io.Writer, st *store.Store) {
 	runContext(context.Background(), in, out, st)
 }
 
+// bridgeSession tracks HELLO negotiation for one native/owner connection (WO-081).
+type bridgeSession struct {
+	helloOK bool
+	caps    map[string]int
+	// onReady fires once, when negotiation succeeds. The owner uses it to join
+	// a session to the broadcast hub only after both sides have agreed an API
+	// and capability set — see serveOwner.
+	onReady func()
+}
+
 func runContext(ctx context.Context, in io.Reader, out io.Writer, st *store.Store) {
+	runSession(ctx, in, out, st, nil)
+}
+
+// runSession is runContext with a negotiation hook. Separate rather than a
+// wider runContext so the plain native-messaging path cannot forget to pass one.
+func runSession(
+	ctx context.Context, in io.Reader, out io.Writer, st *store.Store, onReady func(),
+) {
+	sess := &bridgeSession{onReady: onReady}
 	for {
 		raw, err := bridge.ReadMessage(in)
 		if err != nil {
@@ -104,17 +123,23 @@ func runContext(ctx context.Context, in io.Reader, out io.Writer, st *store.Stor
 			// Framing errors on stdin are usually fatal for the stream.
 			return
 		}
-		if err := handleRawContext(ctx, raw, out, st); err != nil {
+		if err := handleRawContext(ctx, raw, out, st, sess); err != nil {
 			log.Printf("handle: %v", err)
 		}
 	}
 }
 
 func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
-	return handleRawContext(context.Background(), raw, out, st)
+	// Tests call handleRaw without a live session; treat as already negotiated
+	// with full daemon caps so RPC handlers stay exercisable in isolation.
+	sess := &bridgeSession{helloOK: true, caps: bridge.DaemonCaps()}
+	return handleRawContext(context.Background(), raw, out, st, sess)
 }
 
-func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.Store) error {
+func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.Store, sess *bridgeSession) error {
+	if sess == nil {
+		sess = &bridgeSession{}
+	}
 	env, err := bridge.ParseEnvelope(raw)
 	if err != nil {
 		log.Printf("drop malformed envelope: %v", err)
@@ -127,13 +152,25 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 		})
 	}
 
-	switch env.Type {
-	case "HELLO":
-		return reply(out, env.ID, "HELLO_ACK", bridge.HelloAckPayload{
-			Server:  "keel-daemon",
-			Version: version,
-			OK:      true,
+	if env.Type == "HELLO" {
+		return handleHello(env, out, sess)
+	}
+	if !sess.helloOK {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "HELLO required before application RPCs",
+			Code:    bridge.CodeHelloRequired,
 		})
+	}
+	if need := bridge.RPCCapability(env.Type); need != "" {
+		if rev, ok := sess.caps[need]; !ok || rev < 1 {
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+				Message: fmt.Sprintf("capability %q not negotiated", need),
+				Code:    bridge.CodeCapabilityUnavailable,
+			})
+		}
+	}
+
+	switch env.Type {
 	case "IMPRESSIONS":
 		return handleImpressions(env, out, st)
 	case "STATS":
@@ -209,6 +246,12 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 	case "GET_CONTRIBUTION":
 		return reply(out, env.ID, "CONTRIBUTION_RESULT", contributionPayload(supervisor.state(st)))
 	case "SET_CONTRIBUTION":
+		// Keep the correlated result and owner-wide terminal event in the same
+		// order as policy transitions. supervisor.apply serializes replacement,
+		// but without this outer bridge lock a second session could complete and
+		// broadcast a newer level before the first handler published its event.
+		contributionBridgeMu.Lock()
+		defer contributionBridgeMu.Unlock()
 		var p struct {
 			Level int `json:"level"`
 		}
@@ -219,13 +262,22 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 		// the state either way: after a failed transition the effective level
 		// is the thing the user most needs to see, so an error still carries
 		// what is actually running rather than only a message.
+		before := supervisor.state(st)
 		state, err := supervisor.apply(context.Background(), st, p.Level)
 		if err != nil {
-			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			writeErr := reply(out, env.ID, "ERROR", bridge.ErrorPayload{
 				Message: err.Error(), Code: "contribution_failed", Detail: contributionPayload(state),
 			})
+			if state != before {
+				publishContributionStatus(ctx, state)
+			}
+			return writeErr
 		}
-		return reply(out, env.ID, "CONTRIBUTION_RESULT", contributionPayload(state))
+		writeErr := reply(out, env.ID, "CONTRIBUTION_RESULT", contributionPayload(state))
+		if state != before {
+			publishContributionStatus(ctx, state)
+		}
+		return writeErr
 	case "GET_DISK_BUDGET":
 		used, items, err := st.CacheUsage()
 		if err != nil {
@@ -327,6 +379,50 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 		})
 	}
 }
+
+// handleHello is the only application frame accepted before negotiation.
+// A successful ack arms the session; a failed one leaves helloOK false so
+// every later RPC is rejected with hello_required (WO-081).
+func handleHello(env *bridge.Envelope, out io.Writer, sess *bridgeSession) error {
+	if sess.helloOK {
+		return reply(out, env.ID, "HELLO_ACK", bridge.HelloAckPayload{
+			Server:        "keel-daemon",
+			Version:       version,
+			DaemonVersion: version,
+			Compatible:    false,
+			OK:            false,
+			Code:          bridge.CodeDuplicateHello,
+			Reason:        "duplicate HELLO on an already-negotiated session",
+		})
+	}
+	var p bridge.HelloPayload
+	if len(env.Payload) > 0 {
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			ack := bridge.HelloAckPayload{
+				Server:        "keel-daemon",
+				Version:       version,
+				DaemonVersion: version,
+				Code:          bridge.CodeInvalidCapability,
+				Reason:        "invalid HELLO payload",
+			}
+			return reply(out, env.ID, "HELLO_ACK", ack)
+		}
+	}
+	ack := bridge.NegotiateHello(p, version)
+	if ack.Compatible {
+		sess.helloOK = true
+		sess.caps = ack.Capabilities
+		if sess.onReady != nil {
+			sess.onReady()
+		}
+	}
+	// The ack goes out either way. An incompatible client still needs the code
+	// and reason to render actionable copy; what it does not get is a
+	// negotiated session or a place in the broadcast hub.
+	return reply(out, env.ID, "HELLO_ACK", ack)
+}
+
+var contributionBridgeMu sync.Mutex
 
 // handleLiveSearch answers from the in-memory live index.
 //
@@ -605,6 +701,24 @@ func handlePeerSearchContext(requestCtx context.Context, env *bridge.Envelope, o
 	if networkBusy() {
 		return replyNetworkBusy(out, env.ID)
 	}
+	// The entitlement is checked here, before the node is touched, so a
+	// Level-1 refusal cannot reach a peer by any path (WO-085). swarm.PeerSearch
+	// refuses too — this is not the only guard, it is the one that can say why
+	// in terms the interface can act on.
+	if allowed, level := distributedSearchLevel(st); !allowed {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "searching other people's recommendations needs broad sharing: " +
+				"distributed search runs on the machines that also answer it, so it is " +
+				"available to the levels that serve. Local search, suggestions, " +
+				"pre-walk, Live and word statistics are unaffected.",
+			Code: bridge.CodeContributionRequired,
+			Detail: bridge.ContributionRequiredDetail{
+				Capability:     bridge.CapDistributedSearch,
+				RequiredLevel:  store.LevelBroad,
+				EffectiveLevel: level,
+			},
+		})
+	}
 	n := currentSwarmNode()
 	if n == nil {
 		// Mirrors handleLiveSearch: no swarm running means unavailable, not
@@ -686,7 +800,7 @@ func handleWordStatsContext(requestCtx context.Context, env *bridge.Envelope, ou
 	if n == nil {
 		// Local-only fallback so the UI can still show what this device has
 		// observed without implying the swarm answered.
-		local, err := st.LocalWordTelemetry(false)
+		local, err := st.LocalWordTelemetry(store.AllSources)
 		if err != nil {
 			return replyErr(out, env.ID, err)
 		}

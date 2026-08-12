@@ -13,12 +13,19 @@
 //     prefix anonymity the graph fetch paid for. The request set must stay a
 //     function of the graph bucket's public contents.
 //
-//  2. **Serve only mirrored rows below Level 3.** Serving catalogue derived from
-//     this node's own `impressions` would disclose viewing at video granularity:
-//     a requester asks for a bucket and sees exactly which of its members this
-//     node holds, which is exactly what its user watched. Rows in
-//     `peer_catalogue` arrived as complete buckets, so serving them reveals
-//     nothing about anyone.
+//  2. **Serve the whole held bucket, from one source set (WO-084).** Level 2
+//     serves the complete eligible contents of each catalogue bucket it
+//     advertises: rows derived from this node's own observations *and* rows
+//     imported from peers, merged into one set with nothing marking which is
+//     which. This rule used to say the opposite — mirrored rows only — on the
+//     reasoning that a requester asking for a bucket sees exactly which of its
+//     members this node holds. That is true and it is the disclosure Level 2
+//     accepts: a 12-bit bucket covers thousands of videos, the request and the
+//     answer are both whole buckets, and a row is public video metadata, not an
+//     observation. What must not happen is the two halves diverging — the
+//     catalogue, shard, yield and sketch paths all read heldCatalogue with the
+//     same SourceSet, so a provider record can never name material the
+//     corresponding stream refuses to return.
 //
 // The catalogue converges where the graph does not. A video's title, channel,
 // duration and upload date are written once and never change, so a node that
@@ -71,33 +78,83 @@ type CataloguePack struct {
 	Algorithm     string `json:"signature_alg,omitempty"`
 }
 
-// heldCatalogue returns the rows this node can serve, honouring rule 2.
-func (s *Store) heldCatalogue(mirrorOnly bool) ([]bridge.CatalogueEntry, error) {
-	if mirrorOnly {
+// heldCatalogue returns the rows `sources` selects, honouring rule 2.
+//
+// Genuinely a union when both are selected, which the `mirrorOnly bool` this
+// replaced could not express: it read peer_catalogue *or* CatalogueEntries, so
+// the non-mirror branch silently dropped every imported row. Rows are merged by
+// video id with non-empty fields winning, because a catalogue row is a public
+// fact about a public video — two sources holding it is agreement, not a
+// conflict to arbitrate (ImportCataloguePack makes the same call).
+func (s *Store) heldCatalogue(sources SourceSet) ([]bridge.CatalogueEntry, error) {
+	merged := map[string]bridge.CatalogueEntry{}
+	add := func(c bridge.CatalogueEntry) {
+		prev, seen := merged[c.VideoID]
+		if !seen {
+			merged[c.VideoID] = c
+			return
+		}
+		if prev.Title == "" {
+			prev.Title = c.Title
+		}
+		if prev.ChannelID == nil {
+			prev.ChannelID = c.ChannelID
+		}
+		if prev.DurationS == nil {
+			prev.DurationS = c.DurationS
+		}
+		if prev.ViewCount == nil {
+			prev.ViewCount = c.ViewCount
+		}
+		if prev.PublishedAt == nil {
+			prev.PublishedAt = c.PublishedAt
+		}
+		merged[c.VideoID] = prev
+	}
+
+	if sources.Peers {
 		rows, err := s.db.Query(`
 SELECT video_id, COALESCE(title,''), channel_id, duration_s, view_count, published_at
 FROM peer_catalogue`)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := []bridge.CatalogueEntry{}
 		for rows.Next() {
 			var c bridge.CatalogueEntry
 			if err := rows.Scan(&c.VideoID, &c.Title, &c.ChannelID,
 				&c.DurationS, &c.ViewCount, &c.PublishedAt); err != nil {
+				rows.Close()
 				return nil, err
 			}
-			out = append(out, c)
+			add(c)
 		}
-		return out, rows.Err()
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return s.CatalogueEntries()
+	if sources.Local {
+		local, err := s.CatalogueEntries()
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range local {
+			add(c)
+		}
+	}
+
+	out := make([]bridge.CatalogueEntry, 0, len(merged))
+	for _, c := range merged {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].VideoID < out[b].VideoID })
+	return out, nil
 }
 
 // LocalCataloguePrefixes lists the catalogue buckets this node can serve.
-func (s *Store) LocalCataloguePrefixes(bits int, mirrorOnly bool) ([]string, error) {
-	all, err := s.heldCatalogue(mirrorOnly)
+func (s *Store) LocalCataloguePrefixes(bits int, sources SourceSet) ([]string, error) {
+	all, err := s.heldCatalogue(sources)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +171,7 @@ func (s *Store) LocalCataloguePrefixes(bits int, mirrorOnly bool) ([]string, err
 }
 
 // BuildCataloguePack assembles every row this node holds in one bucket.
-func (s *Store) BuildCataloguePack(prefix string, mirrorOnly bool, limit int) (*CataloguePack, error) {
+func (s *Store) BuildCataloguePack(prefix string, sources SourceSet, limit int) (*CataloguePack, error) {
 	bits, ok := PrefixOf(prefix)
 	if !ok {
 		return nil, fmt.Errorf("malformed prefix %q", prefix)
@@ -122,7 +179,7 @@ func (s *Store) BuildCataloguePack(prefix string, mirrorOnly bool, limit int) (*
 	if limit <= 0 {
 		limit = 4096
 	}
-	all, err := s.heldCatalogue(mirrorOnly)
+	all, err := s.heldCatalogue(sources)
 	if err != nil {
 		return nil, err
 	}

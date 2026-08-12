@@ -5,15 +5,17 @@ Level 4, which does not need one.
 
 ## The rule this has to obey
 
-An incentive must be a benefit that is **intrinsically** unavailable without
-contributing — not a working feature withheld to force a trade. `WO-052` already
-commits to the latter being off the table: a Level 1 node may receive the seed,
-fetch shared graph/catalogue/search data and pre-walk the graph without serving
-blocks, because "the privacy promise is not a toll booth."
+An incentive must be a benefit that is **intrinsically** coupled to the thing
+contributed — not an unrelated working feature withheld to force a trade. A
+Level 1 node may receive the seed, fetch shared graph/catalogue/search data for
+suggestions and pre-walk the graph without serving blocks, because "the privacy
+promise is not a toll booth." WO-085 draws a narrower capacity boundary:
+arbitrary user-triggered distributed search is reciprocal at Level 2 because
+those users also host the broad search corpus that answers it.
 
-That constraint is worth keeping. Keel's pitch is that recording is for the user;
-the moment privacy costs features, the pitch inverts and every level above 1
-reads as a fee.
+That constraint is worth keeping. Keel's pitch is that recording is for the
+user; Level 1 therefore keeps its local history, search and recommendation
+paths. Reciprocity applies only to the open-ended distributed query path.
 
 Fortunately the architecture supplies real intrinsic differences.
 
@@ -22,9 +24,10 @@ Fortunately the architecture supplies real intrinsic differences.
 **Earns: the funnel inspector.** Already built (WO-018). Your own recommendation
 history, searchable, with channel blocking and hiding.
 
-This is the product. It is complete at Level 1 and must stay that way: peer
-search and suggestions, graph pre-walk, global word statistics and the Live feed
-are consumer features, not rewards for block service.
+This is the personal product: local search and funnel inspection, shared
+suggestions, graph pre-walk, global word statistics and the Live feed. Search
+across other people's recommendations is not part of Level 1; it is the
+reciprocal Level-2 network capability selected in WO-085.
 
 Level 1 is not offline. It makes whole-prefix requests, participates in live
 gossip, and exchanges WO-068's whole fixed-shape word HLL/CMS aggregate. It does
@@ -32,26 +35,32 @@ not serve graph/catalogue/search blocks or join the three-gram yield/token
 sketch topics that advertise and size those blocks. See
 `ARCHITECTURE_CURRENT.md` §3.
 
-## Level 2 — mirror the public dataset
+## Level 2 — broad sharing
 
-**Earns: a warm cache. Instant suggestions instead of a fetch on every cold hop.**
+**Earns: distributed peer search, a warm cache, and visible contribution
+impact.**
 
-Per `DESIGN_BOOTSTRAP` §5d, Level 2 is not "publish your catalogue" — it is
-holding and serving blocks of the public aggregate. Nothing personal leaves. The
-node contributes storage and bandwidth, the way a seeder does.
+Level 2 holds and serves complete hashed-prefix buckets containing both its own
+aggregated, stringless graph blocks and blocks cached from peers. Broadness is
+the privacy mechanism: the unit exposed and transferred is the whole bucket,
+never one selected neighbourhood. It contributes data as well as storage and
+bandwidth; copy must not claim that nothing local leaves.
 
 The incentive is unusually clean because **the cost and the benefit are the same
-object**. The disk-space slider sizes an LRU cache of neighbourhoods; that cache
-is what makes the user's own hops instant, and it is simultaneously what other
-people fetch from. Giving more storage directly buys a better local experience.
-
-No withholding is involved, which is why this rung needs no policy at all.
+object**. A Level-2 node hosts broad graph/catalogue/search buckets and may ask
+other Level-2 nodes to perform arbitrary searches over theirs. The disk-space
+slider also sizes an LRU cache of neighbourhoods; that cache makes the user's
+own hops instant and is simultaneously what other people fetch from.
 
 Note that a Level 1 node still fetches blocks and still gets working suggestions
-(§5d: "out of the box for every user"). Level 2's benefit is latency and depth of
-cache, not access. Level 2 also begins serving the cached public blocks and
-originating the three-gram availability/sketch signals that describe what it can
-serve; it still does not serve the user's own observations.
+(§5d: "out of the box for every user"). Level 2's normal suggestion benefit is
+latency and depth of cache; its additional reciprocal capability is
+user-triggered distributed search. Level 2 begins serving its full eligible local-plus-cached
+graph, catalogue and search corpus and originates the three-gram availability/
+sketch signals that describe exactly that served corpus.
+
+WO-086 adds a local aggregate impact view: eligible material, buckets announced,
+requests answered and bytes served, without query logs or peer histories.
 
 ## Level 3 — cohort
 
@@ -59,8 +68,9 @@ serve; it still does not serve the user's own observations.
 
 An earlier draft claimed this was the first level where the walk leaves the
 user's own history. That is wrong: block fetch does that at any level, per §5d.
-What Level 3 adds is the user's own aggregated edges to the shared pool, which
-deepens the dataset everyone draws on rather than unlocking anything locally.
+Level 2 already adds broad aggregated graph blocks to the shared pool. What
+Level 3 adds is STAR-protected cohort measurement and the comparison baseline,
+not the first locally derived edge.
 
 The real reward here is that a **visualizer** becomes possible and not before:
 "how does my
@@ -79,19 +89,20 @@ where a feed leads. Attaching a perk would attract contributors who have not
 thought about permanence, which is the population this level should least
 attract.
 
-## Why this ladder needs almost no policy
+## Why this ladder is coherent
 
-Only Level 3 requires a designed reward. Levels 1 and 2 are self-incentivising
-because the thing the user gives is the thing the user gets — the funnel
-inspector runs on their own recording, and the block cache is both contribution
-and local speed. Level 4 is chosen by people who already want the outcome.
+Levels 1 and 2 are self-incentivising because the thing the user gives is the
+thing the user gets: the funnel inspector runs on their own recording, while
+Level 2 contributes distributed-search capacity and receives it. Level 3 earns
+the comparison product that only a protected cohort can create. Level 4 is
+chosen by people who already want the public outcome.
 
 A previous draft proposed sketch-based peer ranking as an emergent incentive.
 Dropped: §5d addresses blocks by key, so there is no peer ranking to exploit.
 
-## Open question for Lars
+## Recorded future delivery
 
 The visualizer is a real build — comparison needs a cohort baseline, a diff, and
 a way to render it that a non-technical person reads in seconds. Worth its own
 work order once Level 3 has data to draw on, and not before, since building it
-against an empty cohort would design it blind.
+against an empty cohort would design it blind. WO-087 records that dependency.

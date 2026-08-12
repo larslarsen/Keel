@@ -54,6 +54,7 @@ describe("PEER_SEARCH (WO-059)", () => {
       get connected() {
         return true;
       },
+      hasCapability: () => true,
       request: () => {
         throw new Error("must not call the daemon for a blank query");
       },
@@ -70,6 +71,7 @@ describe("PEER_SEARCH (WO-059)", () => {
       get connected() {
         return true;
       },
+      hasCapability: () => true,
       request: (type, payload) => {
         lastRequest = { type, payload };
         return Promise.resolve({
@@ -116,6 +118,7 @@ describe("PEER_SEARCH (WO-059)", () => {
       get connected() {
         return true;
       },
+      hasCapability: () => true,
       request: () =>
         Promise.resolve({
           type: "PEER_SEARCH_RESULT",
@@ -129,6 +132,62 @@ describe("PEER_SEARCH (WO-059)", () => {
     assert.deepEqual(res.peer_search.hits, []);
   });
 
+  it("relays a contribution_required refusal as state, not as a thrown error (WO-085)", async () => {
+    setBridge({
+      get helloOk() {
+        return true;
+      },
+      get connected() {
+        return true;
+      },
+      hasCapability: () => true,
+      request: () =>
+        Promise.resolve({
+          type: "ERROR",
+          payload: {
+            code: "contribution_required",
+            message: "searching other people's recommendations needs broad sharing",
+            detail: {
+              capability: "distributed_search",
+              required_level: 2,
+              effective_level: 1,
+            },
+          },
+        }),
+      post: () => true,
+    });
+
+    // Thrown, this would reach the page as a bare string: the extension-message
+    // channel carries only {ok:false, error}. The code and the level detail the
+    // control needs to correct itself would be lost on the way out.
+    const res = await handle({ type: "PEER_SEARCH", payload: { query: "x" } }, {});
+    assert.equal(res.peer_search.available, false);
+    assert.deepEqual(res.peer_search.hits, []);
+    assert.equal(res.peer_search.contribution_required.required_level, 2);
+    assert.equal(res.peer_search.contribution_required.effective_level, 1);
+    assert.equal(res.peer_search.contribution_required.capability, "distributed_search");
+    assert.match(res.peer_search.message, /broad sharing/i);
+  });
+
+  it("still throws on an ordinary daemon error (WO-085 must not swallow failures)", async () => {
+    setBridge({
+      get helloOk() {
+        return true;
+      },
+      get connected() {
+        return true;
+      },
+      hasCapability: () => true,
+      request: () =>
+        Promise.resolve({
+          type: "ERROR",
+          payload: { code: "peer_search_timeout", message: "peer search exceeded 6s" },
+        }),
+      post: () => true,
+    });
+    await assert.rejects(() => handle({ type: "PEER_SEARCH", payload: { query: "x" } }, {}));
+  });
+
   it("throws when the daemon is not connected", async () => {
     setBridge({
       get helloOk() {
@@ -137,6 +196,7 @@ describe("PEER_SEARCH (WO-059)", () => {
       get connected() {
         return false;
       },
+      hasCapability: () => false,
       request: () => {
         throw new Error("must not call the daemon while disconnected");
       },

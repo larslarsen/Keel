@@ -60,7 +60,12 @@ func TestPeerSearchZeroPeersReturnsImmediately(t *testing.T) {
 
 	// isolated + never connected to anything: genuinely zero peers, not
 	// merely zero peers who happen to answer.
-	n, err := Start(ctx, newStore(t, "peersearch-zero.sqlite"), isolated(false, t))
+	//
+	// At a serving (Level-2) policy on purpose since WO-085: this test is
+	// about the fast path through the transport, so the node must be entitled
+	// to search at all — otherwise it would return immediately for the wrong
+	// reason and go on passing if the fast path were deleted.
+	n, err := Start(ctx, newStore(t, "peersearch-zero.sqlite"), isolated(true, t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +144,14 @@ func TestFetchShardRecordsSearchForTargetFeedback(t *testing.T) {
 	}
 	defer server.Close()
 
+	// Entitled to fetch shards (WO-085: Level 2) but off the three-gram topics.
+	// The estimate assertions below require a client that has heard nothing
+	// about this token, and a subscribed client would receive the server's
+	// sketch gossip inside this test's own polling window.
+	clientCfg := bootstrappedTo(bootInfo, true, t)
+	clientCfg.Policy.JoinSearchTelemetry = false
 	clientStore := newStore(t, "shard-target-client.sqlite")
-	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, false, t))
+	client, err := Start(ctx, clientStore, clientCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,8 +214,11 @@ func TestFetchShardTagSelfFilter(t *testing.T) {
 	}
 	defer server.Close()
 
+	// Level 2: shard fetch is part of the reciprocal distributed-search path
+	// (WO-085), and this test is about what the fetch filters, not about who
+	// is entitled to make it.
 	clientStore := newStore(t, "shard-client.sqlite")
-	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, false, t))
+	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, true, t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,8 +371,11 @@ func TestPeerSearchViaDiscovery(t *testing.T) {
 	}
 	defer server.Close()
 
+	// A Level-2 client since WO-085: distributed search is reciprocal, so a
+	// non-serving node would be refused before the DHT was ever consulted and
+	// this test would prove nothing about discovery.
 	clientStore := newStore(t, "psearch-client.sqlite")
-	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, false, t))
+	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, true, t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,8 +437,16 @@ func TestPeerSearchProgressReportsPerToken(t *testing.T) {
 	}
 	defer server.Close()
 
+	// Entitled to search (WO-085: Level 2) but deliberately off the three-gram
+	// topics. The assertion below is that a node which has heard *nothing*
+	// about these tokens reports an unknown target, and a subscribed node
+	// would receive the server's sketch gossip within this test's own polling
+	// window — which would make the test fail for a reason that has nothing to
+	// do with what it is checking.
+	clientCfg := bootstrappedTo(bootInfo, true, t)
+	clientCfg.Policy.JoinSearchTelemetry = false
 	clientStore := newStore(t, "progress-client.sqlite")
-	client, err := Start(ctx, clientStore, bootstrappedTo(bootInfo, false, t))
+	client, err := Start(ctx, clientStore, clientCfg)
 	if err != nil {
 		t.Fatal(err)
 	}

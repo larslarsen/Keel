@@ -59,17 +59,19 @@ const QUEUE_ICON_OFF =
 
 /** @type {Set<string>} */
 let blocklistSet = new Set();
-/** Last full page proof from SW (unfiltered). Used for the seed, not the list. */
+/** Active-tab page proof from SW (unfiltered). Used for the seed, not the list. */
 let lastPageCache = null;
+/** This panel document's own window id, from windows.getCurrent (WO-080). */
+let myWindowId = null;
 
 /**
- * Active-tab context (WO-073): which platform this window's ACTIVE tab is on
- * and whether it is a watch page. The SW's `lastPage` is window-global (the
- * last tab that reported), so without this an active TikTok tab would be
- * answered with YouTube suggestions — the reported bug. Set from the
- * PANEL_CONTEXT broadcast and from the PANEL_CONTEXT_QUERY sent on load.
+ * Active-tab context (WO-073/080): which platform this window's ACTIVE tab is
+ * on, which tab it is, and whether it is a watch page. The SW's proof store
+ * is per-tab, so the panel must hold the active tab's identity and ignore
+ * every proof whose ids do not match it. Set from the PANEL_CONTEXT broadcast
+ * and from the PANEL_CONTEXT_QUERY sent on load.
  */
-let panelCtx = { windowId: null, platform: null, focus: false };
+let panelCtx = { windowId: null, tabId: null, platform: null, focus: false };
 
 /** The platform the panel should answer for: the active tab's, falling back
  *  to the page proof's (and finally yt) only before any context is known. */
@@ -99,16 +101,22 @@ function fmt(ms) {
   }
 }
 
-function setDaemonUi(connected, detail = "") {
+function setDaemonUi(connected, detail = "", meta = {}) {
   if (connected) {
     el.banner.className = "banner ok";
     el.banner.textContent = "Desktop app connected.";
-  } else {
-    el.banner.className = "banner warn";
-    el.banner.textContent =
-      "Keel's desktop app isn't running. The extension stays idle until you start it." +
-      (detail ? ` (${detail})` : "");
+    return;
   }
+  el.banner.className = "banner warn";
+  if (meta?.incompatible || /desktop app update required/i.test(String(detail || ""))) {
+    el.banner.textContent =
+      "Desktop app update required. This extension cannot use the installed Keel host until both are updated together." +
+      (detail ? ` (${detail})` : "");
+    return;
+  }
+  el.banner.textContent =
+    "Keel's desktop app isn't running. The extension stays idle until you start it." +
+    (detail ? ` (${detail})` : "");
 }
 
 /**
@@ -736,13 +744,27 @@ async function refreshSuggestions({ force = false } = {}) {
   }
 }
 
-/** Absorb a page proof from the SW; re-run the walk on a new page_load_id. */
+/** Absorb a page proof from the SW when it belongs to THIS window's ACTIVE
+ *  tab (WO-080); re-run the walk on a new page_load_id. */
 function absorbLastPage(lastPage) {
-  // STORE_UPDATED is broadcast from whichever tab reported, so a background
-  // tab on the other platform can push its proof here. The window's panel
-  // must not take it: it would label suggestions, key, and seed as that
-  // platform's (WO-073). Only proofs of the active tab's platform qualify.
-  if (lastPage?.platform && panelCtx.platform && lastPage.platform !== panelCtx.platform) {
+  if (!lastPage || typeof lastPage !== "object") return;
+  // A proof whose platform is not the active tab's cannot seed this panel
+  // (WO-073: a TikTok tab's proof is not a seed for a YouTube walk).
+  if (lastPage.platform && panelCtx.platform && lastPage.platform !== panelCtx.platform) {
+    return;
+  }
+  // WO-080: the proof must be the ACTIVE tab's — window first, then tab id.
+  // A background tab's STORE_UPDATED broadcast must never seed the panel, and
+  // two same-platform tabs must never cross-seed. Unknown ids (before any
+  // context is known) fall back to the platform check only.
+  if (
+    lastPage.windowId != null &&
+    panelCtx.windowId != null &&
+    lastPage.windowId !== panelCtx.windowId
+  ) {
+    return;
+  }
+  if (lastPage.tabId != null && panelCtx.tabId != null && lastPage.tabId !== panelCtx.tabId) {
     return;
   }
   const changed =
@@ -867,12 +889,13 @@ el.list.addEventListener("click", (e) => {
 });
 
 /**
- * Live path for STORE_UPDATED: apply lastPage from the SW payload.
- * No GET_STATS — that is reserved for open / manual / periodic refresh.
+ * Live path for STORE_UPDATED: absorb only the ACTIVE tab's proof from the SW
+ * payload (WO-080); refresh counts from the insert ack. No GET_STATS — that is
+ * reserved for open / manual / periodic refresh.
  */
 function applyStoreUpdate(payload) {
   if (!payload || typeof payload !== "object") return;
-  if (payload.lastPage) absorbLastPage(payload.lastPage);
+  if (payload.proof) absorbLastPage(payload.proof);
   if (payload.stats) {
     renderStats(payload.stats);
     return;
@@ -951,15 +974,15 @@ async function refreshStats({ force = false } = {}) {
   if (!force && now - lastStatsAt < STATS_MIN_INTERVAL_MS) return;
   lastStatsAt = now;
   try {
-    const st = await rpc("GET_STATS");
+    const st = await rpc("GET_STATS", { windowId: myWindowId });
     setDaemonUi(Boolean(st.connected));
     renderStats(st.stats);
-    if (st.lastPage) absorbLastPage(st.lastPage);
+    if (st.proof) absorbLastPage(st.proof);
   } catch (err) {
     setDaemonUi(false, err.message);
     try {
-      const s = await rpc("GET_STATUS");
-      if (s.lastPage) absorbLastPage(s.lastPage);
+      const s = await rpc("GET_STATUS", { windowId: myWindowId });
+      if (s.proof) absorbLastPage(s.proof);
     } catch {
       /* ignore */
     }
@@ -972,28 +995,31 @@ async function refresh() {
 }
 
 /**
- * Track the active tab's context (WO-073): the window's active tab decides
- * which platform the panel answers for, not whichever tab last wrote a page
- * proof. Swapping YT→TT in the same window previously kept the YouTube
- * suggestions because lastPage is window-global; here the broadcast re-scopes
- * the panel to the active tab.
+ * Track the active tab's context (WO-073/080): the window's active tab decides
+ * which platform the panel answers for, and its TAB ID decides which proof
+ * may seed the panel. Swapping YT→TT in the same window previously kept the
+ * YouTube suggestions because the proof was window-global; the id check is
+ * what stops two same-platform tabs from cross-seeding each other.
  */
 function applyPanelContext(ctx) {
   if (!ctx || typeof ctx !== "object") return;
   // Panel is per-window; ignore another window's context broadcasts (the
   // SW may not know every panel's window id on engines with no sidePanel.close).
-  if (panelCtx.windowId != null && ctx.windowId != null && ctx.windowId !== panelCtx.windowId) {
+  if (panelCtx.windowId != null && ctx.window_id != null && ctx.window_id !== panelCtx.windowId) {
     return;
   }
   const platformChanged = ctx.platform != null && ctx.platform !== panelCtx.platform;
+  const tabChanged = ctx.tab_id != null && ctx.tab_id !== panelCtx.tabId;
   panelCtx = {
-    windowId: ctx.windowId ?? panelCtx.windowId,
+    windowId: ctx.window_id ?? panelCtx.windowId,
+    tabId: ctx.tab_id ?? panelCtx.tabId,
     platform: ctx.platform ?? panelCtx.platform,
     focus: ctx.focus ?? panelCtx.focus,
   };
-  if (platformChanged) {
-    // The active tab moved to a different platform: the cached proof is the
-    // old platform's page and must not seed or label this one.
+  if (platformChanged || tabChanged) {
+    // The active tab moved (to another platform, or to another tab): the
+    // cached proof belongs to the previous active tab and must not seed or
+    // label this one (WO-080 — same-platform tabs are the whole point).
     lastPageCache = null;
     lastSuggestKey = "";
     refreshSuggestions({ force: true }).catch(() => {});
@@ -1005,7 +1031,7 @@ function applyPanelContext(ctx) {
  * panel never sees the moment it was opened. */
 async function queryPanelContext() {
   try {
-    applyPanelContext(await rpc("PANEL_CONTEXT_QUERY", {}));
+    applyPanelContext(await rpc("PANEL_CONTEXT_QUERY", { windowId: myWindowId }));
   } catch {
     // Best effort; a broadcast will catch up after the SW wakes.
   }
@@ -1016,7 +1042,7 @@ browser.runtime.onMessage.addListener((msg) => {
     applyPanelContext(msg.payload);
   }
   if (msg?.type === "DAEMON_STATUS") {
-    setDaemonUi(Boolean(msg.payload?.connected), msg.payload?.detail || "");
+    setDaemonUi(Boolean(msg.payload?.connected), msg.payload?.detail || "", msg.payload || {});
     if (msg.payload?.connected) refreshStats({ force: true }).catch(() => {});
   }
   if (msg?.type === "STORE_UPDATED") {
@@ -1041,15 +1067,17 @@ function connectPanelPort() {
     // toggle is per-window, so a panel open in another window must not block
     // opening this one. Coming from an extension page, windows.getCurrent
     // needs no permission. A null window id stays conservative (the SW then
-    // treats the port as "open everywhere").
+    // treats the port as "open everywhere"). The same id scopes the panel's
+    // proof/context queries (WO-080).
     browser.windows
       ?.getCurrent?.()
-      .then((w) =>
-        port.postMessage({ type: "PANEL_HANDSHAKE", payload: { windowId: w?.id ?? null } })
-      )
-      .catch(() =>
-        port.postMessage({ type: "PANEL_HANDSHAKE", payload: { windowId: null } })
-      );
+      .then((w) => {
+        myWindowId = w?.id ?? null;
+        port.postMessage({ type: "PANEL_HANDSHAKE", payload: { windowId: myWindowId } });
+      })
+      .catch(() => {
+        port.postMessage({ type: "PANEL_HANDSHAKE", payload: { windowId: null } });
+      });
   } catch (err) {
     console.warn("[Keel panel] port", err?.message || err);
     setTimeout(connectPanelPort, 1000);

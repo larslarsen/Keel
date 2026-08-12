@@ -23,17 +23,19 @@ func YieldBitSet(vec []byte, idx int) bool {
 // token's shard covered by this node's own videos is at least
 // YieldThreshold.
 //
-// mirrorOnly follows the same rule as ShardSlice/heldCatalogue (catalogue.go
-// rule 2) — below contribution Level 3, only peer_catalogue titles count,
-// never this node's own impressions, so the gossiped vector discloses
-// nothing about this node's own viewing.
+// `sources` follows the same rule as ShardSlice/heldCatalogue (catalogue.go
+// rule 2), and must be the same set ShardSlice serves under. A yield bit is a
+// claim about what a shard fetch from this node would return, so computing it
+// over a different corpus than the one served is a claim that does not hold —
+// it either sends peers on pointless fetches or hides material this node is
+// already answering with (WO-084 requirement 4).
 //
 // A token that never occurs in the held corpus is left at 0 — most of the
 // TokenDictSize-bit space for any one node — rather than computed
 // individually, since "never seen" and "seen but below threshold" both mean
 // the same thing to a reader of the vector: not worth fetching from here.
-func (s *Store) LocalYieldVector(mirrorOnly bool) ([]byte, error) {
-	all, err := s.heldCatalogue(mirrorOnly)
+func (s *Store) LocalYieldVector(sources SourceSet) ([]byte, error) {
+	all, err := s.heldCatalogue(sources)
 	if err != nil {
 		return nil, err
 	}

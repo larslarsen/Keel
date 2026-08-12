@@ -18,11 +18,13 @@ import (
 // isolated keeps tests off the public DHT: an explicitly empty bootstrap set
 // means the node joins nothing and only talks to peers it is handed directly.
 //
-// A serving node here behaves as Level 3 — it serves its own observations —
-// because that is what most of these tests are exercising. The Level 2 mirror
-// boundary gets its own test, which sets PublishOwn back to false.
+// A serving node here is Level 2, which since WO-084 is the level that serves
+// broad buckets containing its own graph blocks. Level 3 would behave
+// identically on every path these tests touch — it adds STAR cohort
+// measurement, not graph service — so naming it here would imply a boundary
+// that is not where the code puts it.
 func isolated(serve bool, t *testing.T) Config {
-	p := PolicyForLevel(store.LevelCohort)
+	p := PolicyForLevel(store.LevelBroad)
 	if !serve {
 		p = PolicyForLevel(store.LevelPersonal)
 		// Most non-serving nodes in these tests are pure clients that still
@@ -201,28 +203,32 @@ func TestConcurrentFetchesCollapse(t *testing.T) {
 	}
 }
 
-// TestMirrorNodeDoesNotServeOwnObservations is the contribution-level boundary,
-// enforced end to end over the wire.
+// TestLevelTwoServesLocalAndImportedTogether is the contribution-level
+// boundary WO-084 corrected, enforced end to end over the wire.
 //
-// A Level 2 node donates storage and bandwidth: it re-serves what other people
-// published. It must not serve what its own user was recommended — that is
-// Level 3, and the whole reason the levels are separate.
-func TestMirrorNodeDoesNotServeOwnObservations(t *testing.T) {
+// WO-077 had this backwards: it asserted a Level-2 node must serve nothing its
+// own user observed, deferring every locally derived edge to Level 3. Level 2's
+// contribution *is* its own graph blocks. Their privacy mechanism is the
+// broadness of the bucket, not the exclusion of local data.
+//
+// Both halves are asserted against the same node, because the failure this
+// guards is a one-line fix that flips the source instead of unioning it: an
+// implementation that dropped either source passes half of this and fails the
+// other half.
+func TestLevelTwoServesLocalAndImportedTogether(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// A mirror node that has watched things itself.
-	mirror := newStore(t, "mirror.sqlite")
-	seed(t, mirror, "privateseed", "privatevid1", 0)
-	seed(t, mirror, "privateseed", "privatevid2", 1)
+	// A Level-2 node whose only graph data is what its own user was shown.
+	server := newStore(t, "level2.sqlite")
+	seed(t, server, "localseed01", "localvid001", 0)
+	seed(t, server, "localseed01", "localvid002", 1)
 
-	cfg := isolated(true, t)
-	cfg.Policy.PublishOwn = false // Level 2
-	mNode, err := Start(ctx, mirror, cfg)
+	sNode, err := Start(ctx, server, isolated(true, t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mNode.Close()
+	defer sNode.Close()
 
 	client := newStore(t, "client.sqlite")
 	cNode, err := Start(ctx, client, isolated(false, t))
@@ -231,15 +237,16 @@ func TestMirrorNodeDoesNotServeOwnObservations(t *testing.T) {
 	}
 	defer cNode.Close()
 
-	got, err := cNode.FetchFrom(ctx, mNode.AddrInfo(), "privateseed")
+	got, err := cNode.FetchFrom(ctx, sNode.AddrInfo(), "localseed01")
 	if err != nil {
 		t.Fatalf("fetch failed: %v", err)
 	}
-	if got != 0 {
-		t.Fatalf("a Level 2 node served %d of its own observed edges", got)
+	if got != 2 {
+		t.Fatalf("a Level-2 node served %d locally derived edges, want 2", got)
 	}
 
-	// It must still re-serve what it imported from someone else.
+	// And it still re-serves what it imported from someone else. A change that
+	// merely flipped the old mirror-only boolean would stop here.
 	origin := newStore(t, "origin.sqlite")
 	seed(t, origin, "publicseed1", "publicvid01", 0)
 	blk, err := origin.BuildBlock("publicseed1", "GB-en")
@@ -250,16 +257,45 @@ func TestMirrorNodeDoesNotServeOwnObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := mirror.ImportBlock(raw); err != nil {
+	if _, _, err := server.ImportBlock(raw); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err = cNode.FetchFrom(ctx, mNode.AddrInfo(), "publicseed1")
+	got, err = cNode.FetchFrom(ctx, sNode.AddrInfo(), "publicseed1")
 	if err != nil {
 		t.Fatalf("fetch failed: %v", err)
 	}
 	if got != 1 {
-		t.Errorf("mirror re-served %d edges of imported data, want 1", got)
+		t.Errorf("the node re-served %d edges of imported data, want 1", got)
+	}
+}
+
+// TestLevelOneServesNothing is the other side of the same boundary: a Level-1
+// node is a full consumer and an empty server.
+func TestLevelOneServesNothing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	server := newStore(t, "level1.sqlite")
+	seed(t, server, "localseed01", "localvid001", 0)
+	sNode, err := Start(ctx, server, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	client := newStore(t, "client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+
+	// No block stream handler is registered at all, so the dial itself fails.
+	// A returned error and a returned zero are both correct answers; a served
+	// edge is not.
+	if got, err := cNode.FetchFrom(ctx, sNode.AddrInfo(), "localseed01"); err == nil && got != 0 {
+		t.Fatalf("a Level-1 node served %d edges", got)
 	}
 }
 
@@ -314,23 +350,27 @@ func TestCatalogueFetchLabelsFetchedGraph(t *testing.T) {
 	}
 }
 
-// TestMirrorNodeServesNoOwnCatalogue is rule 2: serving catalogue rows derived
-// from this node's own impressions would disclose viewing at video granularity,
-// because a requester sees exactly which bucket members the node holds.
-func TestMirrorNodeServesNoOwnCatalogue(t *testing.T) {
+// TestLevelTwoServesItsOwnCatalogue is catalogue.go's rule 2 as WO-084
+// rewrote it.
+//
+// The rule used to be "mirrored rows only below Level 3", on the reasoning that
+// a requester asking for a bucket sees exactly which of its members the node
+// holds. That is the disclosure Level 2 accepts knowingly: the bucket is
+// hashed, coarse and answered whole, and a catalogue row is public video
+// metadata rather than an observation. The graph blocks this node serves would
+// otherwise arrive at every peer permanently unlabelled.
+func TestLevelTwoServesItsOwnCatalogue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	mirror := newStore(t, "mirror.sqlite")
-	seed(t, mirror, "privateseed", "privatevid1", 0)
+	server := newStore(t, "level2.sqlite")
+	seed(t, server, "localseed01", "localvid001", 0)
 
-	cfg := isolated(true, t)
-	cfg.Policy.PublishOwn = false // Level 2
-	mNode, err := Start(ctx, mirror, cfg)
+	sNode, err := Start(ctx, server, isolated(true, t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mNode.Close()
+	defer sNode.Close()
 
 	client := newStore(t, "client.sqlite")
 	cNode, err := Start(ctx, client, isolated(false, t))
@@ -339,8 +379,8 @@ func TestMirrorNodeServesNoOwnCatalogue(t *testing.T) {
 	}
 	defer cNode.Close()
 
-	prefix := store.CataloguePrefix("privatevid1", store.DefaultPrefixBits)
-	raw, err := cNode.requestOn(ctx, mNode.AddrInfo(), prefix, CatalogueProtocol)
+	prefix := store.CataloguePrefix("localvid001", store.DefaultPrefixBits)
+	raw, err := cNode.requestOn(ctx, sNode.AddrInfo(), prefix, CatalogueProtocol)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,8 +388,8 @@ func TestMirrorNodeServesNoOwnCatalogue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rows != 0 {
-		t.Errorf("a Level 2 node served %d catalogue rows about videos its user saw", rows)
+	if rows == 0 {
+		t.Error("a Level-2 node served no catalogue rows, so its graph blocks arrive unlabelled")
 	}
 }
 

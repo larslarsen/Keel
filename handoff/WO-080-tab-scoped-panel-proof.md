@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Architecture decided — ready for Sr Dev (Claude Sonnet/Opus)** |
+| **Status** | **Implemented 2026-08-12 — automated acceptance complete; live QA pending** |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review; follow-on to WO-073 |
 
@@ -46,16 +46,53 @@ tab; platform filtering cannot repair the lost tab identity.
 
 ## Acceptance
 
-- [ ] Two same-platform watch tabs with different seeds never cross-seed the
+- [x] Two same-platform watch tabs with different seeds never cross-seed the
       panel when switching tabs or windows.
-- [ ] Background-tab observations cannot replace the active panel's proof.
-- [ ] Existing cross-platform behavior from WO-073 remains covered.
-- [ ] Tests cover same-platform, cross-platform, multi-window, navigation and
+- [x] Background-tab observations cannot replace the active panel's proof.
+- [x] Existing cross-platform behavior from WO-073 remains covered.
+- [x] Tests cover same-platform, cross-platform, multi-window, navigation and
       tab-removal cases.
-- [ ] Tests cover a delayed old-page message after SPA/full navigation, unknown
+- [x] Tests cover a delayed old-page message after SPA/full navigation, unknown
       sender tab, panel query with no active proof, and service-worker restart.
 
 ## Challenge
 
 If a browser cannot identify the panel's window/tab relationship, document the
 specific API limitation and present a fail-closed UI state rather than guessing.
+
+## Implemented 2026-08-12 — Jr Dev (opencode)
+
+Landed per the ticket, no deviations from the required change:
+
+- New pure module `extension/background/page_proofs.js` (no browser APIs):
+  `Map<tabId, {windowId, pageLoadId, platform, surface, focus, impressions,
+  failures, railGeneration}>`; `observeContext` (replaces the proof wholesale
+  on a new page_load_id, refuses missing/absent page ids), `observeImpressions`
+  (drops any entry whose page_load_id does not match the tab's current proof —
+  late old-document messages cannot restore; dedupes by video_id|slot_index,
+  sorts by slot, accumulates failures, tracks railGeneration), `remove`,
+  `clear`, `get` (defensive copy), bound eviction (32).
+- `sw.js`: `lastPage` global and `rememberPage` deleted. PAGE_CONTEXT/
+  IMPRESSIONS attribute proofs to `sender.tab.id`/`sender.tab.windowId`
+  (payload ids ignored); platform/surface/focus derive from `sender.tab.url`.
+  `PANEL_CONTEXT_QUERY` returns `{window_id, tab_id, platform, surface, focus,
+  proof}` with the proof from the ACTIVE tab only (via `activeProofForWindow`);
+  GET_STATS/GET_STATUS resolve the requester's window's active tab proof;
+  PANEL_CONTEXT broadcasts carry `tab_id` + `surface`; STORE_UPDATED carries
+  `window_id`/`tab_id`/`proof`; flushBuffer broadcasts counts-only (the
+  disconnected buffer is explicitly not proof state); `tabs.onRemoved` drops
+  the proof; store clears on wipe and is in-memory per SW instance.
+- `sidepanel/index.js`: `panelCtx` gains `tabId`; panel records `myWindowId`
+  from `windows.getCurrent` and passes it in PANEL_CONTEXT_QUERY/GET_STATS/
+  GET_STATUS; `absorbLastPage` rejects proofs whose windowId/tabId mismatch
+  the active context (and keeps the WO-073 platform check); context
+  broadcasts changing tab clear the cached proof.
+
+Verification: `test/page-proofs.test.js` (16 tests covering the ticket's
+same-platform, cross-platform, multi-window, navigation, tab-removal,
+sw-restart, stale-late-message, unknown-sender, bound, merge cases);
+`test/sw-lastpage-race.test.js` rewritten — BUG S2 is gone by construction
+(two interleaved IMPRESSIONS from two tabs broadcast each own proof);
+`test/sw-panel-gating.test.js` updated for the new query/broadcast shapes.
+Full suite 119/119. Needs reload + live QA (two same-platform tabs: switching
+must not cross-seed).

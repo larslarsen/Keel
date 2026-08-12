@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Regression for BUG S2: the SW `handle` IMPRESSIONS path mutates the shared
- * module-level `lastPage` (via rememberPage) and then `await`s sendImpressions
- * before broadcasting `{ ...result, lastPage }`. A second IMPRESSIONS arriving
- * during that await mutates `lastPage`, so the first handler resumes and
- * broadcasts its impressions under the SECOND page's `lastPage` — a stale-data
- * commit. The corpus is fine (impressions carry their own page_load_id); the
- * panel's page-proof context is wrong.
+ * Regression for BUG S2, fixed structurally by WO-080: the SW `handle`
+ * IMPRESSIONS path used to mutate ONE shared `lastPage` (via rememberPage)
+ * and then `await` sendImpressions before broadcasting. A second IMPRESSIONS
+ * arriving during that await mutated `lastPage`, so the first handler resumed
+ * and broadcast its impressions under the SECOND page's proof — a stale-data
+ * commit. The corpus was fine (impressions carry their own page_load_id); the
+ * panel's page-proof context was wrong.
  *
- * This test drives two interleaved IMPRESSIONS messages and asserts that A's
- * broadcast carries lastPage.pageLoadId === "A".
+ * WO-080 replaces the shared proof with a per-TAB store: each handler works
+ * on its own tab's entry and broadcasts a pre-await snapshot, so the
+ * interleaving can no longer cross-tag proofs. This test drives two
+ * interleaved IMPRESSIONS messages from two tabs and asserts each broadcast
+ * carries ITS OWN tab's proof with its own page_load_id.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -94,36 +97,54 @@ after(() => {
   delete globalThis.browser;
 });
 
-describe("BUG S2: lastPage stale commit across await", () => {
-  it("broadcasts A's impressions under A's lastPage, not B's", async () => {
+describe("BUG S2 (fixed by WO-080): per-tab proofs cannot cross-tag across an await", () => {
+  it("each interleaved IMPRESSIONS broadcasts ITS OWN tab's proof", async () => {
+    const pidA = "AAAAAAAA-1111-4111-8111-111111111111";
+    const pidB = "BBBBBBBB-2222-4222-8222-222222222222";
+    // Each sender's tab must first claim a proof slot.
+    await handle(
+      { type: "PAGE_CONTEXT", payload: { platform: "yt", pageLoadId: pidA } },
+      { tab: { id: 1, windowId: 10, url: "https://www.youtube.com/watch?v=aaaaaaaaaaa" } }
+    );
+    await handle(
+      { type: "PAGE_CONTEXT", payload: { platform: "yt", pageLoadId: pidB } },
+      { tab: { id: 2, windowId: 10, url: "https://www.youtube.com/watch?v=bbbbbbbbbbb" } }
+    );
+
     const msgA = {
       type: "IMPRESSIONS",
-      payload: { impressions: [imp("AAAAAAAA-1111-4111-8111-111111111111", "vidA")] },
+      payload: { impressions: [imp(pidA, "vidA")] },
     };
     const msgB = {
       type: "IMPRESSIONS",
-      payload: { impressions: [imp("BBBBBBBB-2222-4222-8222-222222222222", "vidB")] },
+      payload: { impressions: [imp(pidB, "vidB")] },
     };
 
-    // Fire A (suspends at await after setting lastPage=A), then B (sets
-    // lastPage=B) without awaiting A first — this is the interleaving.
-    const pA = handle(msgA, {});
-    const pB = handle(msgB, {});
+    // Fire A (suspends at await), then B, without awaiting A first.
+    const pA = handle(msgA, { tab: { id: 1, windowId: 10 } });
+    const pB = handle(msgB, { tab: { id: 2, windowId: 10 } });
     await pA;
     await pB;
 
-    // Each handle() broadcasts exactly one STORE_UPDATED. A's broadcast must
-    // claim lastPage.pageLoadId === A, not the B that ran during A's await.
     const storeUpdates = broadcasts.filter((m) => m.type === "STORE_UPDATED");
-    assert.ok(storeUpdates.length >= 1, "expected at least one STORE_UPDATED");
+    assert.ok(storeUpdates.length >= 2, "expected both handlers to broadcast");
 
-    // The first broadcast is A's handler resuming; it must not have been
-    // clobbered by B's lastPage.
-    const aBroadcast = storeUpdates[0];
+    const byTab = (tabId) => storeUpdates.find((m) => m.payload.tab_id === tabId);
+    const a = byTab(1);
+    const b = byTab(2);
+    assert.ok(a, "expected tab 1's broadcast");
+    assert.ok(b, "expected tab 2's broadcast");
     assert.equal(
-      aBroadcast.payload.lastPage.pageLoadId,
-      "AAAAAAAA-1111-4111-8111-111111111111",
-      "A's broadcast shows B's lastPage (stale commit across await)"
+      a.payload.proof.pageLoadId,
+      pidA,
+      "tab A's broadcast carries A's own proof, not B's"
     );
+    assert.equal(
+      b.payload.proof.pageLoadId,
+      pidB,
+      "tab B's broadcast carries B's own proof, not A's"
+    );
+    assert.equal(a.payload.tab_id, 1);
+    assert.equal(b.payload.tab_id, 2);
   });
 });

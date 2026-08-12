@@ -1,27 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Contribution level (WO-051).
 //
-// How much this node contributes, per masterplan.md:
+// How much this node contributes. ARCHITECTURE_CURRENT.md §3 is normative:
 //
-//	1 — Strictly Personal:        nothing leaves the device
-//	2 — Catalogue Only:           video metadata, no recommendation edges
-//	3 — Cohort Aggregator:        catalogue + STAR-aggregated edge counts (§6.2)
+//	1 — Strictly Personal:        live notices + word aggregate; no served blocks/observations
+//	2 — Broad Sharing:            complete prefix buckets, local and cached together
+//	3 — Cohort Aggregator:        STAR-protected cohort measurement (§6.2)
 //	4 — Transparency Contributor: full funnel state, publicly attributed
 //
-// Level 2 exists because DESIGN_BOOTSTRAP §1 splits the corpus in two: the
-// catalogue is public fact about public videos, while the edges are an
-// observation of a person. Someone can help build the shared catalogue — the
-// part that makes search work for everyone — without exposing which videos were
-// recommended to them after which.
+// Level 2 serves the complete eligible contents of each bucket it advertises:
+// neighbourhoods derived from this node's own observations *and* the claims it
+// holds on behalf of peers, indistinguishable in the response (WO-084). The
+// privacy mechanism is the breadth of the bucket, not the exclusion of local
+// data — a bucket holds many neighbourhoods, is requested and answered whole,
+// and carries only aggregated edge counts. Level 3 is not "the first level that
+// shares"; it is the first level that runs STAR.
 //
 // The level lives here rather than in browser storage because the daemon is the
 // only component that could ever send anything; the extension merely displays
 // and sets it.
 //
-// **Levels 2 and 3 are not implemented.** STAR does not exist yet, so nothing is
-// transmitted at any level. The setting is stored so the control can exist
-// before the pipeline does — but callers must not treat level > 1 as permission
-// to send, because there is nothing to send with.
+// Level 2 is implemented. Levels 3 and 4 remain unavailable until their own
+// privacy mechanisms exist; callers must not infer unavailable capabilities
+// merely from an integer stored in the database.
 package store
 
 import (
@@ -30,23 +31,33 @@ import (
 )
 
 const (
-	// LevelPersonal is the default: the full local product, contributing nothing.
+	// LevelPersonal is the default full-consumer policy. It serves no blocks or
+	// observations; WO-078's narrow live and word-aggregate products remain on.
 	//
-	// masterplan.md is explicit that this level "gets the full benefit of the
-	// local search engine and recommendation scripts, but contributes nothing".
-	// No feature may ever be gated above it — that would make the privacy
-	// promise a toll booth.
+	// It gets the full search/recommendation product without serving blocks or
+	// observations. No consumer feature may be gated above it — that would make
+	// the privacy promise a toll booth. Its live notices and fixed-shape word
+	// aggregate are explicit narrow disclosures, not observation publication.
 	LevelPersonal = 1
-	// LevelMirror lends storage and bandwidth: the node holds and re-serves
-	// data other people published, and fetches in buckets for itself.
+	// LevelBroad serves complete prefix buckets: aggregated neighbourhoods
+	// this node derived from its own observations together with the ones it
+	// holds for peers, plus the public catalogue and search material needed to
+	// render them.
 	//
-	// Named for what it does. It was LevelCatalogue when the plan was to share
-	// video metadata and no edges, which is neither what shipped nor what makes
-	// suggestions reach past a user's own history. Nothing this node observed is
-	// published at this level — that begins at LevelCohort.
-	LevelMirror = 2
-	// LevelCohort publishes this node's own edge counts under threshold
-	// encryption. Not implemented — STAR does not exist yet.
+	// It was LevelMirror, and before that LevelCatalogue. Both names described
+	// a contract this level does not have. "Mirror" claimed nothing the user
+	// observed is published, which WO-084 corrected: locally derived
+	// aggregated blocks do leave the device here. What keeps that acceptable is
+	// the unit — a whole hashed-prefix bucket of many neighbourhoods, answered
+	// whole, carrying counts and no page-load id, timestamp, title, query or
+	// ordered trail — not the absence of local data.
+	LevelBroad = 2
+	// LevelCohort publishes cohort measurements under STAR threshold
+	// encryption. Not implemented — no STAR client exists.
+	//
+	// It does not "turn on" ordinary graph blocks; LevelBroad already serves
+	// those. Its product is the comparison measurement, recoverable only once
+	// enough independent nodes report the same value.
 	LevelCohort = 3
 	// LevelTransparency publishes attributable funnel state, deliberately
 	// identifiable. Not implemented.
@@ -72,7 +83,7 @@ const (
 // Raise this only when the corresponding pipeline exists. It is what the UI
 // reads to decide which options are selectable, so a stale value here would let
 // the interface promise something the daemon cannot do.
-const MaxImplementedLevel = LevelMirror
+const MaxImplementedLevel = LevelBroad
 
 // ContributionLevel returns the stored level, defaulting to Personal.
 //

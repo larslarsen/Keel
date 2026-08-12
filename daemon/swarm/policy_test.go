@@ -9,6 +9,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -148,7 +149,7 @@ func TestLevelOneJoinsNoSearchTopics(t *testing.T) {
 	}
 
 	two := newStore(t, "two.sqlite")
-	twoNode, err := Start(ctx, two, levelCfg(t, store.LevelMirror))
+	twoNode, err := Start(ctx, two, levelCfg(t, store.LevelBroad))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,10 +161,19 @@ func TestLevelOneJoinsNoSearchTopics(t *testing.T) {
 	}
 }
 
-// TestLevelOneStillFetchesAndSearches is the product-boundary half of the
-// ticket: privacy is not a toll booth. A non-contributor gets the full
-// consumer product, including peer search against a Level-2 mirror.
-func TestLevelOneStillFetchesAndSearches(t *testing.T) {
+// TestLevelOneStillFetchesAndPreWalks is the product-boundary half of the
+// ticket: privacy is not a toll booth. A non-contributor gets the bounded
+// consumer product — seed, fetch, pre-walk and the local walk those feed.
+//
+// It was TestLevelOneStillFetchesAndSearches, and asserted distributed peer
+// search here too. WO-085 split that claim off rather than deleting it: the
+// two halves are now separately falsifiable, because they are separately
+// decided. Fetch stays on at Level 1 for exactly the reason it always did;
+// distributed search does not, and
+// TestLevelOneDistributedSearchIsRefusedBeforePeerContact is where that is
+// proved. One test asserting both would go green if the boundary moved to the
+// wrong one of them.
+func TestLevelOneStillFetchesAndPreWalks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -199,6 +209,99 @@ func TestLevelOneStillFetchesAndSearches(t *testing.T) {
 	}
 	if len(sug.Suggestions) == 0 {
 		t.Error("a Level 1 node fetched edges but its walk returns nothing")
+	}
+}
+
+// TestLevelOneDistributedSearchIsRefusedBeforePeerContact is WO-085's boundary
+// over the wire.
+//
+// The refusal has to happen before contact, not as an empty result after it:
+// the whole point is that a Level-1 node does not place search load on the
+// serving population. So the serving peer here holds a match and is *already
+// connected* — a search that reached it would succeed, which is what makes a
+// zero-hit result meaningful rather than vacuous.
+func TestLevelOneDistributedSearchIsRefusedBeforePeerContact(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	serverStore := newStore(t, "reciprocity-server.sqlite")
+	putTitle(t, serverStore, "findmevideo1", "A distinctive sourdough baking tutorial")
+	server, err := Start(ctx, serverStore, levelCfg(t, store.LevelBroad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	clientStore := newStore(t, "reciprocity-client.sqlite")
+	client, err := Start(ctx, clientStore, levelCfg(t, store.LevelPersonal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if err := client.host.Connect(ctx, server.AddrInfo()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if client.Peers() == 0 {
+		t.Fatal("client has no peers; the refusal below would prove nothing")
+	}
+
+	ids, progress, err := client.PeerSearch(ctx, "sourdough")
+	if !errors.Is(err, ErrDistributedSearchNotPermitted) {
+		t.Errorf("Level 1 PeerSearch error = %v, want ErrDistributedSearchNotPermitted", err)
+	}
+	if len(ids) != 0 || len(progress) != 0 {
+		t.Errorf("a refused search still produced results: ids=%v progress=%v", ids, progress)
+	}
+	if client.MayDistributedSearch() {
+		t.Error("a Level 1 node reports itself entitled to distributed search")
+	}
+
+	// The same client at Level 2 finds it, so the refusal above is the
+	// entitlement and not a broken transport.
+	reciprocal := newStore(t, "reciprocity-level2.sqlite")
+	rNode, err := Start(ctx, reciprocal, levelCfg(t, store.LevelBroad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rNode.Close()
+	if err := rNode.host.Connect(ctx, server.AddrInfo()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if !rNode.MayDistributedSearch() {
+		t.Fatal("a Level 2 node is not entitled to distributed search")
+	}
+	if _, _, err := rNode.PeerSearch(ctx, "sourdough"); err != nil {
+		t.Errorf("Level 2 PeerSearch returned %v, want the transport to work", err)
+	}
+}
+
+// TestShuttingTheGateStopsDistributedSearch is the downgrade half: choosing
+// Level 1 must stop searches from that instant, not once the replacement node
+// has come up. Same reasoning as the serving gate below, in the other
+// direction — the supervisor shuts this gate synchronously and tears down
+// afterwards, so anything that only checked cfg.Policy would keep searching
+// throughout the teardown window.
+func TestShuttingTheGateStopsDistributedSearch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	st := newStore(t, "gate-search.sqlite")
+	n, err := Start(ctx, st, levelCfg(t, store.LevelBroad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+
+	if !n.MayDistributedSearch() {
+		t.Fatal("a Level 2 node is not entitled to distributed search")
+	}
+	n.CloseOutbound()
+	if n.MayDistributedSearch() {
+		t.Error("a gated node still reports itself entitled to distributed search")
+	}
+	if _, _, err := n.PeerSearch(ctx, "sourdough"); !errors.Is(err, ErrDistributedSearchNotPermitted) {
+		t.Errorf("PeerSearch after gating returned %v, want ErrDistributedSearchNotPermitted", err)
 	}
 }
 
@@ -253,5 +356,106 @@ func TestShuttingTheGateStopsServiceOnALiveNode(t *testing.T) {
 	}
 	if err := sNode.Announce(ctx); err != nil {
 		t.Errorf("Announce after gating returned %v, want a silent no-op", err)
+	}
+}
+
+// TestLevelTwoAnnouncesEverythingItServes is WO-084 requirement 4, checked
+// against the policy rather than against a hand-passed flag.
+//
+// Announcement and service are four separate namespaces — graph prefixes,
+// catalogue prefixes, shards, and the gossiped yield vector — and each is
+// computed on its own call. The failure this guards is one of them being wired
+// to a different corpus than the rest, which produces provider records and
+// yield bits describing material the corresponding stream refuses to return.
+//
+// The node here holds nothing but its own observations, which is also the first
+// acceptance criterion: a Level-2 node with no imported data still advertises
+// and still answers.
+func TestLevelTwoAnnouncesEverythingItServes(t *testing.T) {
+	st := newStore(t, "announce.sqlite")
+	seed(t, st, "localseed01", "localvid001", 0)
+	seed(t, st, "localseed01", "localvid002", 1)
+
+	p := PolicyForLevel(store.LevelBroad)
+	graph, catalogue := p.GraphSources(), p.CatalogueSources()
+
+	prefixes, err := st.LocalPrefixes(store.DefaultPrefixBits, graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) == 0 {
+		t.Fatal("a Level-2 node holding only its own observations announced no graph buckets")
+	}
+	for _, prefix := range prefixes {
+		bucket, err := st.BlocksInPrefix(prefix, st.Cohort(), graph, 256)
+		if err != nil {
+			t.Fatalf("announced graph bucket %s cannot be served: %v", prefix, err)
+		}
+		if len(bucket.Blocks) == 0 {
+			t.Errorf("announced graph bucket %s returns nothing", prefix)
+		}
+	}
+
+	catPrefixes, err := st.LocalCataloguePrefixes(store.DefaultPrefixBits, catalogue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catPrefixes) == 0 {
+		t.Fatal("a Level-2 node announced no catalogue buckets, so its blocks arrive unlabelled")
+	}
+	for _, prefix := range catPrefixes {
+		pack, err := st.BuildCataloguePack(prefix, catalogue, 4096)
+		if err != nil {
+			t.Fatalf("announced catalogue bucket %s cannot be served: %v", prefix, err)
+		}
+		if len(pack.Entries) == 0 {
+			t.Errorf("announced catalogue bucket %s returns nothing", prefix)
+		}
+	}
+
+	shards, err := st.LocalShards(catalogue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shards) == 0 {
+		t.Fatal("a Level-2 node announced no shards, so it is unsearchable")
+	}
+	for _, sh := range shards {
+		entries, err := st.ShardSlice(sh, catalogue)
+		if err != nil {
+			t.Fatalf("announced shard %d cannot be served: %v", sh, err)
+		}
+		if len(entries) == 0 {
+			t.Errorf("announced shard %d returns nothing", sh)
+		}
+	}
+
+	// Every yield bit claims a shard fetch from this node is worth making, so
+	// no bit may name a shard the node does not serve.
+	vec, err := st.LocalYieldVector(catalogue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := map[int]bool{}
+	for _, sh := range shards {
+		served[sh] = true
+	}
+	set := 0
+	for idx := 0; idx < store.TokenDictSize; idx++ {
+		if !store.YieldBitSet(vec, idx) {
+			continue
+		}
+		set++
+		tok, ok := store.TokenFromDictIndex(idx)
+		if !ok {
+			t.Fatalf("yield bit %d has no token", idx)
+		}
+		if !served[store.ShardOf(tok)] {
+			t.Errorf("yield bit %d points at shard %d, which this node does not serve",
+				idx, store.ShardOf(tok))
+		}
+	}
+	if set == 0 {
+		t.Error("a Level-2 node holding its own titles gossiped an empty yield vector")
 	}
 }

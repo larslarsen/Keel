@@ -43,14 +43,15 @@ const SIDEPANEL_PORT = "keel-sidepanel";
 
 /** @type {object[]} */
 let buffer = [];
-/** Live page proof (memory only). generation = rail replacement counter. */
-let lastPage = {
-  platform: "yt",
-  pageLoadId: null,
-  impressions: [],
-  failures: 0,
-  generation: null,
-};
+import { createProofStore } from "./page_proofs.js";
+/**
+ * Tab-scoped page proof store (WO-080): one proof per observed tab, keyed by
+ * sender-derived tab id, so two same-platform tabs can never overwrite one
+ * another, and a panel only ever sees its window's ACTIVE tab's proof. The
+ * module is pure (no browser APIs); this instance is in-memory only and dies
+ * with the SW — never persisted.
+ */
+const pageProofs = createProofStore();
 let connected = false;
 /** Open SidePanel documents (one port each). In-memory only. */
 let sidePanelPorts = 0;
@@ -133,9 +134,26 @@ async function broadcastHideState(mode) {
   await broadcastToYoutubeTabs(msg);
 }
 
-function setStatus(ok, detail = "") {
+/** @type {Record<string, number>} */
+let bridgeCaps = Object.create(null);
+
+function setStatus(ok, detail = "", meta = undefined) {
   connected = ok;
-  broadcast({ type: "DAEMON_STATUS", payload: { connected: ok, detail } });
+  if (ok && meta?.capabilities && typeof meta.capabilities === "object") {
+    bridgeCaps = { ...meta.capabilities };
+  } else if (!ok) {
+    bridgeCaps = Object.create(null);
+  }
+  broadcast({
+    type: "DAEMON_STATUS",
+    payload: {
+      connected: ok,
+      detail,
+      code: meta?.code || "",
+      incompatible: Boolean(meta?.incompatible),
+      capabilities: { ...bridgeCaps },
+    },
+  });
   // Keep bounded in-memory buffer across disconnect; flush on reconnect (WO-004 §8).
   if (ok) {
     flushBuffer();
@@ -143,13 +161,27 @@ function setStatus(ok, detail = "") {
   }
 }
 
+function hasBridgeCap(name, minRev = 1) {
+  if (typeof bridge?.hasCapability === "function") {
+    return bridge.hasCapability(name, minRev);
+  }
+  const n = bridgeCaps[name];
+  return Number.isFinite(n) && n >= minRev;
+}
+
 let bridge = createNativeBridge({
   onStatus: setStatus,
   // Do not broadcast STATS_RESULT / IMPRESSIONS_ACK here. The IMPRESSIONS
-  // handler (and flushBuffer) already emit STORE_UPDATED with lastPage.
+  // handler (and flushBuffer) already emit STORE_UPDATED with counts/proof.
   // Re-broadcasting STATS_RESULT made the panel re-enter GET_STATS on every
   // reply (STORE_UPDATED → refresh → STATS → STORE_UPDATED → …).
-  onMessage: () => {},
+  onMessage: (env) => {
+    // Owner-wide policy changes are unsolicited events, not RPC replies. Every
+    // browser/profile connected to the shared owner receives one (WO-079).
+    if (env?.type === "CONTRIBUTION_STATUS") {
+      broadcast({ type: "CONTRIBUTION_STATUS", payload: env.payload || {} });
+    }
+  },
 });
 
 async function sendImpressions(impressions) {
@@ -167,49 +199,16 @@ function flushBuffer() {
   buffer = [];
   sendImpressions(batch)
     .then((result) => {
-      broadcast({ type: "STORE_UPDATED", payload: { ...result, lastPage } });
+      // The disconnected buffer is NOT page-proof state (WO-080): a flush is
+      // a multi-tab batch that no longer carries tab ownership, so it
+      // broadcasts counts only — never a proof. The panel re-pulls the
+      // active tab's proof via GET_STATS/GET_STATUS.
+      broadcast({
+        type: "STORE_UPDATED",
+        payload: { ...result, window_id: null, tab_id: null, proof: null },
+      });
     })
     .catch((e) => console.warn(LOG, e.message));
-}
-
-function rememberPage(values, failures, generation) {
-  if (!values.length) {
-    lastPage.failures += failures;
-    return;
-  }
-  const pid = values[0].page_load_id;
-  // Reset on navigation OR on rail replacement (same page, new suggestion
-  // set). YouTube swaps the watch-next rail ~2s after load; without this the
-  // panel accumulates two sets whose slots collide.
-  if (
-    lastPage.pageLoadId !== pid ||
-    (generation != null && generation !== lastPage.generation)
-  ) {
-    // platform must survive this reset (WO-071 defect 2): the rail-generation
-    // reset fires on every watch page ~2s after load (YouTube swaps the
-    // watch-next rail), and dropping platform here left it undefined until the
-    // next PAGE_CONTEXT — sidepanel/index.js's `lastPageCache?.platform || "yt"`
-    // fallback then silently read as YouTube on a TikTok tab.
-    lastPage = {
-      platform: lastPage.platform || "yt",
-      pageLoadId: pid,
-      impressions: [],
-      failures: 0,
-      generation: generation ?? lastPage.generation,
-    };
-  }
-  const seen = new Set(
-    lastPage.impressions.map((i) => `${i.video_id}|${i.slot_index}`)
-  );
-  for (const imp of values) {
-    const k = `${imp.video_id}|${imp.slot_index}`;
-    if (!seen.has(k)) {
-      seen.add(k);
-      lastPage.impressions.push(imp);
-    }
-  }
-  lastPage.impressions.sort((a, b) => a.slot_index - b.slot_index);
-  lastPage.failures += failures;
 }
 
 /**
@@ -243,21 +242,34 @@ async function handle(message, sender) {
   if (!message || typeof message !== "object") throw new Error("bad message");
 
   switch (message.type) {
+    /** WO-080: proof writes are keyed by the SENDER's tab, never by payload ids. */
     case "PAGE_CONTEXT": {
-      if (message.payload?.platform) lastPage.platform = message.payload.platform;
-      if (message.payload?.pageLoadId) {
-        lastPage = {
-          platform: message.payload.platform || lastPage.platform || "yt",
-          pageLoadId: message.payload.pageLoadId,
-          impressions: [],
-          failures: 0,
-          generation: null,
-        };
-      }
+      const tabId = sender?.tab?.id;
+      const windowId = sender?.tab?.windowId;
+      // A message with no browser-attributed tab cannot claim a proof slot.
+      if (typeof tabId !== "number" || typeof windowId !== "number") return {};
+      const url = sender?.tab?.url || "";
+      pageProofs.observeContext({
+        tabId,
+        windowId,
+        pageLoadId: message.payload?.pageLoadId,
+        // Platform/surface/focus are derived from the sender's URL, not
+        // believed from the payload — a page cannot label itself as another
+        // platform or claim focus it does not have.
+        platform: message.payload?.platform || "yt",
+        surface: surfaceFromUrl(url).surface,
+        focus: panelAllowedFor(url),
+        railGeneration:
+          typeof message.payload?.generation === "number"
+            ? message.payload.generation
+            : null,
+      });
       return {};
     }
 
     case "IMPRESSIONS": {
+      const tabId = sender?.tab?.id;
+      const windowId = sender?.tab?.windowId;
       const list = message.payload?.impressions || [];
       const failures =
         typeof message.payload?.failures === "number"
@@ -265,33 +277,54 @@ async function handle(message, sender) {
           : 0;
       const { values, errors } = validateImpressionList(list);
       if (errors.length) console.warn(LOG, "invalid", errors);
-      rememberPage(values, failures, message.payload?.generation);
-      // Snapshot the page state THIS handler owns before yielding. rememberPage
-      // mutates the shared module-level lastPage, and a concurrent IMPRESSIONS
-      // (another tab / PAGE_CONTEXT) can change it during the await below.
-      // Broadcasting the live lastPage on resume would tag these impressions
-      // with the wrong page (BUG S2: stale commit across await).
-      const pageSnap = { ...lastPage, impressions: lastPage.impressions.slice() };
+      // The store keeps ONE proof per tab: stale batches (a previous document)
+      // are dropped there, and the return is already a snapshot — no shared
+      // mutation can cross the await below (BUG S2 is gone by construction).
+      const { accepted, proof } = pageProofs.observeImpressions({
+        tabId,
+        values,
+        failures,
+        railGeneration: message.payload?.generation ?? null,
+      });
+      const pageSnap = proof;
 
       if (!bridge.helloOk) {
-        buffer.push(...values);
+        buffer.push(...accepted);
         if (buffer.length > BUFFER_MAX) buffer = buffer.slice(-BUFFER_MAX);
-        return { queued: values.length, connected: false };
+        return { queued: accepted.length, connected: false };
       }
-      const result = await sendImpressions(values);
-      broadcast({ type: "STORE_UPDATED", payload: { ...result, lastPage: pageSnap } });
+      const result = await sendImpressions(accepted);
+      broadcast({
+        type: "STORE_UPDATED",
+        payload: {
+          ...result,
+          window_id: windowId ?? null,
+          tab_id: tabId ?? null,
+          proof: pageSnap,
+        },
+      });
       return { result, connected: true };
     }
 
-    case "GET_STATUS":
-      return { connected, lastPage, buffered: buffer.length };
+    case "GET_STATUS": {
+      const proof = await activeProofForWindow(message.payload?.windowId);
+      return {
+        connected,
+        proof,
+        buffered: buffer.length,
+        capabilities: { ...bridgeCaps },
+        incompatible: Boolean(bridge.lastHelloFailure),
+        detail: bridge.lastHelloFailure?.reason || "",
+      };
+    }
 
     case "GET_STATS": {
+      const proof = await activeProofForWindow(message.payload?.windowId);
       if (!bridge.helloOk) {
-        return { connected: false, stats: null, lastPage };
+        return { connected: false, stats: null, proof };
       }
       const env = await bridge.request("STATS", {});
-      return { connected: true, stats: env.payload, lastPage };
+      return { connected: true, stats: env.payload, proof };
     }
 
     /** WO-012: daemon writes file; bridge returns path only — no corpus in browser. */
@@ -310,20 +343,17 @@ async function handle(message, sender) {
       if (env.type === "ERROR") {
         throw new Error(env.payload?.message || "wipe failed");
       }
-      // Clear in-memory page proof; counts refresh from panel.
-      lastPage = {
-        pageLoadId: lastPage.pageLoadId,
-        impressions: [],
-        failures: 0,
-        generation: lastPage.generation,
-      };
+      // Clear all in-memory page proofs (WO-080); counts refresh from panel.
+      pageProofs.clear();
       buffer = [];
       broadcast({
         type: "STORE_UPDATED",
         payload: {
           inserted: 0,
           wiped: env.payload?.deleted ?? 0,
-          lastPage,
+          window_id: null,
+          tab_id: null,
+          proof: null,
           stats: {
             total: 0,
             by_surface: {
@@ -419,11 +449,34 @@ async function handle(message, sender) {
       const query = message.payload?.query;
       if (typeof query !== "string" || !query.trim()) throw new Error("bad query");
       if (!bridge.helloOk) throw new Error("daemon not connected");
+      if (!hasBridgeCap("peer_search")) {
+        throw new Error("peer search unavailable — desktop app update required");
+      }
       const env = await bridge.request("PEER_SEARCH", {
         query,
         limit: Number(message.payload?.limit) || 100,
       });
       if (env.type === "ERROR") {
+        // WO-085: "you have not opted in" is an answer, not a failure. It is
+        // the one PEER_SEARCH error the user can act on, and throwing would
+        // flatten it into a message string — the extension-message channel
+        // carries only {ok, error} for a rejection, so the code and the level
+        // detail the UI needs would be lost on the way out.
+        if (env.payload?.code === "contribution_required") {
+          return {
+            peer_search: {
+              query,
+              hits: [],
+              progress: [],
+              available: false,
+              contribution_required: env.payload?.detail || {
+                capability: "distributed_search",
+                required_level: 2,
+              },
+              message: env.payload?.message || "",
+            },
+          };
+        }
         throw new Error(env.payload?.message || "PEER_SEARCH failed");
       }
       return { peer_search: env.payload };
@@ -437,6 +490,9 @@ async function handle(message, sender) {
       const query = message.payload?.query;
       if (typeof query !== "string" || !query.trim()) throw new Error("bad query");
       if (!bridge.helloOk) throw new Error("daemon not connected");
+      if (!hasBridgeCap("word_stats")) {
+        throw new Error("word stats unavailable — desktop app update required");
+      }
       const env = await bridge.request("WORD_STATS", { query });
       if (env.type === "ERROR") {
         throw new Error(env.payload?.message || "WORD_STATS failed");
@@ -455,6 +511,9 @@ async function handle(message, sender) {
      */
     case "GET_SELECTORS": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
+      if (!hasBridgeCap("selectors")) {
+        throw new Error("selectors unavailable — desktop app update required");
+      }
       const env = await bridge.request("GET_SELECTORS", {});
       if (env.type === "ERROR") {
         throw new Error(env.payload?.message || "GET_SELECTORS failed");
@@ -498,7 +557,7 @@ async function handle(message, sender) {
      * tab that reported the end.
      */
     case "VIDEO_ENDED": {
-      if (!bridge.helloOk) return { advanced: false };
+      if (!bridge.helloOk || !hasBridgeCap("queue")) return { advanced: false };
       const tabId = sender?.tab?.id;
       const env = await bridge.request("QUEUE_ADVANCE", {
         video_id: String(message.payload?.video_id || ""),
@@ -523,6 +582,9 @@ async function handle(message, sender) {
     case "QUEUE_REMOVE":
     case "QUEUE_REORDER": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
+      if (!hasBridgeCap("queue")) {
+        throw new Error("watch queue unavailable — desktop app update required");
+      }
       const env = await bridge.request(message.type, message.payload || {});
       if (env.type === "ERROR") {
         throw new Error(env.payload?.message || `${message.type} failed`);
@@ -549,6 +611,9 @@ async function handle(message, sender) {
 
     case "SCROLL_HISTORY": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
+      if (!hasBridgeCap("scroll_history")) {
+        throw new Error("scroll history unavailable — desktop app update required");
+      }
       const env = await bridge.request("SCROLL_HISTORY", {
         platform: String(message.payload?.platform || "tt"),
         limit: Number(message.payload?.limit) || 50,
@@ -574,7 +639,8 @@ async function handle(message, sender) {
      * The side panel asks which context its window's active tab has, on load
      * and on tabs.onActivated (the SW may have been evicted and missed the
      * broadcast). Watch pages return focus:true plus the platform so the panel
-     * re-scopes; anything else returns focus:false.
+     * re-scopes; anything else returns focus:false. The proof — if any — is
+     * the ACTIVE tab's own, never a background tab's (WO-080).
      */
     case "PANEL_CONTEXT_QUERY": {
       const win = message.payload?.windowId ?? null;
@@ -588,10 +654,15 @@ async function handle(message, sender) {
       }
       const active = tabs[0] || null;
       const ctx = panelContextPayload(active?.windowId ?? win, active?.url || "");
+      const proof =
+        active?.id != null ? pageProofs.get(active.id) : null;
       return {
-        windowId: active?.windowId ?? win,
+        window_id: active?.windowId ?? win,
+        tab_id: active?.id ?? null,
         platform: ctx.platform,
+        surface: ctx.surface,
         focus: ctx.focus,
+        proof,
       };
     }
 
@@ -632,6 +703,14 @@ async function handle(message, sender) {
     case "GET_DISK_BUDGET":
     case "SET_DISK_BUDGET": {
       if (!bridge.helloOk) throw new Error("daemon not connected");
+      if (
+        (message.type === "GET_CONTRIBUTION" || message.type === "SET_CONTRIBUTION") &&
+        !hasBridgeCap("contribution_runtime")
+      ) {
+        throw new Error(
+          "contribution controls unavailable — desktop app update required"
+        );
+      }
       const env = await bridge.request(message.type, message.payload || {});
       if (env.type === "ERROR") throw new Error(env.payload?.message || message.type);
       return { daemon: env.payload };
@@ -764,14 +843,14 @@ function closePanelInWindow(windowId, tabId) {
  * The context the side panel should show, derived from the ACTIVE tab.
  *
  * This is the WO-073 fix for the panel following the wrong page: the panel is
- * a per-window artifact, and the last PAGE_CONTEXT any tab sent is
+ * a per-window artifact, and the last PAGE_CONTEXT any tab sent was
  * window-global — so switching YT→TT kept the YouTube suggestions. Context
- * must come from the active tab, not from whichever tab last wrote
- * `lastPage`.
+ * must come from the active tab. WO-080 carries the tab identity through the
+ * broadcast so the panel can also reject stale proofs by id.
  */
 function panelContextPayload(windowId, url) {
-  const { platform } = surfaceFromUrl(url || "");
-  return { windowId, platform, focus: panelAllowedFor(url) };
+  const { platform, surface } = surfaceFromUrl(url || "");
+  return { windowId, platform, surface, focus: panelAllowedFor(url) };
 }
 
 /**
@@ -787,7 +866,30 @@ async function evalActivePanelContext(tab, windowId) {
   if (!ctx.focus && windowId != null) {
     closePanelInWindow(windowId, tab?.id ?? null);
   }
-  broadcast({ type: "PANEL_CONTEXT", payload: ctx });
+  broadcast({
+    type: "PANEL_CONTEXT",
+    payload: { ...ctx, tab_id: tab?.id ?? null },
+  });
+}
+
+/** The page proof of a window's ACTIVE tab — the only proof a panel may show
+ *  (WO-080). Resolves the active tab, then asks the per-tab store for THAT
+ *  tab's proof; a background tab's proof is never offered. */
+async function activeProofForWindow(windowId) {
+  if (!browser.tabs?.query) return null;
+  let tabs = [];
+  try {
+    tabs =
+      windowId != null
+        ? await browser.tabs.query({ active: true, windowId })
+        : await browser.tabs.query({ active: true, lastFocusedWindow: true });
+  } catch (err) {
+    console.warn(LOG, "activeProofForWindow", err?.message || err);
+    return null;
+  }
+  const tab = tabs[0];
+  if (!tab || tab.id == null) return null;
+  return pageProofs.get(tab.id);
 }
 
 /**
@@ -852,6 +954,13 @@ if (browser.tabs?.onActivated) {
       }
       await evalActivePanelContext(tab, info.windowId);
     })().catch((err) => console.warn(LOG, "onActivated", err?.message || err));
+  });
+}
+if (browser.tabs?.onRemoved) {
+  // A closed tab can no longer own a proof (WO-080). The map stays bounded
+  // to the open observed tabs; onRemoved is what keeps it honest.
+  browser.tabs.onRemoved.addListener((tabId) => {
+    pageProofs.remove(tabId);
   });
 }
 
@@ -1027,13 +1136,12 @@ if (browser.runtime.onInstalled?.addListener) {
   });
 }
 
-// Test-only seam: the SW event handlers (handle/rememberPage/flushBuffer) are
-// module-private, and the race in BUG S2 lives in their shared mutation of
-// `lastPage` across `await` yield points. Exposing them — and a bridge
-// injector — lets the regression test drive two interleaved IMPRESSIONS
-// messages without a live native-messaging connection. Production never calls
-// these; the injector only swaps the module-level `bridge` binding.
-export { handle, rememberPage, flushBuffer };
+// Test-only seam: exposes the message handler and flush machinery so tests
+// can drive interleaved IMPRESSIONS messages without a live native-messaging
+// connection, plus the per-tab proof store for WO-080 assertions. Production
+// never calls these; the injector only swaps the module-level `bridge`
+// binding.
+export { handle, flushBuffer, pageProofs };
 export function __test_setBridge(b) {
   bridge = b;
 }

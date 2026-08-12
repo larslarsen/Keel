@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Architecture decided — ready for Sr Dev (Claude Sonnet/Opus)** |
+| **Status** | **Implemented** 2026-08-12 — protocol/session acceptance complete; WO-088 corrects one contribution-control presentation defect found by WO-082 |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 
@@ -67,12 +67,58 @@ impression ingestion, stats, export/wipe and clean disconnected behavior.
 
 ## Acceptance
 
-- [ ] Both sides reject incompatible peers with clear, actionable UI copy.
-- [ ] Compatible partial pairs expose only mutually-supported features.
-- [ ] Existing framed-message validation and reconnect behavior remain intact.
-- [ ] A non-HELLO first frame, duplicate HELLO, invalid capability revision,
+- [x] Both sides reject incompatible peers with clear, actionable UI copy.
+- [x] Compatible partial pairs expose only mutually-supported features.
+- [x] Existing framed-message validation and reconnect behavior remain intact.
+- [x] A non-HELLO first frame, duplicate HELLO, invalid capability revision,
       missing `core`, non-overlapping API and incompatible `owner_ipc` all fail
       deterministically with stable error codes.
+- [x] An un-negotiated or incompatible owner session receives no owner-wide
+      broadcast. Found during review: `serveOwner` joined the hub at accept, so
+      a session that had not agreed a schema — including one just told it was
+      incompatible — still got unsolicited `CONTRIBUTION_STATUS` frames. The
+      hub is now joined from the negotiation hook.
+      (`TestUnnegotiatedSessionReceivesNoOwnerBroadcast`.)
+- [x] Release/update UX recorded in `DESIGN_v2.md` §8.1.
+
+## Notes for the WO-082 audit
+
+- **"Highest mutually supported revision" is the lower of the two integers.**
+  Each side advertises a maximum and is assumed to speak everything below it.
+  Pinned by `TestNegotiateSelectsLowerOfTheTwoRevisions`, including for a
+  *required* capability — an exact-match rule there would make every `core`
+  bump a flag day, which is the lockstep this ticket exists to avoid.
+- **A pre-WO-081 extension fails closed at the daemon.** Its `HELLO` declares no
+  capabilities, so negotiation returns `missing_core` and no application RPC is
+  accepted. Nothing can be done for an already-shipped client from this side;
+  the deterministic refusal is the contract.
+- **A pre-WO-081 daemon fails closed at the extension.** Its `HELLO_ACK` carries
+  no `compatible`/`capabilities`, which `applyHelloAck` treats as incompatible.
+- **Optional controls are disabled with a reason, never hidden.** A vanished
+  control reads as "removed"; a greyed-out one reads as "update the desktop
+  app", which is the action available.
+  WO-082 found that peer search obeys this rule but `applyCapabilityUi()`
+  removes the contribution radio rows when `contribution_runtime` is absent.
+  WO-088 owns that UI correction; it does not reopen negotiation or the session
+  gate.
+- **Not gated on a capability, deliberately:** `SEARCH`, `SUGGEST`,
+  `LIVE_SEARCH`, `THUMBNAIL`, `ANALYSIS`, `EXPLAIN_VIDEO`, blocklist, bundle
+  import/export, `PEERS`, disk budget and `SET_COHORT` all run under `core`.
+  Adding gates there would let an out-of-date desktop app break the local
+  recorder, which §8.1 now rules out.
+
+## Implementation map
+
+| Area | Files |
+|---|---|
+| Negotiate | `daemon/bridge/hello.go`, `hello_test.go` |
+| Session gate | `daemon/main.go` (`bridgeSession`, `handleHello`), `hello_session_test.go` |
+| owner_ipc | `daemon/owner_ipc.go` (WO-079; codes stable) |
+| Extension HELLO | `extension/lib/protocol.js` constants, `extension/lib/native.js` |
+| Cap gates + status | `extension/background/sw.js`, sidepanel/page banners |
+| JS tests | `test/native.test.js`, `test/peer-search.test.js`, `test/word-stats.test.js` |
+| Hub gate | `daemon/owner.go` (`runSession` + negotiation hook), `daemon/owner_unix_test.go` |
+| Release/update UX | `DESIGN_v2.md` §8.1 |
 
 ## Challenge
 

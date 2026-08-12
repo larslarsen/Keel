@@ -71,6 +71,14 @@ h2 { font-size: 1rem; margin: 28px 0 6px; }
 .btn:hover { border-color: var(--accent); }
 .btn-danger { border-color: var(--danger); color: var(--danger); }
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Inline route to a setting named in the sentence beside it (WO-085). Sized
+   as running text rather than as a button so it reads as part of the
+   explanation, which is where it belongs. */
+.btn-link {
+  appearance: none; background: none; border: 0; padding: 0;
+  font: inherit; color: var(--accent); cursor: pointer;
+  text-decoration: underline;
+}
 
 .hint, .meta { color: var(--muted); font-size: 13px; }
 .hint { margin: 8px 0 0; }

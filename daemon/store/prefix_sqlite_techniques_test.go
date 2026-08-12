@@ -157,20 +157,20 @@ func TestBlocksInPrefixLimitMonotonic(t *testing.T) {
 	}
 	target := BlockPrefix(seeds[0], bits)
 
-	small, err := st.BlocksInPrefix(target, "GB-en", false, 2)
+	small, err := st.BlocksInPrefix(target, "GB-en", AllSources, BucketAnonymityFloor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	large, err := st.BlocksInPrefix(target, "GB-en", false, 256)
+	large, err := st.BlocksInPrefix(target, "GB-en", AllSources, 256)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The small result must be a subset of the large (monotonic in limit).
 	smallSet := map[string]bool{}
-	for _, b := range small {
+	for _, b := range small.Blocks {
 		smallSet[b.Key] = true
 	}
-	for _, b := range large {
+	for _, b := range large.Blocks {
 		if smallSet[b.Key] {
 			delete(smallSet, b.Key)
 		}

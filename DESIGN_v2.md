@@ -501,8 +501,12 @@ for the other.
 ### 6.1 Consent — the slider
 
 The original three-level slider has since become a four-level ladder so that
-mirroring public data is separate from contributing observations. The current
-contract is normative in `ARCHITECTURE_CURRENT.md` §3. **What v1 got wrong was
+serving broad buckets, STAR-protected measurement and attributed publication
+are each a separate choice. It is *not* a ladder in which the lower rungs
+withhold local data and the upper ones release it: Level 2 already contributes
+locally derived blocks, and what Levels 3 and 4 add are different mechanisms,
+not larger doses of the same one (WO-084). The current contract is normative in
+`ARCHITECTURE_CURRENT.md` §3. **What v1 got wrong was
 narrow**: it sent full funnel state (video IDs + full cohort ID) at its Level 3
 and claimed K-anonymity protection for those contributors. Those cannot both be
 true. Full disclosure is a legitimate option; it just has to be labelled
@@ -511,9 +515,16 @@ honestly rather than dressed as anonymity.
 | Slider setting | What leaves the device | Mechanism | Partner needed |
 |---|---|---|---|
 | **L1 — Strictly Personal** *(default)* | Livestream notices and the whole fixed-shape word HLL/CMS aggregate; no raw words, recommendation edges, watch trail or served blocks | Live gossip/snapshot (§7.5) + WO-068 word telemetry | No Keel-operated partner |
-| **L2 — Mirror** | The same live notices; serves only public data mirrored from others | Prefix buckets (§7.4) | No |
-| **L3 — Cohort** *(not built)* | Threshold-protected aggregate edge measurements | STAR (§6.2) | **Yes** — OPRF helper |
+| **L2 — Broad sharing** | The same Level-1 products plus aggregated, stringless graph blocks derived locally and cached from peers, served only in complete broad prefix buckets with their broad catalogue/search companions | Broad hashed buckets/shards (§7.4); no selected-video response | No |
+| **L3 — Cohort** *(not built)* | Level-2 broad blocks plus threshold-protected cohort measurements | STAR (§6.2) | **Yes** — OPRF helper |
 | **L4 — Transparency** *(not built)* | Signed public observations, attributed | Direct publication | No |
+
+The ladder also governs consumption where capacity is reciprocal. Level 1 keeps
+local search, seed receipt, shared suggestions and graph pre-walk. Arbitrary
+user-triggered search across other people's recommendations is Level 2+ because
+Level 2 also hosts the broad graph/catalogue/search buckets that answer it.
+Level 3's future product reward is the STAR-derived cohort/funnel visualizer;
+Level 4 remains a deliberately attributed research/transparency choice.
 
 **L1 is and remains the default.** Not only because CWS Limited Use and GDPR both require
 freely-given specific consent rather than a pre-ticked box, but because a transparency tool that
@@ -1025,9 +1036,12 @@ hold a single video — k-anonymity with k=1. Bucket occupancy is tested across
 4,096 buckets.
 
 **The cover traffic is the contribution.** Blocks fetched to hide the target are
-exactly the blocks that make a node a useful mirror. Level 2's privacy mechanism
+exactly the blocks that make a node worth asking. Level 2's privacy mechanism
 and its donation are the same act, and the disk budget is the anonymity
-parameter.
+parameter. The same identity holds in the other direction (WO-084): a node's own
+neighbourhoods are served as ordinary members of the buckets it already answers,
+so contributing them costs no separate request and creates no separate
+observable event.
 
 ### Ephemeral identity
 
@@ -1075,14 +1089,14 @@ signal, and staleness changes ordering slightly and nothing else.
 ### Current level contract
 
 Implementation gaps against this contract are listed in
-`ARCHITECTURE_CURRENT.md` §8 and assigned in WO-077/078.
+`ARCHITECTURE_CURRENT.md` §8 and assigned in WO-077/078/084/085.
 
 | Level | Asks the network | Serves | Publishes its own observations | Live feed |
 |---|---|---|---|---|
-| 1 Personal | Seed, prefix buckets, word telemetry | Live snapshot + whole word HLL/CMS pack; no graph/catalogue/search blocks | Live notice + aggregate word HLL/CMS only | Full participant |
-| 2 Mirror | Prefix buckets | Mirrored rows only | Live notice + word HLL/CMS; no edges | Full participant |
-| 3 Cohort | Prefix buckets | Mirrored rows only | Word telemetry + STAR aggregate (not built) | Full participant |
-| 4 Transparency | Prefix buckets | Own edges too | Word telemetry + attributed edges (not built) | Full participant |
+| 1 Personal | Seed and prefix buckets for suggestions/pre-walk, word telemetry; no user-triggered distributed search | Live snapshot + whole word HLL/CMS pack; no graph/catalogue/search blocks | Live notice + aggregate word HLL/CMS only | Full participant |
+| 2 Broad sharing | Level-1 requests plus user-triggered distributed peer search | Complete local-plus-cached broad graph/catalogue/search buckets | Aggregated stringless local graph blocks + live notice + word HLL/CMS; no ordered trail | Full participant |
+| 3 Cohort | Prefix buckets | Same broad buckets as Level 2 | Level-2 products + STAR aggregate (not built) | Full participant |
+| 4 Transparency | Prefix buckets | Same broad buckets as Level 2 | Word telemetry + deliberately attributed funnel publication (not built) | Full participant |
 
 The live feed is outside contribution gating. It avoids per-item query leakage
 because every node requests the whole index (§7.3a), and reports carry no stable
@@ -1104,11 +1118,33 @@ disclosure, not zero disclosure. Level 1 does not serve graph, catalogue or
 search blocks, including data it fetched and cached, and it makes no provider
 announcement.
 
-**At Level 2, block service includes only what the node holds for other people;
-Level 1 serves no blocks.** Serving blocks built from its own `impressions` would publish a funnel; serving catalogue
-derived from them discloses viewing at *video* granularity, since a requester
-sees exactly which bucket members the node holds. Both are enforced by which
-query runs, not by a caller remembering, and both are tested.
+**At Level 2, broad block service includes locally produced and cached graph
+blocks; Level 1 serves no blocks.** The contribution unit is the complete hashed
+prefix bucket, never one selected video. Locally produced blocks are aggregated
+and stringless and are co-served with every eligible bucket member; the
+supporting public catalogue and search index use their own complete broad
+buckets/shards. This is disclosure of a broad derived graph, not a claim that
+nothing local leaves, and not publication of page-load rows or an ordered watch
+trail. Level 3 adds STAR-protected cohort measurement rather than enabling the
+first local block. WO-084 replaced the mirror-only implementation left by
+WO-077. Level-2 claims use an unlinkable identity per neighbourhood, not the
+install-wide signing key; a holder preserves and deduplicates the original claim
+instead of re-signing it into a new source. Stable cross-block attribution is a
+Level-4 property.
+
+*Implementation (WO-084).* Block schema 3 on `/keel/block/3.0.0`. A block is one
+publisher's signed statement about one neighbourhood at one revision, signed by
+a key derived from (per-install claim secret, graph key) — so two of a node's
+own claims are two unrelated ed25519 keys, and neither is the install signing
+key or the libp2p identity. Holders store the verified bytes and re-serve them
+unchanged; `(claim identity, graph key)` is the replacement key and revision
+breaks ties, so an A→B→C→A relay cycle is a no-op rather than an amplifier, and
+a node recognises and drops its own claim coming back around. A bucket reply is
+an envelope carrying its true held count and a truncation flag, because a capped
+reply is otherwise indistinguishable from a small anonymity set; a cap below the
+documented floor fails closed instead. Graph, catalogue, shard and yield sets
+are all derived from one source selector per policy, so a provider record can
+never name material the corresponding stream refuses to return.
 
 ### Consequences to keep in mind
 
@@ -1485,6 +1521,49 @@ not a substitute for payload compatibility. Missing required capabilities or a
 non-overlapping API range fails the session closed; optional UI appears only for
 mutually negotiated capabilities. The exact contract is
 `ARCHITECTURE_CURRENT.md` §6 and WO-081.
+
+#### Release and update UX (WO-081)
+
+The two halves ship through different channels and cannot be released
+atomically. The browser store updates the extension silently, on its own
+schedule, with no practical way for a user to hold a version back. The desktop
+host is installed and updated by hand. So the *normal* mismatch is a new
+extension against an older desktop app, and it will happen to real users
+routinely rather than exceptionally. It has to be an ordinary state with a clear
+exit, not an error.
+
+What that costs each side:
+
+- **Never require lockstep for the local recorder.** `core` covers impression
+  ingestion, stats, export and wipe. A capability added for a network or UI
+  feature must be optional, so an out-of-date desktop app degrades to a working
+  personal recorder rather than to nothing. This is the same reasoning as the
+  contribution ladder: the product must not be held hostage to the part the user
+  did not choose.
+- **Additive payload fields do not bump anything.** Both sides ignore unknown
+  fields. A new *meaning* — a field the other side must understand to be
+  correct — is a capability revision. Bumping the envelope for either would make
+  `v` a build counter and force the lockstep just ruled out.
+- **A capability is never silently downgraded.** If `contribution_runtime` is
+  absent, the contribution controls are disabled with a reason; they do not fall
+  back to writing a stored level the daemon will not enforce. Showing a control
+  that changes nothing is worse than showing none.
+- **Optional controls are disabled, not hidden.** A vanished control reads as
+  "removed"; a greyed-out one with "requires a newer desktop app" reads as
+  "update", which is the action available.
+
+Recovery is automatic and needs no polling of a version endpoint or any remote
+configuration. An incompatible `HELLO_ACK` leaves the bridge un-ready and
+schedules the same reconnect backoff an absent daemon uses, so the handshake is
+re-attempted on the ordinary cadence and succeeds on its own once the user
+installs a matching host. The alternative — waiting for the port to drop — is
+unreliable, because installing a new binary does not necessarily stop the
+already-running one.
+
+There is deliberately no auto-update path for the desktop host, and no remote
+kill switch. Both would be a channel through which someone who compromised the
+project could change what runs on a user's machine, which §7.3's signing posture
+exists to prevent.
 
 ---
 

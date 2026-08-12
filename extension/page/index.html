@@ -55,6 +55,15 @@
           Also search the network — asks peers for matches without telling
           any single one of them your search (WO-059)
         </label>
+        <!-- WO-085: shown, never hidden, when the control is unavailable. A
+             disabled control with the reason beside it is the actionable
+             message; a vanished one reads as a removed feature. -->
+        <p class="meta" id="search-network-note" hidden>
+          <span id="search-network-reason"></span>
+          <button type="button" class="btn-link" id="search-network-route" hidden>
+            Change contribution level
+          </button>
+        </p>
         <div id="peer-progress" class="peer-progress" hidden aria-hidden="true"></div>
         <p class="meta peer-progress-caption" id="peer-progress-caption" hidden>
           Filling in as peers answer — each colored segment is one part of
@@ -113,9 +122,10 @@
           an older entry may open the recording instead.
         </p>
         <p class="note">
-          Reports carry no sender, so passing one on tells nobody what you
-          watched — your computer is indistinguishable from any other relaying
-          it. This works the same at every setting, including the default.
+          Reports carry no application-level sender, so the payload does not
+          identify who saw or relayed a stream. A directly connected peer can
+          still infer an origin from network topology and timing. This works
+          the same at every setting, including the default.
         </p>
         <p class="note">
           Most livestreams have almost no audience, which is exactly why they are
@@ -160,34 +170,31 @@
         <h2>What leaves this device</h2>
         <p class="meta" id="aggregate-note"></p>
         <p class="meta">
-          <strong>Your recordings stay here.</strong> The rows Keel keeps — what
-          you were shown, when, and in what position — are never sent anywhere,
-          at any setting.
+          <strong>Your raw recording stays here.</strong> At every currently
+          available setting, the rows Keel keeps — what you were shown, when,
+          and in what position — are never sent as rows or an ordered trail.
         </p>
         <p class="meta">
-          One thing does leave, at every setting including the default: when
-          Keel sees a livestream, it announces to other Keel users that the
-          stream exists. That notice is a video id and title with
-          <strong>no sender attached</strong> — it says a stream is on, not who
-          saw it. It is what makes the Live tab work for everyone.
+          Three network disclosures exist at every setting, including the
+          default. Keel requests broad shared buckets, announces livestreams it
+          sees, and exchanges a whole fixed-shape word-popularity aggregate
+          that includes its local corpus. The live payload has
+          <strong>no application-level sender</strong>, and the word pack has no
+          plaintext words, video ids, edges or query. Direct peers still see
+          ordinary connection metadata; see the Privacy policy for the full
+          residual risk.
         </p>
         <p class="meta">
-          Above the default, Keel also stores and passes on data
-          <em>other people</em> published, and asks the network for
-          recommendations in buckets of thousands of videos at once — never one
-          video at a time — so a peer answering you cannot tell which one you
-          wanted. Nothing you recorded is included. At v0.1.0 there is no
-          published graph to fetch yet, so your suggestions stay within your own
-          history until a bundle is imported or the network grows one on its
-          own — no seed is planned; every search caches graph edges as a side
-          effect, so suggestions widen gradually from ordinary use across the
-          network. Search itself needs no seed at all: the "search the
-          network" option on the search page reaches peers on demand, using
-          the same bucket privacy shape — the first search for a term is what
-          populates it. Publishing your own counts needs threshold
-          encryption — your report stays sealed unless enough others report the
-          same thing — and that is not built, so those settings send nothing of
-          yours today.
+          At Broad sharing, Keel also answers requests with complete buckets of
+          thousands of videos. Each bucket contains both claims cached from
+          peers and aggregated, stringless recommendation claims derived from
+          what you were shown; the response does not label which is which. A
+          local claim contains counts grouped by rough position and day, not a
+          raw timestamp, title, query, page-load row or ordered watch trail.
+          Each neighbourhood uses an unlinkable claim identity, while the peer
+          receiving it still sees your address, timing and the whole bucket.
+          Level 3's STAR-protected cohort measurements and Level 4's attributed
+          publication are not built and cannot be selected.
         </p>
 
         <h2>Network</h2>

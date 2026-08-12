@@ -1,15 +1,18 @@
 # Roadmap
 
-Updated 2026-08-11.
+Updated 2026-08-12.
 
 ## Current stabilization queue
 
-The normative architecture is `ARCHITECTURE_CURRENT.md`. Before more product
-features or external swarm testing, close the architecture-review queue in this
-order: WO-077/078 (Level-1 network boundary), WO-081 (bridge compatibility),
-WO-080 (tab-scoped proof), WO-083 (extension module split), then WO-082 (final
-document audit). WO-079's single daemon owner/proxy foundation is implemented;
-WO-077 supplies its runtime-policy/status integration, and Windows live QA remains.
+The normative architecture is `ARCHITECTURE_CURRENT.md`. WO-077–081, WO-084 and
+WO-085 are implemented; WO-080 still needs multi-tab live QA, WO-079 still needs
+Windows live QA, WO-084 still needs its two-machine inspection, and WO-085's
+serving limits still want a two-machine load check against a real uplink. The
+remaining implementation order is WO-088 (keep unavailable capability controls
+visible and disabled), then WO-083 (extension module split), then completion of
+WO-082's final audit.
+The 2026-08-12 WO-082 pass reconciled the already-shipped architecture but did
+not pretend the remaining code orders had landed.
 
 These are corrections to privacy, process ownership and release boundaries.
 They take precedence over the older “Near queue” preserved below as phase
@@ -173,10 +176,11 @@ Each needs a design document before any work order:
 - **Prio, alongside STAR** — decided 2026-08-03. STAR ships first; Prio follows in the same stage
   because STAR is blind below K and the findings that matter — rare, harmful pathways — live in the
   tail. Needs a second non-colluding aggregator (see partner requirements).
-- **Contribution levels** — 1 (full consumer; live + word aggregate outbound,
-  no block service), 2 (mirror cached public blocks), 3 (threshold aggregate),
-  4 (attributed transparency). Level 1 must keep the full product or the privacy
-  promise becomes a toll booth. See `ARCHITECTURE_CURRENT.md` §3.
+- **Contribution levels** — 1 (personal product; live + word aggregate outbound,
+  no block service or user-triggered distributed search), 2 (public broad
+  local-plus-cached graph buckets and reciprocal distributed search), 3 (STAR
+  cohort measurements and funnel comparison), 4 (attributed transparency).
+  See `ARCHITECTURE_CURRENT.md` §3.
 - **Semantic graphing and the entropy slider** — how peer paths become a ranking, and what 0% versus
   100% actually computes.
 - **Suppression detection** — the statistical claim being made, and what sample size supports it.
@@ -194,9 +198,9 @@ as product stages.
 |---|---|---|
 | P0 — WATCH_NEXT collection | 1 | Closed 2026-08-03 (WO-011) |
 | P1 — HOME, export/wipe | 1 | Done. SEARCH cut (WO-010 §5) |
-| P2 — installer, utility plane | 2 and 4 | Not started |
+| P2 — installer, utility plane | 2 and 4 | **Started** — local utility and installer exist; packaging/signing remain |
 | P3 — preservation, fingerprints, tombstones | 5 | Not started |
-| P4+ — contribution, crypto, index | 5–7 | Not started |
+| P4+ — contribution, crypto, index | 5–7 | **Started** — Level-2 broad swarm and Live index built; STAR/Prio and audit layers not started |
 
 Closed so far: WO-001 … WO-013.
 

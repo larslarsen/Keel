@@ -28,25 +28,27 @@ gives you both.
 
 ## Where your data goes
 
-Nowhere, by default. The recording lives in a SQLite file on your machine, there
-is no account, and there is no server to send it to — none exists.
+The raw recording lives in a SQLite file on your machine. There is no account
+and no Keel-operated server. At the default Level 1, Keel does not serve graph,
+catalogue or search blocks and does not publish recommendation edges.
 
-Above the default you can lend disk space to fetch and re-serve the recommendation
-graph *other* people have published. That is what will let your suggestions walk
-past your own history — but at v0.1.0 there is no published seed, so it starts
-within your own history until a bundle is imported or the network grows one on
-its own: every search fetches and caches graph edges as a side effect, so a
-node's suggestions widen gradually from ordinary use, network-wide, with nobody
-publishing anything (WO-058/WO-059). Search itself needs no seed at all — turning
-on "search the network" reaches peers on demand, and the first search for a term
-populates it for whoever searches it next, so coverage grows from use rather than
-from a published dataset. At every level that ships, nothing you
-recorded leaves your machine; publishing your own observations would need
-threshold encryption (Levels 3–4), which is not built yet.
+Level 1 is not network-silent. It requests broad shared buckets for suggestions
+and graph pre-walk, announces livestreams it sees, and exchanges a fixed-shape
+word-popularity aggregate that includes its local corpus. The live payload has
+no application-level sender and the word pack has no plaintext words, ids,
+edges or query, but directly connected peers still see ordinary network
+metadata. The full residual disclosure is in [PRIVACY.md](PRIVACY.md).
 
-The one exception, at every setting: when Keel sees a livestream it tells other
-Keel users the stream exists. That notice carries no sender — not your address,
-not an identifier for your copy of Keel. It says a stream is on, not who saw it.
+At Level 2, your computer also serves complete broad buckets containing both
+cached peer claims and aggregated, stringless recommendation claims derived
+from what you were shown. Those are counts grouped by rough position and day,
+not raw impressions or an ordered watch trail. Each neighbourhood has an
+unlinkable claim identity, and the response never labels which members came
+from this machine versus its cache. This is still a real disclosure: a peer
+sees the complete bucket and the network connection that delivered it.
+
+Levels 3 and 4 are not built. Level 3 will add STAR-protected cohort
+measurements; Level 4 will be deliberately public and attributed.
 
 Full detail in [PRIVACY.md](PRIVACY.md).
 
@@ -198,11 +200,14 @@ neighbourhood — it asks for every neighbourhood whose key falls in a prefix
 bucket (thousands of videos at once, hashed so the buckets are evenly
 populated) and takes the whole bucket. There is no "real request hidden among
 decoys" to statistically separate, because the node genuinely takes everything
-in the bucket. The blocks fetched for cover are exactly the blocks that would
-make the node a useful mirror for others, so Level 2's privacy mechanism and its
-contribution are the *same act*, and the disk budget you set is the anonymity
-parameter. Combined with a fresh network identity per session, a peer answering
-you learns almost nothing about what you watched.
+in the bucket. The blocks fetched for cover are exactly the blocks that make the
+node worth asking, so Level 2's privacy mechanism and its contribution are the
+*same act*, and the disk budget you set is the anonymity parameter. The same
+shape holds on the answering side: a Level-2 node's own neighbourhoods go out as
+ordinary members of buckets it already serves, each signed under a separate
+one-off key so its contributions cannot be grouped back together. Combined with
+a fresh network identity per session, a peer answering you — or being answered
+by you — learns almost nothing about what you watched.
 
 **What is already known, and what is not**
 

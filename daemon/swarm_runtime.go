@@ -99,9 +99,8 @@ func announceLoop(ctx context.Context, n *swarm.Node) {
 // announceLive publishes any livestream in a batch of observations.
 //
 // The extractor already tags live cards with a LIVE badge, so detection costs
-// nothing. Publishing is gated inside PublishLive on contribution level: a
-// Level 1 node announces nothing, because a record discloses that its publisher
-// saw the stream.
+// nothing. Live notices are one of Level 1's explicit narrow outbound products
+// (WO-078); they carry no watched-video context, slot, query or stable author.
 func announceLive(imps []bridge.Impression) {
 	n := currentSwarmNode()
 	if n == nil || n.Live() == nil {

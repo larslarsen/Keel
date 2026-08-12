@@ -279,12 +279,24 @@ func (n *Node) seedLiveFromLocal() {
 // handleLiveSnapshot returns every record this node holds.
 func (n *Node) handleLiveSnapshot(s network.Stream) {
 	defer s.Close()
+	// Ungated by policy — the whole live index is served at every level — but
+	// not unlimited (WO-085). The snapshot is the largest single reply this
+	// node produces on demand, so it needs the byte budget most.
+	release, ok := n.serve.admit(s.Conn().RemotePeer())
+	if !ok {
+		return
+	}
+	defer release()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 	if n.live == nil {
 		return
 	}
 	raw, err := json.Marshal(n.live.Snapshot())
 	if err != nil {
+		return
+	}
+	if !n.serve.chargeBytes(len(raw)) {
+		n.logf("live snapshot: over the serving byte budget, dropping the reply")
 		return
 	}
 	_, _ = s.Write(raw)

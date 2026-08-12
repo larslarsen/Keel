@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Architect / Sr Dev |
-| **Status** | **Owner/proxy implemented 2026-08-11 — WO-077 runtime-policy integration and Windows live QA pending** |
+| **Status** | **Implemented 2026-08-11 — automated Linux tests + Windows cross-build pass; Windows live QA pending** |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 
@@ -87,9 +87,7 @@ authority.
 
 - [x] Two supported browsers using the same user data directory result in one
       effective SQLite/swarm owner.
-- [ ] Contribution-policy changes apply once and are broadcast to every client.
-      **Blocked on WO-077:** that order owns the runtime state machine and its
-      status event; WO-079 supplies its single shared owner/session boundary.
+- [x] Contribution-policy changes apply once and are broadcast to every client.
 - [x] Owner crash/restart and Unix stale-owner recovery are tested.
 - [x] Ten simultaneous contenders elect exactly one owner; ten concurrent sessions complete a
       correlated request and no response crosses sessions.
@@ -126,6 +124,8 @@ it receives no separate ownership path.
   correlation isolation, shared Store visibility, client-EOF survival and
   authenticated shutdown. The full `go test -race ./...` suite passes; Windows
   `go test -c` cross-compiles.
-- The owner is the required landing point for WO-077's node-replacement
-  supervisor and cross-session contribution-status broadcast. Those policy
-  semantics are deliberately not duplicated in this transport order.
+- WO-077's node-replacement supervisor now runs inside the owner. After a
+  terminal contribution transition, the owner emits one `CONTRIBUTION_STATUS`
+  event with an owner-event id to every authenticated session; the correlated
+  requester result remains separate. A two-session integration test proves the
+  new effective policy reaches both browsers without crossing request ids.

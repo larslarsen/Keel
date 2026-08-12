@@ -66,7 +66,7 @@ func TestLocalPrefixesDoNotNameVideos(t *testing.T) {
 	seedEdge(t, st, "watchedvid1", "targetaaaa1", 0)
 	seedEdge(t, st, "watchedvid2", "targetbbbb1", 0)
 
-	prefixes, err := st.LocalPrefixes(DefaultPrefixBits, false)
+	prefixes, err := st.LocalPrefixes(DefaultPrefixBits, AllSources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,12 +103,16 @@ func TestBlocksInPrefixReturnsTheWholeBucket(t *testing.T) {
 			expect++
 		}
 	}
-	got, err := st.BlocksInPrefix(target, "GB-en", false, 256)
+	got, err := st.BlocksInPrefix(target, "GB-en", AllSources, 256)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != expect {
-		t.Errorf("bucket returned %d blocks, want %d", len(got), expect)
+	if len(got.Blocks) != expect {
+		t.Errorf("bucket returned %d blocks, want %d", len(got.Blocks), expect)
+	}
+	if got.Held != expect || got.Truncated {
+		t.Errorf("bucket reported held=%d truncated=%v, want held=%d and no truncation",
+			got.Held, got.Truncated, expect)
 	}
 	if expect < 2 {
 		t.Skip("fixture did not produce a shared bucket; nothing to assert about cover")

@@ -1,7 +1,7 @@
 # Keel — current normative architecture
 
 **Status:** Authoritative for current engineering decisions.
-**Date:** 2026-08-11.
+**Date:** 2026-08-12.
 **Rationale/history:** `DESIGN_v2.md`.
 **Implementation queue:** `handoff/README.md`.
 
@@ -70,19 +70,23 @@ consent are separate.
 
 | Level | Peer network | Own observations sent | What the user receives |
 |---|---|---|---|
-| **1 — Strictly Personal** (default) | Full consumer: peer discovery, seed receipt, whole-bucket graph/catalogue/search-shard fetch and graph pre-walk. Also receives, relays and originates live gossip/snapshots, and exchanges the whole fixed-shape word-level HLL/CMS telemetry pack. It does not serve blocks, announce itself as their provider, or join three-gram yield/token-sketch topics. | Livestream notices plus aggregate word HLL/CMS telemetry. No raw words, recommendation edges, watch trail or stable application author. | The full product: peer search/suggestions, graph pre-walk, global word statistics and the shared live index. |
-| **2 — Mirror** | Level 1 plus serving cached public blocks, provider announcements, and publication of three-gram availability/sketch telemetry for the blocks it serves. | Same live notices and word aggregates as Level 1. No recommendation edges or watch trail. | A warm shared cache; the contributed storage and bandwidth are also its local latency benefit. |
-| **3 — Cohort** | Level 2 plus threshold-protected aggregate publication. | STAR-protected aggregate edge measurements; never raw trails. | Cohort comparison when built. |
+| **1 — Strictly Personal** (default) | Consumer: peer discovery, seed receipt, whole-bucket graph/catalogue/search-shard fetch needed by shared suggestions and graph pre-walk. Also receives, relays and originates live gossip/snapshots, and exchanges the whole fixed-shape word-level HLL/CMS telemetry pack. It does not initiate user-triggered distributed peer search, serve blocks, announce itself as their provider, or join three-gram yield/token-sketch topics. | Livestream notices plus aggregate word HLL/CMS telemetry. No raw words, recommendation edges, watch trail or stable application author. | Local search, the funnel inspector, shared suggestions/graph pre-walk, global word statistics and the shared live index. |
+| **2 — Broad sharing** | Level 1 plus user-triggered distributed peer search, and serving broad hashed-prefix buckets containing both locally produced graph blocks and cached blocks, provider announcements, and three-gram availability/sketch telemetry for everything it serves. Supporting catalogue/search data is also served only as complete broad buckets/shards. | Aggregated, stringless recommendation blocks derived from local observations, mixed into complete broad buckets; live notices and word aggregates. No page-load ids, raw timestamps, selected-video response or ordered watch trail. | Search across other people's recommendation records, a self-growing shared graph and warm cache; contributed storage/data also improve local latency and network reach. |
+| **3 — Cohort** | Level 2 plus threshold-protected aggregate publication. | The Level-2 broad blocks plus STAR-protected cohort measurements; never a raw ordered trail. | STAR-derived cohort/funnel comparison when built. |
 | **4 — Transparency** | Level 3 plus attributed publication. | Explicitly public, attributed funnel records. | No gated reward. |
 
 Levels 3 and 4 remain unimplemented. The UI must not allow selecting a level
 whose pipeline does not exist.
 
-Level 1 is deliberately a full consumer. Privacy is not a toll booth: receiving
-the common seed, fetching whole prefix buckets and pre-walking the graph are
-available without contributing the user's corpus or volunteering the local
-cache. Those requests expose peer participation and coarse bucket interests as
-described in the privacy policy; Level 1 is “personal,” not “offline.”
+Level 1 keeps the complete personal recommendation path. Receiving the common
+seed, fetching whole prefix buckets for shared suggestions and pre-walking the
+graph remain available without contributing the user's corpus or volunteering
+the local cache. User-triggered search across other people's recommendations is
+different: it creates arbitrary repeatable work for serving peers and is
+therefore reciprocal at Level 2+. This is a capacity boundary, not a fee on
+privacy. Level 1 retains local search and is “personal,” not “offline.” Bucket
+requests still expose peer participation and coarse interests as described in
+the privacy policy.
 
 Level 1 has two narrow outbound data products: live notices, and the global
 word-level telemetry pack. The latter is the WO-068 HLL/CMS fixed-shape pack,
@@ -100,6 +104,26 @@ may use connection topology and timing to infer an origin probabilistically.
 Consent and privacy copy must state both Level-1 outbound products rather than
 describe Level 1 as network-silent.
 
+Level 2 is where locally observed graph data enters the shared graph. The
+privacy unit is the complete broad bucket, not one selected neighbourhood: a
+node advertises a hashed prefix and answers it with every eligible local and
+cached block in that prefix. Locally derived blocks are stringless aggregates,
+not raw impression rows or an ordered watch trail. This is Lars's broadness
+construction: contribution and cover are the same object. It must not be
+implemented as a per-video lookup with decoys, and no response may label which
+bucket members came from the serving user's observations versus its cache.
+
+This does not make Level 2 zero-disclosure. A recipient sees the complete set
+returned by the peer, and connection/signing metadata can link deliveries. The
+privacy and consent copy must say that broad aggregated recommendation blocks
+leave the device. Level 3 is distinguished by STAR-protected cohort measurement,
+not by being the first level that contributes any locally derived edge.
+Ordinary Level-2 blocks must not use one install-wide author key across
+neighbourhoods: each neighbourhood has an unlinkable claim identity, preserved
+unchanged through mirrors for replacement/deduplication. A mirror never turns a
+relayed claim into a new observation by re-signing it. Deliberately stable,
+cross-block attribution belongs only to Level 4.
+
 The shared live index remains whole-feed gossip with local search, no popularity
 ranking, bounded memory and expiry. Its query privacy comes from holding the
 whole index, not from a claim that publication has no metadata. Subscription and
@@ -114,17 +138,21 @@ from one generic “swarm enabled” boolean:
 | Peer discovery/connection | On | On |
 | Live topic + live-snapshot stream | Receive, relay, originate, serve whole snapshot | Same |
 | Seed receipt + graph/catalogue/search-shard fetch/pre-walk | On | On |
-| Three-gram yield + token-sketch topics | Off | Receive/relay/originate for served mirrored blocks |
+| User-triggered distributed peer search | Off; local search remains on | On |
+| Three-gram yield + token-sketch topics | Off | Receive/relay/originate for the full served corpus |
 | Whole word HLL/CMS telemetry stream | Fetch and serve the fixed-shape aggregate, including local corpus | Same |
-| Mirrored block serve + provider announcements | Off | On |
-| Own edge publication | Off | Level 3+ only |
+| Broad graph/catalogue/search serve + provider announcements | Off | On; includes locally derived and cached members of each complete bucket/shard |
+| STAR-protected cohort measurement | Off | Level 3+ only |
+| Attributed funnel publication | Off | Level 4 only |
 
 “Sketch” is not one policy category:
 
 - `YieldTopic` and the gossiped three-gram `SketchTopic` exist to locate and
   size searchable blocks. Level 1 does not join them because it serves no
   blocks. Its fetcher treats missing yield/count data as unknown and still
-  searches; Level 2 joins and originates them for the blocks it serves.
+  performs permitted fetch/pre-walk work; WO-085 separately gates
+  user-triggered distributed `PEER_SEARCH`. Level 2 joins and originates them
+  for its full local-plus-cached served corpus.
 - `WordTelemetryProtocol` is the separate WO-068 display aggregate. Level 1
   fetches and answers the whole HLL/CMS pack, including local-corpus input.
 - The diagnostic HLL over recommendation edge keys used to measure cross-user
@@ -175,9 +203,13 @@ The current node construction binds stream handlers and pubsub topics at start,
 so the selected implementation is a supervisor-controlled node replacement, not
 mutation of a live node:
 
-1. Build an explicit policy with separate `live`, `fetch`, `serve_mirrors`,
-   `announce_providers`, `join_search_telemetry`,
-   `exchange_word_telemetry` and `publish_own` capabilities.
+1. Build an explicit policy with separate `live`, `fetch`,
+   `serve_broad_buckets`, `include_local_graph`, `include_local_catalogue`,
+   `announce_providers`, `join_search_telemetry`, `exchange_word_telemetry`,
+   `publish_cohort_measurements` and `publish_attributed_funnel` capabilities.
+   The graph and catalogue corpora are selected by a source set (local,
+   imported, or both) derived from those capabilities, never by a boolean that
+   can only choose one of the two.
 2. For 2→1, close the old node's outbound permission gate, durably set stored
    and startup levels to 1, then stop/detach it and start the consumer-only node.
    If consumer-node startup fails, remain network-stopped and report failure;
@@ -250,7 +282,7 @@ envelope, not every RPC payload revision. Compatibility is negotiated inside
   "api": { "min": 1, "max": 1 },
   "required": { "core": 1 },
   "optional": { "selectors": 1, "tiktok": 1, "scroll_history": 1,
-                "peer_search": 1, "word_stats": 1, "queue": 1,
+                "peer_search": 2, "word_stats": 1, "queue": 1,
                 "contribution_runtime": 1 }
 }
 ```
@@ -263,22 +295,34 @@ highest mutually supported revision; absence means unavailable.
 `core:1` covers impression ingestion, stats, export/wipe and clean disconnected
 behavior. Missing required capability or non-overlapping API range fails the
 session closed: the extension renders “desktop app update required” and does not
-send application RPCs. Optional UI is hidden/disabled based on negotiated
-capabilities, not by attempting an RPC and interpreting “unknown type.”
+send application RPCs. Optional controls are disabled with an actionable reason
+based on negotiated capabilities, not hidden or probed by attempting an RPC and
+interpreting “unknown type.”
 
 Privacy/security behavior never silently downgrades. In particular, Level 2
 controls require `contribution_runtime:1`; an older daemon may continue the
 local core but the extension must not claim it can change effective networking.
+`peer_search:2` carries WO-085's reciprocal contract on the same principle in
+the other direction: a negotiated `1` means the peer daemon has no level rule,
+so the extension leaves the control enabled rather than imposing a restriction
+the daemon does not enforce. Enforcement itself never depends on the negotiated
+revision — the daemon refuses at Level 1 whatever the client claims to speak.
 Application semantic versions are diagnostic/update information, not the
 compatibility algorithm.
 
 The native proxy and daemon-owner IPC has its own required `owner_ipc:1`
 handshake so a replaced proxy cannot feed incompatible frames to an old owner.
+The owner is also the authority for global runtime status: after a contribution
+transition it sends `CONTRIBUTION_STATUS` with an owner-event id to every
+authenticated proxy session. Request correlation remains scoped to the session
+that initiated the change.
 
 ## 7. Extension module boundaries
 
-Plain ES modules only. The service worker is the composition root and owns no
-feature logic beyond wiring browser events to modules.
+Plain ES modules only. The target is for the service worker to be the
+composition root and own no feature logic beyond wiring browser events to
+modules. WO-080 has extracted the pure tab-proof store; the rest of this table
+is the unimplemented WO-083 boundary.
 
 Target boundaries:
 
@@ -299,28 +343,50 @@ moved into a new file.
 
 ## 8. Implementation status and order
 
-The decisions above are normative but not yet all implemented. The existing
-build now uses one authenticated per-user daemon owner with browser native-host
-proxies (WO-079). It correctly starts live gossip at Level 1, but sets
-`Fetch=false` and does not answer word telemetry there, so it is not yet the
-full consumer specified above. It also joins the three-gram yield/token-sketch
-topics at Level 1, starts the token-sketch publisher without a Level-2 gate,
-applies contribution changes only after process restart, performs no
-extension/daemon capability negotiation beyond required `owner_ipc:1`, and
-holds one global page proof. Those differences are known violations, not an
-alternative supported behavior.
+The decisions above are normative but not yet all implemented. WO-077/078 now
+enforce the Level-1 capability boundary: fetch/pre-walk, live gossip and whole
+word telemetry remain on; block service/provider announcements and three-gram
+topics remain off; contribution changes replace the running node immediately
+with crash-safe stored/effective/startup state. WO-079 supplies the one
+authenticated per-user owner and broadcasts terminal policy status across its
+browser sessions. WO-084 replaced WO-077's mirror-only Level-2 source filter:
+Level 2 now serves the union of locally derived and imported claims in each
+broad bucket, blocks are preserved claims under per-neighbourhood identities at
+schema 3 on `/keel/block/3.0.0`, and the announced graph/catalogue/shard/yield
+sets are all computed from the corpus actually served.
+WO-080 replaced the global page proof with a bounded, in-memory tab-keyed store;
+same-platform tabs can no longer overwrite each other's panel seed. Extension/
+daemon capability negotiation (WO-081) and `owner_ipc:1` are implemented.
+WO-085 made distributed peer search reciprocal: `Policy.DistributedSearch` is a
+capability of its own, on at Level 2+ alongside broad serving and gate-aware
+like it, so a downgrade stops searches before teardown begins. `PEER_SEARCH`
+refuses at Level 1 with `contribution_required` plus a structured detail, both
+in the RPC handler and again inside `swarm.Node.PeerSearch`, so no caller
+reaches a peer. The boundary is negotiated as `peer_search:2`; a client that
+negotiates `1` is pre-WO-085 and leaves the control enabled, while the daemon
+enforces regardless of the negotiated revision. Serving limits
+(`daemon/swarm/limits.go`) bound concurrency, per-peer request rate and served
+bytes on every serve path at every level, independently of contribution.
+The remaining architecture-review implementation gaps are the service worker's
+unsplit control plane (WO-083) and one WO-081 UI defect (WO-088).
 
 Senior-development order:
 
-1. WO-077 + WO-078 — preserve Level-1 consumption and live gossip, stop every
-   Level-2+ outbound path on downgrade, and make contribution transitions
-   effective at runtime.
-2. ~~WO-079 — single daemon owner + native proxy.~~ Owner/proxy implemented;
-   WO-077 supplies runtime-policy/status integration and Windows live QA remains.
-3. WO-081 — negotiate extension/daemon compatibility (`owner_ipc:1` is done).
-4. WO-080 — make proofs tab-scoped.
-5. WO-083 — split the extension control plane after state ownership is correct.
-6. WO-082 — final consistency audit and removal of temporary “pending” notes.
+1. ~~WO-077 + WO-078 — Level-1 runtime boundary and disclosure contract.~~ Implemented.
+2. ~~WO-079 — single daemon owner + native proxy.~~ Implemented, including
+   WO-077 runtime-policy/status integration; Windows live QA remains.
+3. ~~WO-084 — Level 2 serves broad buckets containing its own graph blocks.~~
+   Implemented.
+4. ~~WO-081 — negotiate extension/daemon compatibility.~~ Implemented
+   (`owner_ipc:1` from WO-079; application HELLO/ACK + session gate).
+5. ~~WO-080 — make proofs tab-scoped.~~ Implemented; multi-tab live QA remains.
+6. ~~WO-085 — enforce reciprocal Level-2 distributed peer search.~~ Implemented,
+   including the per-node serving limits, which are independent of level.
+7. WO-088 — keep unavailable capability controls visible and disabled.
+8. WO-083 — split the extension control plane after state ownership is correct.
+9. WO-082 — complete this final consistency audit after WO-085/088/083; the
+   2026-08-12 pass reconciled implemented WO-080/081/084 state and user-facing
+   Level-2 disclosure but deliberately left the two real gaps open.
 
 Do not publish or recruit external testers from a build whose displayed
 contribution level differs from its effective graph-sharing policy.

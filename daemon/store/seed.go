@@ -92,10 +92,12 @@ LIMIT ?`, limit)
 // BuildSeedPack assembles blocks for the most popular videos this node knows
 // about, signed as a unit.
 //
-// mirrorOnly follows the contribution level exactly as block serving does: a
-// Level 2 node builds a pack out of what other people published, never out of
-// its own observations.
-func (s *Store) BuildSeedPack(limit int, cohort string, mirrorOnly bool) (*SeedPack, error) {
+// `sources` follows the contribution level exactly as block serving does
+// (Policy.GraphSources), and it is a union: a Level-2 node's pack carries its
+// own neighbourhood claims alongside the claims it holds for peers, each
+// preserved under its own identity. Seeding is publication in bulk, so it may
+// not include a source the node would not serve on demand.
+func (s *Store) BuildSeedPack(limit int, cohort string, sources SourceSet) (*SeedPack, error) {
 	keys, err := s.PopularBlockKeys(limit)
 	if err != nil {
 		return nil, err
@@ -107,16 +109,36 @@ func (s *Store) BuildSeedPack(limit int, cohort string, mirrorOnly bool) (*SeedP
 		CreatedDay:    time.Now().UTC().Format("2006-01-02"),
 		Cohort:        cohort,
 	}
-	for _, k := range keys {
-		blk, err := s.buildBlock(k, cohort, mirrorOnly)
+	if sources.Local {
+		for _, k := range keys {
+			blk, err := s.BuildBlock(k, cohort)
+			if err != nil {
+				return nil, err
+			}
+			if len(blk.Edges) == 0 {
+				continue // an empty block helps nobody and costs bytes
+			}
+			pack.Blocks = append(pack.Blocks, *blk)
+		}
+	}
+	if sources.Peers {
+		claims, err := s.PeerClaimsForKeys(keys)
 		if err != nil {
 			return nil, err
 		}
-		if len(blk.Edges) == 0 {
-			continue // an empty block helps nobody and costs bytes
+		for _, c := range claims {
+			if len(c.Edges) == 0 {
+				continue
+			}
+			pack.Blocks = append(pack.Blocks, c)
 		}
-		pack.Blocks = append(pack.Blocks, *blk)
 	}
+	sort.Slice(pack.Blocks, func(a, b int) bool {
+		if pack.Blocks[a].Key != pack.Blocks[b].Key {
+			return pack.Blocks[a].Key < pack.Blocks[b].Key
+		}
+		return pack.Blocks[a].ClaimID() < pack.Blocks[b].ClaimID()
+	})
 	if len(pack.Blocks) == 0 {
 		return nil, fmt.Errorf("no blocks to seed — this node has no edges to share")
 	}

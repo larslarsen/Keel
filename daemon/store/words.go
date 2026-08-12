@@ -315,10 +315,17 @@ func (w *WordTelemetry) addTitle(videoID, title string) {
 	}
 }
 
-// LocalWordTelemetry builds the pack from titles this node can serve.
-// mirrorOnly matches catalogue/shard Level-2 gating.
-func (s *Store) LocalWordTelemetry(mirrorOnly bool) (*WordTelemetry, error) {
-	all, err := s.heldCatalogue(mirrorOnly)
+// LocalWordTelemetry builds the pack from the titles `sources` selects.
+//
+// Unlike the catalogue/shard/yield paths, this is *not* driven by
+// Policy.CatalogueSources: every level answers it over its whole corpus
+// (store.AllSources), because the pack is a fixed-shape HLL/CMS aggregate with
+// no plaintext words, ids, edges or query, and a node that excluded itself
+// would be absent from a global statistic it is itself reading. See
+// swarm/words.go's callers, which name that decision rather than passing a
+// borrowed flag.
+func (s *Store) LocalWordTelemetry(sources SourceSet) (*WordTelemetry, error) {
+	all, err := s.heldCatalogue(sources)
 	if err != nil {
 		return nil, err
 	}

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Architecture decided — ready after WO-080 (Claude Opus)** |
+| **Status** | **Architecture decided — ready after WO-085/088 (Claude Opus); WO-080 prerequisite done** |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 

@@ -34,6 +34,7 @@ let onCreatedListener;
 let onActionClickedListener;
 let onActivatedListener;
 let onConnectListener;
+let nativeMessageListener;
 // Records "setOptions"/"open" in the order the sidePanel mock methods are
 // actually *invoked* (not awaited) — the only way to catch, at the unit
 // level, whether something is awaited ahead of sidePanel.open() in the
@@ -57,6 +58,7 @@ function installBrowserStub() {
   onActionClickedListener = null;
   onActivatedListener = null;
   onConnectListener = null;
+  nativeMessageListener = null;
   sidePanelCallOrder = [];
 
   globalThis.browser = {
@@ -75,7 +77,7 @@ function installBrowserStub() {
       },
       getURL: (p) => p,
       connectNative: () => ({
-        onMessage: { addListener() {} },
+        onMessage: { addListener(fn) { nativeMessageListener = fn; } },
         onDisconnect: { addListener() {} },
         postMessage() {},
         disconnect() {},
@@ -187,6 +189,21 @@ function connectPanelPortStub(windowId) {
 }
 
 describe("WO-071: panel gated to watch pages, button never dead", () => {
+  it("broadcasts owner-wide contribution status to extension pages (WO-079)", () => {
+    broadcastMessages.length = 0;
+    assert.equal(typeof nativeMessageListener, "function");
+    nativeMessageListener({
+      v: 2,
+      id: "owner-event-1",
+      type: "CONTRIBUTION_STATUS",
+      payload: { stored_level: 2, effective_level: 2, transition: "idle" },
+    });
+    assert.deepEqual(broadcastMessages.at(-1), {
+      type: "CONTRIBUTION_STATUS",
+      payload: { stored_level: 2, effective_level: 2, transition: "idle" },
+    });
+  });
+
   it("disables openPanelOnActionClick so the button can be driven manually", () => {
     assert.ok(
       setPanelBehaviorCalls.some((c) => c.openPanelOnActionClick === false),
@@ -413,13 +430,18 @@ describe("WO-073: panel context comes from the ACTIVE tab, not the last page rep
     tabsGetResult = tab;
   }
 
-  it("PANEL_CONTEXT_QUERY returns the active tab's platform and focus", async () => {
+  it("PANEL_CONTEXT_QUERY returns the active tab's platform, surface, focus and proof", async () => {
     activeTab({ id: 31, windowId: 7, url: YT_WATCH, active: true });
     const ctx = await handle(
       { type: "PANEL_CONTEXT_QUERY", payload: { windowId: 7 } },
       {}
     );
-    assert.deepEqual(ctx, { windowId: 7, platform: "yt", focus: true });
+    assert.equal(ctx.window_id, 7);
+    assert.equal(ctx.tab_id, 31);
+    assert.equal(ctx.platform, "yt");
+    assert.equal(ctx.surface, "WATCH_NEXT");
+    assert.equal(ctx.focus, true);
+    assert.equal(ctx.proof, null, "no proof while nothing has reported");
   });
 
   it("PANEL_CONTEXT_QUERY reports focus:false off a watch page", async () => {
@@ -435,7 +457,7 @@ describe("WO-073: panel context comes from the ACTIVE tab, not the last page rep
   it("PANEL_CONTEXT_QUERY scopes to lastFocusedWindow when no windowId is given", async () => {
     activeTab({ id: 33, windowId: 8, url: TT_WATCH, active: true });
     const ctx = await handle({ type: "PANEL_CONTEXT_QUERY", payload: {} }, {});
-    assert.equal(ctx.windowId, 8);
+    assert.equal(ctx.window_id, 8);
     assert.equal(ctx.platform, "tt");
     assert.equal(ctx.focus, true);
   });
@@ -444,6 +466,7 @@ describe("WO-073: panel context comes from the ACTIVE tab, not the last page rep
     activeTab({ id: 34, windowId: 8, url: TT_FYP, active: true });
     const ctx = await handle({ type: "PANEL_CONTEXT_QUERY", payload: { windowId: 8 } }, {});
     assert.equal(ctx.platform, "tt");
+    assert.equal(ctx.surface, "HOME");
     assert.equal(ctx.focus, true, "the FYP is the TikTok watch page — it must be a focused surface");
   });
 
@@ -456,7 +479,13 @@ describe("WO-073: panel context comes from the ACTIVE tab, not the last page rep
     await flush();
     const ctx = broadcastMessages.find((m) => m.type === "PANEL_CONTEXT");
     assert.ok(ctx, "expected a PANEL_CONTEXT broadcast");
-    assert.deepEqual(ctx.payload, { windowId: 9, platform: "yt", focus: true });
+    assert.deepEqual(ctx.payload, {
+      windowId: 9,
+      tab_id: 41,
+      platform: "yt",
+      surface: "WATCH_NEXT",
+      focus: true,
+    });
     assert.deepEqual(setOptionsCalls.at(-1), {
       tabId: 41,
       enabled: true,
@@ -473,7 +502,13 @@ describe("WO-073: panel context comes from the ACTIVE tab, not the last page rep
     await onActivatedListener({ tabId: 42, windowId: 9 });
     await flush();
     const ctx = broadcastMessages.find((m) => m.type === "PANEL_CONTEXT");
-    assert.deepEqual(ctx.payload, { windowId: 9, platform: "yt", focus: false });
+    assert.deepEqual(ctx.payload, {
+      windowId: 9,
+      tab_id: 42,
+      platform: "yt",
+      surface: "HOME",
+      focus: false,
+    });
     assert.deepEqual(setOptionsCalls.at(-1), {
       tabId: 42,
       enabled: false,
@@ -491,7 +526,13 @@ describe("WO-073: panel context comes from the ACTIVE tab, not the last page rep
     await flush();
     const ctx = broadcastMessages.find((m) => m.type === "PANEL_CONTEXT");
     assert.ok(ctx, "expected a PANEL_CONTEXT broadcast");
-    assert.deepEqual(ctx.payload, { windowId: 9, platform: "tt", focus: true });
+    assert.deepEqual(ctx.payload, {
+      windowId: 9,
+      tab_id: 45,
+      platform: "tt",
+      surface: "HOME",
+      focus: true,
+    });
     assert.deepEqual(setOptionsCalls.at(-1), {
       tabId: 45,
       enabled: true,
@@ -549,29 +590,38 @@ describe("WO-071 defect 2: TikTok platform must survive a rail-generation reset"
 
   it("keeps platform:'tt' across the same-page rail-generation reset", async () => {
     const pageLoadId = "cccccccc-3333-4333-8333-333333333333";
+    // WO-080: proof writes are attributed to the SENDER's tab, which is what
+    // makes the per-tab isolation real — the payload carries no tab identity.
+    const sender = { tab: { id: 51, windowId: 9, url: TT_FYP } };
     await handle(
       {
         type: "PAGE_CONTEXT",
-        payload: { platform: "tt", pageLoadId, surface: "WATCH_NEXT" },
+        payload: { platform: "tt", pageLoadId, surface: "HOME" },
       },
-      {}
+      sender
     );
     // First impression batch establishes generation 1 on the same page.
     await handle(
       { type: "IMPRESSIONS", payload: { impressions: [imp(pageLoadId, "v1")], generation: 1 } },
-      {}
+      sender
     );
-    // YouTube-style rail swap: same pageLoadId, new generation -> rememberPage
-    // resets lastPage. Before the fix this silently dropped `platform`.
+    // YouTube-style rail swap: same pageLoadId, new generation -> the proof
+    // merges into the same per-tab entry. Before the fix this silently
+    // dropped `platform`.
     await handle(
       { type: "IMPRESSIONS", payload: { impressions: [imp(pageLoadId, "v2")], generation: 2 } },
-      {}
+      sender
     );
-    const status = await handle({ type: "GET_STATUS" }, {});
+    // GET_STATUS resolves the proof of window 9's ACTIVE tab — the reporting
+    // tab, so its proof must come back.
+    tabsQueryResult = [{ id: 51, windowId: 9, url: TT_FYP, active: true }];
+    const status = await handle({ type: "GET_STATUS", payload: { windowId: 9 } }, {});
     assert.equal(
-      status.lastPage.platform,
+      status.proof.platform,
       "tt",
       "platform must survive the rail-generation reset, not silently fall back to yt"
     );
+    assert.equal(status.proof.tabId, 51, "the proof must be attributed to the reporting tab");
+    assert.equal(status.proof.impressions.length, 2);
   });
 });

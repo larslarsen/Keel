@@ -21,6 +21,10 @@ all be true as written.
 
 ## Decision — 2026-08-11, Lars
 
+> **Later capability correction:** WO-085 keeps the fetch/pre-walk and
+> disclosure boundary decided here but makes user-triggered distributed peer
+> search reciprocal at Level 2+. This does not reopen the Live/word decision.
+
 **Level 1 is a full consumer with two narrow outbound data products.** A Level-1 node receives the common seed, fetches whole-prefix
 graph/catalogue/search data and pre-walks the graph so the full consumer product
 works. It does not serve cached blocks, announce itself

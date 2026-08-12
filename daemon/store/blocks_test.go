@@ -2,6 +2,8 @@
 package store
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -190,7 +192,7 @@ func TestBlockRejectsTampering(t *testing.T) {
 
 	// Edited content with the digest repaired — caught by the signature.
 	repaired := edited
-	if repaired.ContentSHA256, err = contentDigest(nil, repaired.Edges); err != nil {
+	if repaired.ContentSHA256, err = claimDigest(repaired.Key, repaired.Cohort, repaired.Edges); err != nil {
 		t.Fatal(err)
 	}
 	if raw, err = json.Marshal(&repaired); err != nil {
@@ -206,22 +208,57 @@ func TestBlockRejectsTampering(t *testing.T) {
 	smuggled := *blk
 	smuggled.Edges = append([]bridge.EdgeObservation{}, blk.Edges...)
 	smuggled.Edges[0].From = "elsewhereee"
-	if smuggled.ContentSHA256, err = contentDigest(nil, smuggled.Edges); err != nil {
-		t.Fatal(err)
-	}
-	payload, err := canonicalPayload(nil, smuggled.Edges)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if smuggled.Signature, smuggled.PublicKey, err = a.signPayload(payload); err != nil {
-		t.Fatal(err)
-	}
+	resignClaim(t, a, &smuggled)
 	if raw, err = json.Marshal(&smuggled); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := VerifyBlock(raw); err == nil {
 		t.Error("a correctly signed block smuggled an edge from another neighbourhood")
 	}
+
+	// The cohort is inside the claim payload at schema 3, unlike schema 2 where
+	// only the edges were covered. A relay could otherwise re-label whose
+	// cohort a neighbourhood belongs to without breaking a thing.
+	relabelled := *blk
+	relabelled.Cohort = "XX-zz"
+	if raw, err = json.Marshal(&relabelled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyBlock(raw); err == nil {
+		t.Error("a block's cohort was re-labelled in flight and still verified")
+	}
+
+	// So is the revision, which decides which version of a claim wins
+	// replacement at every holder.
+	promoted := *blk
+	promoted.Revision = blk.Revision + 500
+	if raw, err = json.Marshal(&promoted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyBlock(raw); err == nil {
+		t.Error("a block's revision was raised in flight and still verified")
+	}
+}
+
+// resignClaim re-signs a block with st's claim key for its own graph key, so a
+// test can produce a block that is internally consistent and still wrong.
+func resignClaim(t *testing.T, st *Store, b *Block) {
+	t.Helper()
+	var err error
+	if b.ContentSHA256, err = claimDigest(b.Key, b.Cohort, b.Edges); err != nil {
+		t.Fatal(err)
+	}
+	priv, pub, err := st.claimKey(b.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := claimPayload(b.Key, b.Cohort, b.Revision, b.Edges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))
+	b.PublicKey = pub
+	b.Algorithm = signAlgorithm
 }
 
 // TestEmptyBlockIsServable — "I have nothing here" is an answer, not an error.
@@ -240,37 +277,69 @@ func TestEmptyBlockIsServable(t *testing.T) {
 	}
 }
 
-// TestLocalBlockKeysNeverAdvertisesWatchHistory is the disclosure this call can
-// cause if it is wrong: the context videos in `impressions` are the videos this
-// user watched, so a mirroring node announcing them would be publishing a
-// viewing history to every peer on the network.
-func TestLocalBlockKeysNeverAdvertisesWatchHistory(t *testing.T) {
+// TestLocalBlockKeysFollowsItsSourceSet holds the seam WO-084 replaced.
+//
+// This used to assert the opposite — that a Level-2 node must never list a
+// video its user watched — because the flag it took could only choose one
+// corpus. A SourceSet cannot express "own instead of imported", so the property
+// worth holding now is that each selector returns exactly its own corpus and
+// the union returns both. What keeps the watched-video keys from being a
+// viewing history on the wire is LocalPrefixes hashing them into shared 12-bit
+// buckets, which TestLocalPrefixesDoNotNameVideos holds.
+func TestLocalBlockKeysFollowsItsSourceSet(t *testing.T) {
 	st := openStore(t, "a.sqlite")
 	seedEdge(t, st, "watchedvid1", "targetaaaa1", 0)
 	seedEdge(t, st, "watchedvid2", "targetbbbb1", 0)
 
-	// Mirroring (Level 2): nothing this user watched may be announced.
-	mirror, err := st.LocalBlockKeys(true)
+	origin := openStore(t, "origin.sqlite")
+	seedEdge(t, origin, "peerseedaa1", "targetcccc1", 0)
+	blk, err := origin.BuildBlock("peerseedaa1", "GB-en")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range mirror {
-		if k == "watchedvid1" || k == "watchedvid2" {
-			t.Fatalf("a mirroring node advertised a watched video: %v", mirror)
-		}
+	raw, err := blk.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ImportBlock(raw); err != nil {
+		t.Fatal(err)
 	}
 
-	// Level 3 and above, where publishing one's own edges is the opt-in.
-	own, err := st.LocalBlockKeys(false)
-	if err != nil {
-		t.Fatal(err)
+	set := func(sources SourceSet) map[string]bool {
+		t.Helper()
+		keys, err := st.LocalBlockKeys(sources)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, k := range keys {
+			out[k] = true
+		}
+		return out
 	}
-	found := map[string]bool{}
-	for _, k := range own {
-		found[k] = true
+
+	if got := set(SourceSet{}); len(got) != 0 {
+		t.Errorf("the empty source set listed %v; a Level-1 node advertises nothing", got)
 	}
-	if !found["watchedvid1"] || !found["watchedvid2"] {
-		t.Errorf("keys = %v, want both watched videos", own)
+	peers := set(PeerSources)
+	if !peers["peerseedaa1"] {
+		t.Error("the peer source set dropped an imported neighbourhood")
+	}
+	if peers["watchedvid1"] || peers["watchedvid2"] {
+		t.Errorf("the peer source set listed local material: %v", peers)
+	}
+	local := set(LocalSources)
+	if !local["watchedvid1"] || !local["watchedvid2"] {
+		t.Errorf("the local source set dropped a local neighbourhood: %v", local)
+	}
+	if local["peerseedaa1"] {
+		t.Errorf("the local source set listed imported material: %v", local)
+	}
+	all := set(AllSources)
+	for _, want := range []string{"watchedvid1", "watchedvid2", "peerseedaa1"} {
+		if !all[want] {
+			t.Errorf("the union dropped %q — this is the mirror-only bug WO-084 corrected", want)
+		}
 	}
 }
 

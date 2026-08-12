@@ -3,11 +3,19 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Done 2026-08-11** — see "What was built" at the end. |
+| **Status** | **Done for runtime transitions; Level-2 mirror-only policy superseded by WO-084** |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 
 ## Problem
+
+> **Correction, 2026-08-11:** This order correctly implemented runtime-safe
+> replacement and the Level-1 boundary, but its Level-2 `PublishOwn=false`
+> decision was wrong. Level 2 serves broad buckets containing locally produced
+> and cached graph blocks. WO-084 owns that policy/store correction; Level 3 is
+> the STAR boundary. Its instruction to keep user-triggered peer search at
+> Level 1 is also superseded by WO-085: fetch/pre-walk remain Level 1, while
+> distributed `PEER_SEARCH` becomes reciprocal at Level 2+.
 
 `SET_CONTRIBUTION` persists a new level in SQLite, but the swarm reads that
 level only once when the native host starts. A displayed Level 1 can therefore
@@ -91,9 +99,11 @@ failed/pending transition. Never auto-resume an escalation after a crash.
 - Do not make the UI instruct the user to restart as the privacy mechanism.
 - Do not leave a stale Level-2 node serving while the stored setting says Level
   1.
-- Do not disable fetch, seed receipt, graph pre-walk, peer search, whole word
+- Do not disable fetch, seed receipt, graph pre-walk, whole word
   HLL/CMS exchange or the Live network at Level 1. Fetch must treat missing
   yield/token estimates as unknown and continue without the optimization.
+- The original peer-search clause here is superseded by WO-085. Local search
+  remains Level 1; user-triggered distributed `PEER_SEARCH` is Level 2+.
 - Do not alter the meaning of Level 1; WO-078 owns that decision.
 - Do not build the deferred seed pack in this order. Preserve an ungated
   Level-1 seed-consumer seam/configuration; actual seed production and delivery
@@ -111,8 +121,9 @@ failed/pending transition. Never auto-resume an escalation after a crash.
       does not fabricate or publish a seed pack.
 - [ ] Network inspection proves a Level-1 node neither subscribes to nor relays
       `YieldTopic`/`SketchTopic`, while Level 2 does both.
-- [ ] A Level 1 → Level 2 change activates cached-block service and provider/
-      mirrored-telemetry publication, but never own-observation service.
+- ~~A Level 1 → Level 2 change activates cached-block service but never local
+  graph-block service.~~ **Superseded by WO-084:** Level 2 activates complete
+  local-plus-cached broad buckets; Level 3 remains the STAR boundary.
 - [ ] The UI reports the effective, not merely stored, level.
 - [ ] Tests inject stop, start and persistence failures in both directions and
       prove no stale Level-2 publisher survives a failed downgrade.

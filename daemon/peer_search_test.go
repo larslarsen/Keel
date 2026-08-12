@@ -65,6 +65,14 @@ func TestPeerSearchUnavailableWhenSwarmNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// WO-085: with no node there is no effective policy to read, so the
+	// entitlement falls back to the stored choice. This test is about the
+	// nil-swarm answer, so the store must be at a level that would be allowed
+	// to search — otherwise the refusal, not the unavailability, is what gets
+	// tested.
+	if _, err := st.SetContributionLevel(store.LevelBroad); err != nil {
+		t.Fatal(err)
+	}
 
 	got := callPeerSearch(t, st, "anything")
 	if got.Available {
@@ -72,6 +80,98 @@ func TestPeerSearchUnavailableWhenSwarmNil(t *testing.T) {
 	}
 	if len(got.Hits) != 0 {
 		t.Errorf("Hits = %v, want empty when unavailable", got.Hits)
+	}
+}
+
+// callPeerSearchErr drives handleRaw the same way but expects the typed
+// refusal rather than a result.
+func callPeerSearchErr(t *testing.T, st *store.Store, query string) bridge.ErrorPayload {
+	t.Helper()
+	env, err := bridge.NewEnvelope("req-1", "PEER_SEARCH", bridge.SearchPayload{Query: query, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := env.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := handleRaw(raw, &buf, st); err != nil {
+		t.Fatal(err)
+	}
+	framed, err := bridge.ReadMessage(&buf)
+	if err != nil {
+		t.Fatalf("response is not a validly framed message: %v", err)
+	}
+	got, err := bridge.ParseEnvelope(framed)
+	if err != nil {
+		t.Fatalf("response is not a valid envelope: %v", err)
+	}
+	if got.Type != "ERROR" {
+		t.Fatalf("got envelope type %q, want ERROR (payload: %s)", got.Type, got.Payload)
+	}
+	var p bridge.ErrorPayload
+	if err := json.Unmarshal(got.Payload, &p); err != nil {
+		t.Fatalf("ERROR payload did not decode: %v", err)
+	}
+	return p
+}
+
+// TestLevelOnePeerSearchIsRefusedNotEmptied is WO-085's RPC contract.
+//
+// The three answers a client can get here are different and must stay
+// distinguishable: no results, no network, and no entitlement. This asserts the
+// third — a running Level-1 node, which could reach peers, refuses with a code
+// naming the setting that would change it. An empty PEER_SEARCH_RESULT would
+// be a lie about the network, and a bare ERROR would leave the interface
+// nothing to offer the user.
+func TestLevelOnePeerSearchIsRefusedNotEmptied(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "peer-search-level1.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	n, err := swarm.Start(ctx, st, swarm.Config{
+		Policy:    swarm.PolicyForLevel(store.LevelPersonal),
+		Bootstrap: []peer.AddrInfo{}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	t.Cleanup(adoptNodeForTest(n))
+
+	got := callPeerSearchErr(t, st, "sourdough")
+	if got.Code != bridge.CodeContributionRequired {
+		t.Errorf("code = %q, want %q", got.Code, bridge.CodeContributionRequired)
+	}
+	if got.Message == "" {
+		t.Error("the refusal carried no message; an old client would show nothing")
+	}
+	// The detail is what the interface disables a control from and routes the
+	// user with, so its absence is a UI failure even when the code is right.
+	raw, err := json.Marshal(got.Detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d bridge.ContributionRequiredDetail
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatalf("detail did not decode as ContributionRequiredDetail: %v", err)
+	}
+	if d.Capability != bridge.CapDistributedSearch {
+		t.Errorf("detail capability = %q, want %q", d.Capability, bridge.CapDistributedSearch)
+	}
+	if d.RequiredLevel != store.LevelBroad {
+		t.Errorf("detail required_level = %d, want %d", d.RequiredLevel, store.LevelBroad)
+	}
+
+	// Local search over this device is explicitly untouched by the boundary.
+	if _, err := st.SearchVideos("sourdough", 10); err != nil {
+		t.Errorf("local search broke at Level 1: %v", err)
 	}
 }
 
@@ -124,8 +224,11 @@ func TestPeerSearchZeroPeersRespondsUnderClientCap(t *testing.T) {
 	}
 	defer st.Close()
 
+	// A Level-2 policy since WO-085: this test is about the transport's
+	// zero-peer fast path, so the node must be entitled to search at all —
+	// otherwise it would answer instantly for the wrong reason.
 	n, err := swarm.Start(ctx, st, swarm.Config{
-		Policy:    swarm.PolicyForLevel(store.LevelPersonal),
+		Policy:    swarm.PolicyForLevel(store.LevelBroad),
 		Bootstrap: []peer.AddrInfo{}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
 	})
 	if err != nil {
@@ -193,8 +296,10 @@ func TestPeerSearchRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clientStore.Close()
+	// Level 2, not Level 1: distributed search is reciprocal (WO-085), and a
+	// Level-1 client would be refused before the RPC reached the swarm at all.
 	client, err := swarm.Start(ctx, clientStore, swarm.Config{
-		Policy:    swarm.PolicyForLevel(store.LevelPersonal),
+		Policy:    swarm.PolicyForLevel(store.LevelBroad),
 		Bootstrap: []peer.AddrInfo{bootInfo}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
 	})
 	if err != nil {

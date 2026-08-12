@@ -149,18 +149,7 @@ type StatsPayload struct {
 	ChannelKnown int64 `json:"channel_known"`
 }
 
-// HelloPayload is HELLO body.
-type HelloPayload struct {
-	Client  string `json:"client"`
-	Version string `json:"version"`
-}
-
-// HelloAckPayload is HELLO_ACK body.
-type HelloAckPayload struct {
-	Server  string `json:"server"`
-	Version string `json:"version"`
-	OK      bool   `json:"ok"`
-}
+// HelloPayload / HelloAckPayload live in hello.go (WO-081).
 
 // ErrorPayload is ERROR body.
 type ErrorPayload struct {
@@ -173,6 +162,29 @@ type ErrorPayload struct {
 	// and which the user needs more urgently than the reason it failed.
 	Detail any `json:"detail,omitempty"`
 }
+
+// ContributionRequiredDetail is ErrorPayload.Detail for a refusal carrying
+// CodeContributionRequired (WO-085).
+//
+// Structured rather than only a sentence, because the interface has to do two
+// things with it that a string cannot support: decide which control to disable,
+// and offer the route to the setting that would enable it. The message stays
+// human-readable for clients too old to read this.
+type ContributionRequiredDetail struct {
+	// Capability names the entitlement, not the RPC — an entitlement can gate
+	// more than one RPC later, and the control the UI disables belongs to the
+	// entitlement.
+	Capability string `json:"capability"`
+	// RequiredLevel is the lowest contribution level that grants it.
+	RequiredLevel int `json:"required_level"`
+	// EffectiveLevel is the policy actually running, which after a failed or
+	// in-flight transition is not necessarily the stored choice (WO-077).
+	EffectiveLevel int `json:"effective_level"`
+}
+
+// CapDistributedSearch is ContributionRequiredDetail.Capability for
+// user-triggered distributed peer search.
+const CapDistributedSearch = "distributed_search"
 
 // CodeNetworkBusy marks an RPC declined because the swarm is mid-replacement
 // (WO-077). Distinct from a network being down: the correct client behaviour
@@ -347,9 +359,12 @@ type SearchResultPayload struct {
 type PeerSearchResultPayload struct {
 	Query string      `json:"query"`
 	Hits  []SearchHit `json:"hits"`
-	// Available is false when the swarm isn't running or fetching is off
-	// (contribution Level 1) — distinct from a true empty result, so the
-	// interface can say why rather than imply the network has nothing.
+	// Available is false when the swarm isn't running — distinct from a true
+	// empty result, so the interface can say why rather than imply the network
+	// has nothing. Not entitled to search at all is a third answer again, and
+	// arrives as an ERROR carrying CodeContributionRequired (WO-085) rather
+	// than as this flag: "you have not opted in" is a setting the user can
+	// change, where this one is a machine state they cannot.
 	Available bool `json:"available"`
 	// Progress is this search's per-token coverage against WO-067's
 	// gossiped target, one entry per distinct token the query tokenized to.

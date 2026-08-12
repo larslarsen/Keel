@@ -6,6 +6,12 @@
 > notices plus WO-068's whole word-level HLL/CMS aggregate. It serves no
 > blocks and joins no three-gram yield/token-sketch topic. See
 > `ARCHITECTURE_CURRENT.md` §3.
+>
+> WO-084 also supersedes the mirror-only Level-2 model below. Level 2 serves
+> public broad local-plus-cached buckets. WO-085 keeps Level-1 local search,
+> seed, suggestions and pre-walk but makes user-triggered distributed peer
+> search reciprocal at Level 2+. The original no-feature-gating language is
+> historical rationale, not the current network-capacity contract.
 
 | | |
 |---|---|

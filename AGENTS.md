@@ -8,8 +8,9 @@ Browser extension + local Go daemon. Gives people control over the video recomme
 
 ## Read before coding
 
-1. `handoff/WO-077-contribution-level-runtime-boundary.md` — **current work order. Start here.**
-   `handoff/README.md` indexes every order and its status.
+1. `handoff/WO-088-capability-controls-stay-visible.md` — **current implementation work order. Start here.**
+   `handoff/README.md` indexes every order and its status. WO-085 (reciprocal
+   distributed peer search + per-node serving limits) closed 2026-08-12.
 2. `ARCHITECTURE_CURRENT.md` — normative current architecture and implementation order.
 3. `ROADMAP.md` — product stages and current stabilization queue.
 4. `BUILD_P0.md` — P0 spec; §9 is the closed acceptance record.
@@ -32,9 +33,14 @@ the project, not just the code. If one seems wrong, say so and cite the section 
   receive/relay/originate authorless livestream
   notices, and exchange the whole fixed-shape word-level HLL/CMS telemetry pack.
   It must not serve cached or own blocks, announce block providers, originate
-  or join three-gram yield/token-sketch topics, or publish recommendation edges.
-  Cached-block service begins at explicit Level 2; own-edge publication begins
-  at Level 3. (`ARCHITECTURE_CURRENT.md` §3)
+  or join three-gram yield/token-sketch topics, publish recommendation edges,
+  or initiate user-triggered distributed peer search. Local search and shared
+  suggestions/pre-walk remain on. Distributed peer search is reciprocal at
+  Level 2+ because Level 2 also hosts the broad corpus that answers it.
+  Broad block service begins at explicit Level 2 and includes locally derived
+  plus cached graph blocks in complete hashed-prefix buckets; it is never a
+  selected-video response. Level 3 adds STAR cohort measurement rather than the
+  first local edge. (`ARCHITECTURE_CURRENT.md` §3, WO-084)
 - **One per-user daemon owns SQLite and libp2p.** Browser-launched native-host
   processes are local IPC proxies only; never open the corpus or start a swarm.
   (`ARCHITECTURE_CURRENT.md` §5)
@@ -45,12 +51,14 @@ the project, not just the code. If one seems wrong, say so and cite the section 
   `devDependencies` for tests only. Use `crypto.randomUUID()`, `crypto.subtle.digest()`,
   `MutationObserver`. (`BUILD_P0.md` §2)
 - **Minimum permissions.** `["sidePanel", "storage", "nativeMessaging", "alarms", "scripting"]`
-  plus `host_permissions: ["*://www.youtube.com/*"]` — matches `content_scripts` (WO-010 widened
-  from `/watch*` so homepage→video SPA navigations are observed). **No `tabs`, no optional
-  permissions, no patterns outside `youtube.com`.** `scripting` + the host permission also let the
-  SW watchdog (`keel-watchdog` in `sw.js`) re-inject `bootstrap.js` into already-open YouTube tabs
-  after a reload/update (WO-008). Do not remove them as "unused" and do not use `scripting` to run
-  in MAIN world. Off-surface pages (not `/` or `/watch`) must stay fully idle. `alarms` is load
+  plus the two named host permissions `*://www.youtube.com/*` and
+  `*://www.tiktok.com/*`, matching `content_scripts` (WO-010/057). **No `tabs`,
+  no optional permissions, no third-platform pattern and no wildcard web
+  permission.** `scripting` plus those host permissions lets the SW watchdog
+  (`keel-watchdog` in `sw.js`) re-inject `bootstrap.js` into already-open
+  supported-site tabs after a reload/update (WO-008). Do not remove it as
+  "unused" and do not use it to run in MAIN world. Pages that do not classify
+  as a supported surface must stay fully idle. `alarms` is load
   bearing twice: `keel-native-reconnect` backoff survives SW eviction (WO-004 §7), and the standing
   `keel-watchdog` keeps the SW from silent idle eviction (WO-008).
 - **Nothing named "YouTube", "YT", or any variant** in the extension name. Branding-guideline

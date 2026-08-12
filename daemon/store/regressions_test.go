@@ -202,7 +202,7 @@ func TestPropertyStringless(t *testing.T) {
 	}
 
 	// Block key for the watched video must be the video id, never the title.
-	blk, err := st.buildBlock(vid, "GB-en", false)
+	blk, err := st.BuildBlock(vid, "GB-en")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestPropertyStringless(t *testing.T) {
 	}
 
 	// Advertised prefixes must never contain the title.
-	prefixes, err := st.LocalPrefixes(DefaultPrefixBits, false)
+	prefixes, err := st.LocalPrefixes(DefaultPrefixBits, AllSources)
 	if err != nil {
 		t.Fatal(err)
 	}

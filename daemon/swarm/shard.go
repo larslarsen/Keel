@@ -50,6 +50,14 @@ func (n *Node) handleShardRequest(s network.Stream) {
 	if !n.mayServeBlocks() {
 		return
 	}
+	// The most open-ended demand a peer can place on this node, and so the
+	// one the WO-085 limiter exists for most directly: shard requests are
+	// driven by other people's arbitrary searches, not by their watching.
+	release, ok := n.serve.admit(s.Conn().RemotePeer())
+	if !ok {
+		return
+	}
+	defer release()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
 	line, err := bufio.NewReader(io.LimitReader(s, 32)).ReadString('\n')
@@ -60,13 +68,17 @@ func (n *Node) handleShardRequest(s network.Stream) {
 	if !ok {
 		return
 	}
-	pack, err := n.st.BuildShardPack(shard, n.cfg.Policy.MirrorOnly(), 0)
+	pack, err := n.st.BuildShardPack(shard, n.cfg.Policy.CatalogueSources(), 0)
 	if err != nil {
 		n.logf("shard %d: %v", shard, err)
 		return
 	}
 	raw, err := json.Marshal(pack)
 	if err != nil {
+		return
+	}
+	if !n.serve.chargeBytes(len(raw)) {
+		n.logf("shard %d: over the serving byte budget, dropping the reply", shard)
 		return
 	}
 	_, _ = s.Write(raw)
@@ -215,6 +227,14 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 	if !n.cfg.Policy.Fetch {
 		return out, nil
 	}
+	// The shard corpus exists to answer distributed search and is fetched from
+	// nowhere else, so the entitlement belongs on the primitive too (WO-085) —
+	// not only on PeerSearch, which is today's single caller. A future caller
+	// reaching for shards has to decide about the entitlement rather than
+	// inherit an exemption from where it happened to be checked.
+	if !n.MayDistributedSearch() {
+		return out, ErrDistributedSearchNotPermitted
+	}
 	shard := store.ShardOf(token)
 	c, err := shardCID(shard)
 	if err != nil {
@@ -319,7 +339,14 @@ type TokenProgress struct {
 // take minutes to conclude "nothing." A node with no peers at all has
 // nothing to fetch from by construction, so this returns immediately rather
 // than discovering that the slow way per token.
+// WO-085: distributed search is reciprocal. The entitlement check is the very
+// first statement, before tokenizing and before the zero-peer fast path, so a
+// node without it cannot reach a peer by any route through this function —
+// including a caller that skipped the daemon's own check.
 func (n *Node) PeerSearch(ctx context.Context, query string) ([]string, []TokenProgress, error) {
+	if !n.MayDistributedSearch() {
+		return nil, nil, ErrDistributedSearchNotPermitted
+	}
 	tokens := store.TokenizeQuery(query)
 	if len(tokens) == 0 {
 		return nil, nil, nil

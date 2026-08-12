@@ -17,10 +17,13 @@
 // needed one to bootstrap would make that sentence false.
 //
 // What a peer learns by watching this: that a node exists at an IP, and which
-// block keys it advertises. It does not learn what the node watched — an
-// advertised block is one the node holds, which after any peer fetching is
-// mostly other people's data. Advertising is nonetheless gated on contribution
-// level by the caller, because at Level 1 nothing should be offered at all.
+// *buckets* it advertises — never a block key, because a provider record names
+// a 12-bit hashed prefix that thousands of videos share (prefix.go). Since
+// WO-084 those buckets do include neighbourhoods the node derived from its own
+// observations, so the honest statement is that an observer learns the node
+// holds something in a bucket, not that everything advertised is somebody
+// else's. Advertising is gated on contribution level by the caller, because at
+// Level 1 nothing is offered at all.
 package swarm
 
 import (
@@ -28,6 +31,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -54,7 +58,14 @@ import (
 // BlockProtocol is the stream protocol for block requests. Versioned in the
 // name so a future incompatible shape can run alongside this one — the
 // extension is frozen, but the daemon is not, and peers will run old builds.
-var BlockProtocol = keelProtocol("block", "2.0.0", store.KeySchemeVersion)
+//
+// 3.0.0 (WO-084) is a deliberate break with 2.0.0 rather than a tolerated
+// mismatch. A 2.0.0 peer re-aggregates and re-signs whatever it imports, so
+// handing it a preserved claim destroys the claim identity that makes broad
+// buckets unlinkable and reintroduces the count growth cycles used to cause.
+// The claim-preservation invariant is not something the other side can be
+// asked to honour after the fact, so the stream is simply never opened.
+var BlockProtocol = keelProtocol("block", "3.0.0", store.KeySchemeVersion)
 
 // CatalogueProtocol carries titles, which travel separately from the graph.
 var CatalogueProtocol = keelProtocol("catalogue", "1.0.0", store.KeySchemeVersion)
@@ -86,13 +97,13 @@ const requestTimeout = 20 * time.Second
 // Store is the slice of the store this package needs. An interface rather than
 // the concrete type so the transport can be tested without a database.
 type Store interface {
-	BlocksInPrefix(prefix, cohort string, mirrorOnly bool, limit int) ([]store.Block, error)
-	LocalPrefixes(bits int, mirrorOnly bool) ([]string, error)
-	BuildCataloguePack(prefix string, mirrorOnly bool, limit int) (*store.CataloguePack, error)
+	BlocksInPrefix(prefix, cohort string, sources store.SourceSet, limit int) (*store.BlockBucket, error)
+	LocalPrefixes(bits int, sources store.SourceSet) ([]string, error)
+	BuildCataloguePack(prefix string, sources store.SourceSet, limit int) (*store.CataloguePack, error)
 	ImportCataloguePack(raw []byte) (int, error)
 	RememberPeer(id string, addrs []string) error
 	KnownPeers(limit int) ([]store.KnownPeer, error)
-	LocalCataloguePrefixes(bits int, mirrorOnly bool) ([]string, error)
+	LocalCataloguePrefixes(bits int, sources store.SourceSet) ([]string, error)
 	MissingCataloguePrefixes(videoIDs []string, bits int) ([]string, error)
 	ImportBlock(raw []byte) (*store.Block, int64, error)
 	RecentLiveSightings(cutoff int64) ([]store.LiveSighting, error)
@@ -102,12 +113,12 @@ type Store interface {
 	// ShardSlice, LocalShards and BuildShardPack back distributed
 	// token-shard search (WO-059) and its signing layer (WO-067) — see
 	// shard.go in this package for the request/fetch side.
-	ShardSlice(shard int, mirrorOnly bool) ([]store.ShardEntry, error)
-	LocalShards(mirrorOnly bool) ([]int, error)
-	BuildShardPack(shard int, mirrorOnly bool, limit int) (*store.ShardPack, error)
+	ShardSlice(shard int, sources store.SourceSet) ([]store.ShardEntry, error)
+	LocalShards(sources store.SourceSet) ([]int, error)
+	BuildShardPack(shard int, sources store.SourceSet, limit int) (*store.ShardPack, error)
 	// LocalYieldVector backs yield-vector gossip (WO-067) — see
 	// daemon/swarm/yield.go.
-	LocalYieldVector(mirrorOnly bool) ([]byte, error)
+	LocalYieldVector(sources store.SourceSet) ([]byte, error)
 	// MergeTokenSketch, DueTokenSketches and MarkTokenGossiped back
 	// token-sketch gossip (WO-067) — see daemon/swarm/sketch.go.
 	MergeTokenSketch(idx int, incoming *store.Sketch) error
@@ -118,7 +129,7 @@ type Store interface {
 	TokenEstimate(token string) (uint64, bool)
 	RecordTokenSearch(token string, foundVideoIDs []string) error
 	// LocalWordTelemetry backs on-demand word corpus stats (WO-068).
-	LocalWordTelemetry(mirrorOnly bool) (*store.WordTelemetry, error)
+	LocalWordTelemetry(sources store.SourceSet) (*store.WordTelemetry, error)
 }
 
 // Config controls what a node offers and consumes.
@@ -198,6 +209,10 @@ type Node struct {
 	// Open at construction. There is no reopen: a node whose gate has been
 	// shut is being replaced, never revived.
 	outbound atomic.Bool
+
+	// serve bounds how much this node answers, independently of what its
+	// policy permits it to answer at all (WO-085). Never nil — see newNode.
+	serve *serveLimiter
 }
 
 // closeOutbound shuts this node's outbound permission gate.
@@ -214,7 +229,20 @@ func (n *Node) CloseOutbound() { n.closeOutbound() }
 // mayServeBlocks reports whether a block/catalogue/shard request may be
 // answered right now: the policy allows it and the gate is still open.
 func (n *Node) mayServeBlocks() bool {
-	return n.cfg.Policy.ServeMirrors && n.outbound.Load()
+	return n.cfg.Policy.ServeBroadBuckets && n.outbound.Load()
+}
+
+// MayDistributedSearch reports whether a user-triggered distributed search may
+// run right now: the policy entitles this node to one and the gate is open
+// (WO-085).
+//
+// Gate-aware like the serving paths, and for the same reason in reverse: a
+// downgrade to Level 1 must stop distributed search from the instant the user
+// chooses it, not once the replacement node finishes coming up. Exported
+// because the daemon answers PEER_SEARCH with a typed refusal before reaching
+// the transport at all — see handlePeerSearchContext.
+func (n *Node) MayDistributedSearch() bool {
+	return n.cfg.Policy.DistributedSearch && n.outbound.Load()
 }
 
 // mayAnnounce reports whether provider records may be published right now.
@@ -252,7 +280,11 @@ func (n *Node) Serving() bool { return n.mayServeBlocks() }
 // through here so a node can never exist with the gate in its zero value
 // (shut), which would silently disable service on a serving node.
 func newNode(h host.Host, kdht *dht.IpfsDHT, st Store, cfg Config) *Node {
-	n := &Node{host: h, dht: kdht, st: st, cfg: cfg, inflight: map[string]chan struct{}{}}
+	n := &Node{
+		host: h, dht: kdht, st: st, cfg: cfg,
+		inflight: map[string]chan struct{}{},
+		serve:    newServeLimiter(),
+	}
 	n.outbound.Store(true)
 	return n
 }
@@ -326,7 +358,7 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		libp2p.EnableHolePunching(),
 		libp2p.EnableNATService(),
 	}
-	if cfg.Policy.ServeMirrors {
+	if cfg.Policy.ServeBroadBuckets {
 		// A reachable node helps others punch through; an unreachable one
 		// cannot, so only offer this when serving is on anyway.
 		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(nil))
@@ -368,7 +400,7 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 
 	n := newNode(h, kdht, st, cfg)
 
-	if cfg.Policy.ServeMirrors {
+	if cfg.Policy.ServeBroadBuckets {
 		h.SetStreamHandler(BlockProtocol, n.handleBlockRequest)
 		h.SetStreamHandler(CatalogueProtocol, n.handleCatalogueRequest)
 		h.SetStreamHandler(ShardProtocol, n.handleShardRequest)
@@ -381,7 +413,7 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 	// Registered independently of block service (WO-077): the word pack is a
 	// fixed-shape display aggregate with no plaintext words, ids, edges or
 	// query, and Level 1 answers it — including its own corpus, so the global
-	// statistic actually covers this node. Tying it to ServeMirrors made a
+	// statistic actually covers this node. Tying it to ServeBroadBuckets made a
 	// Level-1 node silently absent from a statistic it was itself reading.
 	if cfg.Policy.ExchangeWordTelemetry {
 		h.SetStreamHandler(WordTelemetryProtocol, n.handleWordTelemetry)
@@ -416,7 +448,7 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		}
 	}
 
-	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Policy.ServeMirrors)
+	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Policy.ServeBroadBuckets)
 	for _, a := range h.Addrs() {
 		n.logf("  listening on %s/p2p/%s", a, h.ID())
 	}
@@ -511,6 +543,14 @@ func (n *Node) handleBlockRequest(s network.Stream) {
 	if !n.mayServeBlocks() {
 		return
 	}
+	// Independent of the level check above (WO-085): what this node is
+	// permitted to answer and how much of it are separate questions, and a
+	// modified peer can ask as often as it likes.
+	release, ok := n.serve.admit(s.Conn().RemotePeer())
+	if !ok {
+		return
+	}
+	defer release()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
 	line, err := bufio.NewReader(io.LimitReader(s, 256)).ReadString('\n')
@@ -522,13 +562,23 @@ func (n *Node) handleBlockRequest(s network.Stream) {
 		return
 	}
 
-	blocks, err := n.st.BlocksInPrefix(prefix, n.st.Cohort(), n.cfg.Policy.MirrorOnly(), maxBlocksPerReply)
+	bucket, err := n.st.BlocksInPrefix(prefix, n.st.Cohort(), n.cfg.Policy.GraphSources(), maxBlocksPerReply)
 	if err != nil {
+		// Includes the anonymity-floor refusal (store.BucketAnonymityFloor):
+		// serving nothing is the correct answer to "I cannot answer this
+		// broadly", and it is indistinguishable from holding nothing.
 		n.logf("prefix %s: %v", prefix, err)
 		return
 	}
-	raw, err := json.Marshal(blocks)
+	if bucket.Truncated {
+		n.logf("prefix %s: capped at %d of %d held claims", prefix, len(bucket.Blocks), bucket.Held)
+	}
+	raw, err := json.Marshal(bucket)
 	if err != nil {
+		return
+	}
+	if !n.serve.chargeBytes(len(raw)) {
+		n.logf("prefix %s: over the serving byte budget, dropping the reply", prefix)
 		return
 	}
 	_, _ = s.Write(raw)
@@ -544,15 +594,21 @@ func trimLine(s string) string {
 // handleCatalogueRequest answers one stream: a catalogue prefix in, every row
 // held in that bucket out.
 //
-// Below Level 3 the rows come from `peer_catalogue` only. Serving rows derived
-// from this node's own impressions would disclose viewing at video granularity —
-// a requester would see exactly which members of a bucket this node holds, which
-// is what its user watched.
+// The rows come from Policy.CatalogueSources — at Level 2, local and imported
+// together (WO-084). Catalogue metadata is a public fact about a public video
+// and travels in its own complete-prefix namespace, so what a requester learns
+// is which bucket this node holds something in, at the same 12-bit granularity
+// the graph path uses.
 func (n *Node) handleCatalogueRequest(s network.Stream) {
 	defer s.Close()
 	if !n.mayServeBlocks() {
 		return
 	}
+	release, ok := n.serve.admit(s.Conn().RemotePeer())
+	if !ok {
+		return
+	}
+	defer release()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
 	line, err := bufio.NewReader(io.LimitReader(s, 256)).ReadString('\n')
@@ -563,13 +619,17 @@ func (n *Node) handleCatalogueRequest(s network.Stream) {
 	if prefix == "" {
 		return
 	}
-	pack, err := n.st.BuildCataloguePack(prefix, n.cfg.Policy.MirrorOnly(), maxCatalogueRows)
+	pack, err := n.st.BuildCataloguePack(prefix, n.cfg.Policy.CatalogueSources(), maxCatalogueRows)
 	if err != nil {
 		n.logf("catalogue %s: %v", prefix, err)
 		return
 	}
 	raw, err := pack.Encode()
 	if err != nil {
+		return
+	}
+	if !n.serve.chargeBytes(len(raw)) {
+		n.logf("catalogue %s: over the serving byte budget, dropping the reply", prefix)
 		return
 	}
 	_, _ = s.Write(raw)
@@ -667,7 +727,7 @@ func (n *Node) Announce(ctx context.Context) error {
 	if !n.mayAnnounce() {
 		return nil
 	}
-	keys, err := n.st.LocalPrefixes(n.prefixBits(), n.cfg.Policy.MirrorOnly())
+	keys, err := n.st.LocalPrefixes(n.prefixBits(), n.cfg.Policy.GraphSources())
 	if err != nil {
 		return err
 	}
@@ -692,7 +752,7 @@ func (n *Node) Announce(ctx context.Context) error {
 	// Catalogue buckets are announced separately, because the two datasets are
 	// held independently — a node can hold titles for videos whose graph it has
 	// evicted, and vice versa.
-	catKeys, err := n.st.LocalCataloguePrefixes(n.prefixBits(), n.cfg.Policy.MirrorOnly())
+	catKeys, err := n.st.LocalCataloguePrefixes(n.prefixBits(), n.cfg.Policy.CatalogueSources())
 	if err != nil {
 		return err
 	}
@@ -716,7 +776,7 @@ func (n *Node) Announce(ctx context.Context) error {
 	// index and its shard index are recomputed from the same source but are
 	// their own namespace (shardCID, shard.go), so a shard fetch and a
 	// catalogue fetch for the same node never correlate.
-	shardKeys, err := n.st.LocalShards(n.cfg.Policy.MirrorOnly())
+	shardKeys, err := n.st.LocalShards(n.cfg.Policy.CatalogueSources())
 	if err != nil {
 		return err
 	}
@@ -876,24 +936,41 @@ func addrInfo(k store.KnownPeer) (peer.AddrInfo, error) {
 	return info, nil
 }
 
-// importReply merges every block in a bucket reply.
+// importReply merges every claim in a bucket reply.
 //
 // Taking the whole bucket is what makes the request k-anonymous, and it is also
-// what makes the node a useful mirror: the cover traffic becomes hosting
-// capacity for other people. One bad block is skipped rather than failing the
-// batch — a peer must not be able to poison a whole bucket with one bad row.
+// what makes the node useful to everyone else: the cover traffic becomes
+// hosting capacity, and every claim kept here is one this node can hand on
+// unchanged. One bad block is skipped rather than failing the batch — a peer
+// must not be able to poison a whole bucket with one bad row.
+//
+// A truncated reply is logged, not rejected. It is a smaller anonymity set than
+// the bucket promised, which the requester deserves to know about (WO-084);
+// discarding it would trade a real answer for nothing.
 func (n *Node) importReply(raw []byte) (imported []store.Block, blocks int, edges int64) {
-	var list []store.Block
-	if err := json.Unmarshal(raw, &list); err != nil {
+	var bucket store.BlockBucket
+	if err := json.Unmarshal(raw, &bucket); err != nil {
 		return nil, 0, 0
 	}
-	for i := range list {
-		encoded, err := list[i].Encode()
+	if bucket.Truncated {
+		n.logf("bucket %s arrived truncated: %d of %d claims", bucket.Prefix, len(bucket.Blocks), bucket.Held)
+	}
+	for i := range bucket.Blocks {
+		encoded, err := bucket.Blocks[i].Encode()
 		if err != nil {
 			continue
 		}
-		if _, got, err := n.st.ImportBlock(encoded); err == nil {
-			imported = append(imported, list[i])
+		_, got, err := n.st.ImportBlock(encoded)
+		switch {
+		case errors.Is(err, store.ErrOwnClaim):
+			// This node's own claim came back around a relay cycle. It is
+			// still part of the bucket the catalogue sync must cover — that
+			// request set has to be a function of the bucket's whole public
+			// contents, never of what this node chose to keep — but it
+			// contributes no edges and is not stored.
+			imported = append(imported, bucket.Blocks[i])
+		case err == nil:
+			imported = append(imported, bucket.Blocks[i])
 			blocks++
 			edges += got
 		}

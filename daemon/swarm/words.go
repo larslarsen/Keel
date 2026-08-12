@@ -34,11 +34,16 @@ type wordPeerPack struct {
 	pack  *store.WordTelemetry
 }
 
-// includeLocalCorpus is the mirrorOnly argument the word-telemetry pack is
-// always built with: false, meaning "do not exclude this node's own
-// observations". Named rather than written as a bare false so the two call
-// sites read as a decision instead of a copied flag (WO-077).
-const includeLocalCorpus = false
+// wordTelemetryCorpus is the SourceSet the word-telemetry pack is always built
+// with: everything this node holds, at every level.
+//
+// Named rather than written inline so the two call sites read as a decision
+// instead of a copied flag (WO-077), and deliberately *not*
+// Policy.CatalogueSources: this one is not the served-corpus selector every
+// other builder shares. A Level-1 node has no catalogue sources at all and
+// still answers this, because the pack is a fixed-shape aggregate rather than a
+// bucket of material.
+var wordTelemetryCorpus = store.AllSources
 
 // handleWordTelemetry serves this node's local pack. Request body is ignored
 // (one short line); reply is the JSON WordTelemetry wire form — registers
@@ -49,11 +54,20 @@ func (n *Node) handleWordTelemetry(s network.Stream) {
 	if !n.mayExchangeWordTelemetry() {
 		return
 	}
+	// Limited like every other serve path (WO-085). This one is on at Level 1,
+	// which is exactly why the limiter is not tied to the contribution level:
+	// a node that serves no blocks at all still answers this stream, and still
+	// has to survive a peer that asks for it in a loop.
+	release, ok := n.serve.admit(s.Conn().RemotePeer())
+	if !ok {
+		return
+	}
+	defer release()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 	// Drain a short request line so clients can share requestOn's write shape.
 	_, _ = io.CopyN(io.Discard, s, 32)
 
-	// includeLocalCorpus, NOT the mirror-only selector (WO-077).
+	// wordTelemetryCorpus, NOT the served-corpus selector (WO-077, WO-084).
 	//
 	// This pack is a fixed-shape HLL/CMS aggregate — no plaintext words, ids,
 	// edges or query — so including locally observed titles is what makes the
@@ -64,7 +78,7 @@ func (n *Node) handleWordTelemetry(s network.Stream) {
 	// the consent copy rather than avoided by under-reporting; "no plaintext
 	// words" is not zero disclosure, since a guessed word can be tested
 	// against a CMS.
-	pack, err := n.st.LocalWordTelemetry(includeLocalCorpus)
+	pack, err := n.st.LocalWordTelemetry(wordTelemetryCorpus)
 	if err != nil {
 		n.logf("word telemetry: %v", err)
 		return
@@ -72,6 +86,10 @@ func (n *Node) handleWordTelemetry(s network.Stream) {
 	pack.PrepareWire()
 	raw, err := json.Marshal(pack)
 	if err != nil {
+		return
+	}
+	if !n.serve.chargeBytes(len(raw)) {
+		n.logf("word telemetry: over the serving byte budget, dropping the reply")
 		return
 	}
 	_, _ = s.Write(raw)
@@ -125,7 +143,7 @@ func (n *Node) FetchWordStats(ctx context.Context, query string) (WordStats, err
 	// Same reasoning as handleWordTelemetry: the local half of the union is
 	// this node's own corpus, so excluding it would make the displayed
 	// percentages describe everyone except the person reading them.
-	local, err := n.st.LocalWordTelemetry(includeLocalCorpus)
+	local, err := n.st.LocalWordTelemetry(wordTelemetryCorpus)
 	if err != nil {
 		return out, err
 	}

@@ -26,17 +26,33 @@ func validBlockJSON(t *testing.T, st *store.Store, key string) []byte {
 	return raw
 }
 
-func TestImportReplyValidBucket(t *testing.T) {
-	st := newStore(t, "imp.sqlite")
-	seed(t, st, "seedaaaaaaa", "targetaaaa1", 0)
-	seed(t, st, "seedaaaaaaa", "targetaaaa2", 2)
-
-	b1 := validBlockJSON(t, st, "seedaaaaaaa")
-	list := []json.RawMessage{json.RawMessage(b1)}
-	raw, err := json.Marshal(list)
+// bucketJSON wraps blocks in the BlockProtocol 3.0.0 reply envelope. A bare
+// array is not a bucket any more: truncation has to be visible to whoever
+// receives it, so Held and Truncated travel with the blocks (WO-084).
+func bucketJSON(t *testing.T, blocks ...json.RawMessage) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"schema_version": 3,
+		"prefix":         "12:0000",
+		"held":           len(blocks),
+		"truncated":      false,
+		"blocks":         blocks,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return raw
+}
+
+func TestImportReplyValidBucket(t *testing.T) {
+	// The origin has to be a different store: a node re-importing its own claim
+	// is the relay cycle, and ImportBlock refuses it on purpose.
+	origin := newStore(t, "origin.sqlite")
+	seed(t, origin, "seedaaaaaaa", "targetaaaa1", 0)
+	seed(t, origin, "seedaaaaaaa", "targetaaaa2", 2)
+
+	st := newStore(t, "imp.sqlite")
+	raw := bucketJSON(t, validBlockJSON(t, origin, "seedaaaaaaa"))
 
 	n := &Node{st: st}
 	imported, blocks, edges := n.importReply(raw)
@@ -73,20 +89,18 @@ func TestImportReplyMalformedJSON(t *testing.T) {
 }
 
 func TestImportReplySkipsUnverifiableBlock(t *testing.T) {
+	origin := newStore(t, "origin.sqlite")
+	seed(t, origin, "seedaaaaaaa", "targetaaaa1", 0)
 	st := newStore(t, "imp.sqlite")
 	n := &Node{st: st}
 
-	good := validBlockJSON(t, st, "seedaaaaaaa")
+	good := validBlockJSON(t, origin, "seedaaaaaaa")
 	// A block whose signature/content cannot verify must be skipped, not fail
 	// the batch. Build a validly-shaped but unverifiable block: a JSON object
 	// missing the key that ImportBlock's verification requires.
 	bad := []byte(`{"schema_version":1,"edges":[{"surface":"WATCH_NEXT","to":"xaaaaaaaaaa","slot":0,"observed_at":1}]}`)
 
-	raw, err := json.Marshal([]json.RawMessage{json.RawMessage(bad), json.RawMessage(good)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	imported, blocks, _ := n.importReply(raw)
+	imported, blocks, _ := n.importReply(bucketJSON(t, json.RawMessage(bad), json.RawMessage(good)))
 	if blocks != 1 {
 		t.Fatalf("expected the bad block to be skipped and the good one kept (blocks=1), got %d", blocks)
 	}
@@ -104,11 +118,7 @@ func TestImportReplyHugeListDoesNotPanic(t *testing.T) {
 	for i := range huge {
 		huge[i] = json.RawMessage(`{"schema_version":1}`)
 	}
-	raw, err := json.Marshal(huge)
-	if err != nil {
-		t.Fatal(err)
-	}
-	imported, blocks, edges := n.importReply(raw)
+	imported, blocks, edges := n.importReply(bucketJSON(t, huge...))
 	if blocks != 0 || edges != 0 || imported != nil {
 		t.Errorf("huge empty list: got blocks=%d edges=%d imported=%v", blocks, edges, imported)
 	}

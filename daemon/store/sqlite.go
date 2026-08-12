@@ -325,6 +325,48 @@ CREATE TABLE IF NOT EXISTS peer_catalogue (
   published_at TEXT,
   source TEXT NOT NULL
 );
+
+-- Graph claims imported from peers, kept verbatim so they can be re-served
+-- unchanged (WO-084).
+--
+-- peer_edges above is the *reading* view: flattened rows the local graph walk
+-- consumes, where many peers agreeing about an edge is signal worth summing.
+-- Re-serving from that view is what WO-084 removed. Summing across sources and
+-- re-signing the total under this node's own key turned every relay hop into a
+-- new observation by a new source, so a claim making a loop came back larger
+-- than it left, and no holder could tell an original from its echoes.
+--
+-- A row here is one publisher's signed statement about one neighbourhood,
+-- stored as the bytes that verified. Serving it means handing it on; this node
+-- adds nothing and re-signs nothing. Several publishers may hold rows for the
+-- same graph_key — that is the honest shape of "many people saw this
+-- neighbourhood" — while (claim_id, graph_key) is unique, so an updated claim
+-- replaces its own prior version and a relay cycle re-delivering an unchanged
+-- claim is a no-op.
+CREATE TABLE IF NOT EXISTS peer_blocks (
+  claim_id TEXT NOT NULL,
+  graph_key TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  block_json BLOB NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (claim_id, graph_key)
+);
+CREATE INDEX IF NOT EXISTS idx_peer_blocks_key ON peer_blocks(graph_key);
+
+-- The revision counter and public key for each neighbourhood this node
+-- publishes (WO-084, claim.go).
+--
+-- The private key is not here: it is derived on demand from the claim root
+-- secret in the meta table, so this holds nothing that could sign anything. The
+-- public key is stored so an incoming claim can be recognised as this node's
+-- own and dropped rather than imported as a peer's.
+CREATE TABLE IF NOT EXISTS local_claims (
+  graph_key TEXT PRIMARY KEY,
+  public_key TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  content_sha256 TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_claims_pub ON local_claims(public_key);
 `)
 	if err != nil {
 		return err

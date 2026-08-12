@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
@@ -271,6 +272,7 @@ func serveOwner(ctx context.Context, ln net.Listener, secret string, st *store.S
 
 	var mu sync.Mutex
 	connections := map[net.Conn]struct{}{}
+	hub := newOwnerSessionHub()
 	var sessions sync.WaitGroup
 	acceptErr := make(chan error, 1)
 	go func() {
@@ -304,7 +306,17 @@ func serveOwner(ctx context.Context, ln net.Listener, secret string, st *store.S
 					return
 				case "session":
 					sessionCtx, cancelSession := context.WithCancel(ctx)
-					runContext(sessionCtx, conn, &syncWriter{w: conn}, st)
+					writer := &syncWriter{w: conn}
+					// Joined only once the browser side has negotiated
+					// (WO-081), not at accept. A hub member receives
+					// unsolicited owner-wide events, so registering before
+					// HELLO would push application frames at a client that has
+					// not agreed a schema — including one we just told it is
+					// incompatible. `owner_ipc:1` authenticates the transport;
+					// it does not say what the browser can parse.
+					defer hub.remove(writer)
+					sessionCtx = withContributionPublisher(sessionCtx, hub)
+					runSession(sessionCtx, conn, writer, st, func() { hub.add(writer) })
 					cancelSession()
 				}
 			}()
@@ -325,4 +337,52 @@ func serveOwner(ctx context.Context, ln net.Listener, secret string, st *store.S
 	mu.Unlock()
 	sessions.Wait()
 	return err
+}
+
+// ownerSessionHub carries owner-wide state changes to every authenticated
+// browser session. Application replies retain their request id; these events
+// use a reserved owner-event id so they cannot resolve another session's RPC.
+type ownerSessionHub struct {
+	mu       sync.RWMutex
+	sessions map[*syncWriter]struct{}
+	nextID   atomic.Uint64
+}
+
+func newOwnerSessionHub() *ownerSessionHub {
+	return &ownerSessionHub{sessions: make(map[*syncWriter]struct{})}
+}
+
+func (h *ownerSessionHub) add(w *syncWriter) {
+	h.mu.Lock()
+	h.sessions[w] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *ownerSessionHub) remove(w *syncWriter) {
+	h.mu.Lock()
+	delete(h.sessions, w)
+	h.mu.Unlock()
+}
+
+func (h *ownerSessionHub) publishContribution(state contributionState) {
+	env, err := bridge.NewEnvelope(
+		fmt.Sprintf("owner-event-%d", h.nextID.Add(1)),
+		"CONTRIBUTION_STATUS",
+		contributionPayload(state),
+	)
+	if err != nil {
+		log.Printf("owner contribution event: %v", err)
+		return
+	}
+	h.mu.RLock()
+	writers := make([]*syncWriter, 0, len(h.sessions))
+	for w := range h.sessions {
+		writers = append(writers, w)
+	}
+	h.mu.RUnlock()
+	for _, w := range writers {
+		if err := writeEnv(w, env); err != nil {
+			log.Printf("owner contribution event delivery: %v", err)
+		}
+	}
 }
