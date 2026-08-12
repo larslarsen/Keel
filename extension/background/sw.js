@@ -54,6 +54,15 @@ let lastPage = {
 let connected = false;
 /** Open SidePanel documents (one port each). In-memory only. */
 let sidePanelPorts = 0;
+/**
+ * Window ids with an open panel document, learned from the panel's
+ * PANEL_HANDSHAKE (WO-075). Chrome's side panel is per-window, so the toolbar
+ * toggle must measure the CLICKED window — a bare document count lets a panel
+ * open in another window silently turn the toggle into a close-no-op.
+ */
+const sidePanelWindows = new Set();
+/** Connected ports whose window is not yet known (handshake still in flight). */
+let sidePanelPortsNoWindow = 0;
 
 /** Extension pages only (SidePanel). Does not reach content scripts. */
 function broadcast(msg) {
@@ -80,8 +89,14 @@ async function broadcastToYoutubeTabs(msg) {
   }
 }
 
-function panelOpen() {
-  return sidePanelPorts > 0;
+function panelOpen(windowId) {
+  if (sidePanelPorts === 0) return false;
+  if (windowId == null) return true;
+  // A panel whose window is not (yet) known counts as open everywhere:
+  // turning the toggle into a close-no-op on a panel that only *might* be
+  // here is safer than silently double-opening a window.
+  if (sidePanelPortsNoWindow > 0) return true;
+  return sidePanelWindows.has(windowId);
 }
 
 async function readHideMode() {
@@ -532,6 +547,18 @@ async function handle(message, sender) {
       return { bundle: env.payload };
     }
 
+    case "SCROLL_HISTORY": {
+      if (!bridge.helloOk) throw new Error("daemon not connected");
+      const env = await bridge.request("SCROLL_HISTORY", {
+        platform: String(message.payload?.platform || "tt"),
+        limit: Number(message.payload?.limit) || 50,
+      });
+      if (env.type === "ERROR") {
+        throw new Error(env.payload?.message || "SCROLL_HISTORY failed");
+      }
+      return { history: env.payload };
+    }
+
     /**
      * The full-page view asks for the panel to be hidden on its own tab.
      *
@@ -543,6 +570,31 @@ async function handle(message, sender) {
      * cannot strand a YouTube tab the way the old per-surface gating did — a
      * page that never asks keeps its panel.
      */
+    /**
+     * The side panel asks which context its window's active tab has, on load
+     * and on tabs.onActivated (the SW may have been evicted and missed the
+     * broadcast). Watch pages return focus:true plus the platform so the panel
+     * re-scopes; anything else returns focus:false.
+     */
+    case "PANEL_CONTEXT_QUERY": {
+      const win = message.payload?.windowId ?? null;
+      let tabs = [];
+      try {
+        tabs = win != null
+          ? await browser.tabs.query({ active: true, windowId: win })
+          : await browser.tabs.query({ active: true, lastFocusedWindow: true });
+      } catch (err) {
+        console.warn(LOG, "PANEL_CONTEXT_QUERY", err?.message || err);
+      }
+      const active = tabs[0] || null;
+      const ctx = panelContextPayload(active?.windowId ?? win, active?.url || "");
+      return {
+        windowId: active?.windowId ?? win,
+        platform: ctx.platform,
+        focus: ctx.focus,
+      };
+    }
+
     case "PANEL_NOT_HERE": {
       const tabId = sender?.tab?.id;
       if (tabId != null && browser.sidePanel?.setOptions) {
@@ -620,9 +672,25 @@ if (browser.runtime.onConnect) {
   browser.runtime.onConnect.addListener((port) => {
     if (port?.name !== SIDEPANEL_PORT) return;
     sidePanelPorts += 1;
+    sidePanelPortsNoWindow += 1;
     broadcastHideState().catch(() => {});
+    port.onMessage?.addListener?.((msg) => {
+      if (msg?.type !== "PANEL_HANDSHAKE") return;
+      const windowId = Number.isInteger(msg.payload?.windowId)
+        ? msg.payload.windowId
+        : null;
+      if (windowId == null) return; // stays unknown: counted as open everywhere
+      port.__panelWindowId = windowId;
+      sidePanelWindows.add(windowId);
+      sidePanelPortsNoWindow = Math.max(0, sidePanelPortsNoWindow - 1);
+    });
     port.onDisconnect.addListener(() => {
       sidePanelPorts = Math.max(0, sidePanelPorts - 1);
+      if (port.__panelWindowId != null) {
+        sidePanelWindows.delete(port.__panelWindowId);
+      } else {
+        sidePanelPortsNoWindow = Math.max(0, sidePanelPortsNoWindow - 1);
+      }
       broadcastHideState().catch(() => {});
     });
   });
@@ -635,28 +703,99 @@ if (browser.sidePanel?.setPanelBehavior) {
 }
 
 /**
- * Whether a tab's panel should be enabled: only on a YouTube/TikTok watch
- * page. Reuses surfaceFromUrl (content/extract.js) so "watch page" is
- * defined in exactly one place, shared with the content script.
+ * Whether a tab's panel should be enabled: the WO-071 hard gate, made
+ * platform-aware (WO-074).
+ *
+ * The gate is "watch page" per platform — what WATCH_NEXT means differs:
+ *
+ *  - YouTube: a `/watch?v=` page with a recommendation rail beside the video.
+ *    HOME (the FYP equivalent) is deliberately excluded — a feed is a feed.
+ *  - TikTok: the For-You feed IS the watch page. TikTok desktop never
+ *    navigates to `/@author/video/...` — it plays videos inline and the URL
+ *    stays on `/` (confirmed by the WO-063 probe: every capture was
+ *    `https://www.tiktok.com/`). Gating the panel to TT's WATCH_NEXT surface
+ *    would make the TikTok panel unreachable in normal use. So on TikTok the
+ *    FYP (HOME) opens the panel too, and it closes only when the active tab
+ *    leaves TikTok.
+ *
+ * Reuses surfaceFromUrl (content/extract.js) so "watch page" is defined in
+ * exactly one place, shared with the content script.
  */
-function isWatchUrl(url) {
-  return surfaceFromUrl(url || "").surface === "WATCH_NEXT";
+function panelAllowedFor(url) {
+  const { surface, platform } = surfaceFromUrl(url || "");
+  if (platform === "tt") return surface === "WATCH_NEXT" || surface === "HOME";
+  return surface === "WATCH_NEXT";
 }
 
-/** Enable/disable one tab's panel to match the WO-071 hard gate. */
+/** Enable/disable one tab's panel to match the WO-071/WO-074 hard gate. */
 async function syncPanelForTab(tabId, url) {
   if (tabId == null || !browser.sidePanel?.setOptions) return;
+  const enabled = panelAllowedFor(url);
   try {
-    await browser.sidePanel.setOptions({ tabId, enabled: isWatchUrl(url) });
+    await browser.sidePanel.setOptions({ tabId, enabled, path: "sidepanel/index.html" });
   } catch (err) {
     console.warn(LOG, "syncPanelForTab", err?.message || err);
   }
 }
 
 /**
+ * Close the panel for a window/tab.
+ *
+ * setOptions({enabled:false}) never closes an ALREADY-open panel — it only
+ * stops the next open — which is why the panel kept lingering on the fullpage
+ * tab and on tabs navigated away from the watch surface (reported after the
+ * WO-071 gate landed). close() (Chrome 141+) does close. Both forms are
+ * fired: close({windowId}) handles the global panel this extension opens via
+ * open({windowId}), close({tabId}) catches tab-specific leftovers (and on
+ * Chrome ≥145 rejects harmlessly when only the global panel is open). No-ops
+ * when nothing is open, so calling it on every active-tab change is safe.
+ */
+function closePanelInWindow(windowId, tabId) {
+  if (!browser.sidePanel?.close) return;
+  if (windowId != null) {
+    browser.sidePanel.close({ windowId }).catch(() => {});
+  }
+  if (tabId != null) {
+    browser.sidePanel.close({ tabId }).catch(() => {});
+  }
+}
+
+/**
+ * The context the side panel should show, derived from the ACTIVE tab.
+ *
+ * This is the WO-073 fix for the panel following the wrong page: the panel is
+ * a per-window artifact, and the last PAGE_CONTEXT any tab sent is
+ * window-global — so switching YT→TT kept the YouTube suggestions. Context
+ * must come from the active tab, not from whichever tab last wrote
+ * `lastPage`.
+ */
+function panelContextPayload(windowId, url) {
+  const { platform } = surfaceFromUrl(url || "");
+  return { windowId, platform, focus: panelAllowedFor(url) };
+}
+
+/**
+ * Apply the hard gate to the ACTIVE tab of a window.
+ *
+ * Only callers that know the tab is active may call this: a background tab's
+ * surface must never close or re-scope the window's panel.
+ */
+async function evalActivePanelContext(tab, windowId) {
+  const url = tab?.url ?? "";
+  if (tab?.id != null) await syncPanelForTab(tab.id, url);
+  const ctx = panelContextPayload(windowId, url);
+  if (!ctx.focus && windowId != null) {
+    closePanelInWindow(windowId, tab?.id ?? null);
+  }
+  broadcast({ type: "PANEL_CONTEXT", payload: ctx });
+}
+
+/**
  * Sweep every open tab. Covers tabs opened before this SW instance started
  * (install/update/eviction) and any navigation `onUpdated` missed — mirrors
- * rearmYoutubeTabs' own SW-restart-recovery rationale, below.
+ * rearmYoutubeTabs' own SW-restart-recovery rationale, below. Active tabs go
+ * through the full gate (close/context), inactive ones just get their
+ * per-tab enable/disable.
  */
 async function syncAllTabsPanelState() {
   if (!browser.tabs?.query) return;
@@ -668,20 +807,51 @@ async function syncAllTabsPanelState() {
     return;
   }
   for (const t of tabs) {
-    if (t.id != null) syncPanelForTab(t.id, t.url).catch(() => {});
+    if (t.id == null) continue;
+    if (t.active === true && t.windowId != null) {
+      await evalActivePanelContext(t, t.windowId).catch((err) =>
+        console.warn(LOG, "evalActivePanelContext", err?.message || err)
+      );
+    } else {
+      syncPanelForTab(t.id, t.url).catch(() => {});
+    }
   }
 }
 
 if (browser.tabs?.onUpdated) {
   browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.url || changeInfo.status === "complete") {
-      syncPanelForTab(tabId, changeInfo.url || tab?.url).catch(() => {});
+    if (!(changeInfo.url || changeInfo.status === "complete")) return;
+    const url = changeInfo.url || tab?.url;
+    const t = { ...(tab || {}), id: tabId, url: url || "" };
+    // The ACTIVE tab's navigation re-runs the full gate (close-on-leave for
+    // real navigations; onUpdated url events do fire for navigations, unlike
+    // SPA history changes, which PAGE_CONTEXT covers below).
+    if (tab?.active === true && tab.windowId != null) {
+      evalActivePanelContext(t, tab.windowId).catch((err) =>
+        console.warn(LOG, "onUpdated gate", err?.message || err)
+      );
+    } else {
+      syncPanelForTab(tabId, url).catch(() => {});
     }
   });
 }
 if (browser.tabs?.onCreated) {
   browser.tabs.onCreated.addListener((tab) => {
     syncPanelForTab(tab.id, tab.url).catch(() => {});
+  });
+}
+if (browser.tabs?.onActivated) {
+  browser.tabs.onActivated.addListener((info) => {
+    (async () => {
+      if (info?.tabId == null) return;
+      let tab = null;
+      try {
+        tab = await browser.tabs.get(info.tabId);
+      } catch {
+        return; // tab closed before we could read it; nothing to gate
+      }
+      await evalActivePanelContext(tab, info.windowId);
+    })().catch((err) => console.warn(LOG, "onActivated", err?.message || err));
   });
 }
 
@@ -693,7 +863,12 @@ async function openFullpageTab() {
   const url = browser.runtime.getURL("page/index.html");
   if (browser.tabs?.query) {
     try {
-      const existing = await browser.tabs.query({ url });
+      // A trailing "*" (not an exact-match string) so an already-open tab
+      // still matches if the fullpage app has added a hash/query of its own
+      // (e.g. its own in-page tab routing) — an exact match would silently
+      // never find it and stack a duplicate tab on every click instead of
+      // focusing the existing one.
+      const existing = await browser.tabs.query({ url: url + "*" });
       if (existing.length) {
         const t = existing[0];
         await browser.tabs.update(t.id, { active: true });
@@ -710,16 +885,50 @@ async function openFullpageTab() {
 }
 
 /**
- * Toolbar button: on a watch page, open the panel; everywhere else (the
- * full-page tab, a blank tab, any other site), open the full-page tab
- * instead. Never a dead click — see the block comment above.
+ * Toolbar button: a toggle on a watch page — if the panel is already open it
+ * closes (sidePanel.close needs no gesture, so this branch is safe anywhere
+ * in the handler); otherwise it opens. Everywhere else (the full-page tab, a
+ * blank tab, any other site) it opens the full-page tab instead. Never a
+ * dead click — see the block comment above.
+ *
+ * "Is the panel open" is tracked per-window by the sidepanel's long-lived
+ * port (SIDEPANEL_PORT, the same counter `panelOpen()` drives for the
+ * with-panel hide mode) — Chrome's sidePanel API offers no getState, and the
+ * port is connected exactly while a panel document lives. Each panel doc
+ * handshakes its window id (PANEL_HANDSHAKE), so the toggle measures the
+ * CLICKED window only — a panel open in another window must not turn this
+ * click into a close-no-op.
  */
 if (browser.action?.onClicked) {
   browser.action.onClicked.addListener((tab) => {
     (async () => {
-      if (tab?.id != null && isWatchUrl(tab.url) && browser.sidePanel?.open) {
+      const watch = tab?.id != null && panelAllowedFor(tab.url) && Boolean(browser.sidePanel?.open);
+      if (watch) {
+        if (panelOpen(tab.windowId)) {
+          closePanelInWindow(tab.windowId, tab.id);
+          return;
+        }
+        // sidePanel.open() must be the very first thing awaited in this
+        // handler — confirmed by direct log evidence (WO-071 regression):
+        // adding a setOptions() await ahead of it consumed the click's user
+        // gesture and open() failed every time with "may only be called in
+        // response to a user gesture." enabled:true is asserted afterward,
+        // not before — it's a correctness backstop for the *next* click,
+        // not a precondition open() needs on this one (syncPanelForTab's
+        // onUpdated/onCreated/watchdog sweep already keeps it current).
         try {
-          await browser.sidePanel.open({ tabId: tab.id });
+          // windowId, not tabId: .open({tabId}) hard-requires that exact tab
+          // to already read as enabled at the moment of the call and throws
+          // "No active side panel for tabId" otherwise (confirmed live) —
+          // brittle against any timing gap in the onUpdated/onCreated
+          // enabling sweep. .open({windowId}) opens against the window's
+          // current effective panel state instead, which is what every
+          // other Chrome sidePanel example actually uses for this exact
+          // toolbar-click pattern.
+          await browser.sidePanel.open({ windowId: tab.windowId });
+          browser.sidePanel
+            .setOptions({ tabId: tab.id, enabled: true, path: "sidepanel/index.html" })
+            .catch(() => {});
           return;
         } catch (err) {
           console.warn(LOG, "sidePanel.open", err?.message || err);

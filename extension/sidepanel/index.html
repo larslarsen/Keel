@@ -86,8 +86,8 @@
     </p>
 
     <section class="panel panel-primary">
-      <h2>Our suggestions</h2>
-      <div class="entropy-row" title="Focus keeps suggestions near the current video; Serendipity wanders further">
+      <h2 id="primary-heading">Our suggestions</h2>
+      <div class="entropy-row" id="entropy-row" title="Focus keeps suggestions near the current video; Serendipity wanders further">
         <span class="entropy-label">Focus</span>
         <input type="range" id="entropy" min="0" max="100" step="5" value="60" aria-label="Focus or serendipity" />
         <span class="entropy-label">Serendipity</span>
@@ -105,6 +105,7 @@
         </button>
       </div>
       <p class="meta" id="suggest-meta">Open a watch page to begin.</p>
+      <p class="meta" id="cluster-meta" hidden></p>
       <ol id="list"></ol>
     </section>
 

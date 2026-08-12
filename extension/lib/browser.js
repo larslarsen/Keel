@@ -53,6 +53,10 @@ export const browser = {
         setOptions: p(raw.sidePanel.setOptions, raw.sidePanel),
         setPanelBehavior: p(raw.sidePanel.setPanelBehavior, raw.sidePanel),
         open: p(raw.sidePanel.open, raw.sidePanel),
+        // Chrome 141+; closes the panel in a window/tab (no user gesture
+        // required). No-op when already closed. Absent on older engines —
+        // callers must fall back to enabled:false + an off-state page.
+        close: p(raw.sidePanel.close, raw.sidePanel),
       }
     : undefined,
   action: raw.action ? { onClicked: raw.action.onClicked } : undefined,
@@ -66,6 +70,7 @@ export const browser = {
         sendMessage: p(raw.tabs.sendMessage, raw.tabs),
         onUpdated: raw.tabs.onUpdated,
         onCreated: raw.tabs.onCreated,
+        onActivated: raw.tabs.onActivated,
       }
     : undefined,
   windows: raw.windows ? { update: p(raw.windows.update, raw.windows) } : undefined,

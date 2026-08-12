@@ -43,6 +43,9 @@ const el = {
   queuePanel: document.getElementById("queue-panel"),
   queueList: document.getElementById("queue-list"),
   queueCount: document.getElementById("queue-count"),
+  primaryHeading: document.getElementById("primary-heading"),
+  entropyRow: document.getElementById("entropy-row"),
+  clusterMeta: document.getElementById("cluster-meta"),
 };
 
 /** Video ids currently queued, so a suggestion row can show which state it is
@@ -58,6 +61,21 @@ const QUEUE_ICON_OFF =
 let blocklistSet = new Set();
 /** Last full page proof from SW (unfiltered). Used for the seed, not the list. */
 let lastPageCache = null;
+
+/**
+ * Active-tab context (WO-073): which platform this window's ACTIVE tab is on
+ * and whether it is a watch page. The SW's `lastPage` is window-global (the
+ * last tab that reported), so without this an active TikTok tab would be
+ * answered with YouTube suggestions — the reported bug. Set from the
+ * PANEL_CONTEXT broadcast and from the PANEL_CONTEXT_QUERY sent on load.
+ */
+let panelCtx = { windowId: null, platform: null, focus: false };
+
+/** The platform the panel should answer for: the active tab's, falling back
+ *  to the page proof's (and finally yt) only before any context is known. */
+function panelPlatform() {
+  return panelCtx.platform || lastPageCache?.platform || "yt";
+}
 
 /** Focus↔Serendipity 0–100. Default must sit in the serendipity half so the
  * panel never mirrors the rail out of the box (WO-046 §Why). */
@@ -247,11 +265,13 @@ function makeSuggestionLi(s) {
     `<img class="thumb" loading="lazy" decoding="async" referrerpolicy="no-referrer"` +
     ` alt="" width="96" height="54"` +
     ` data-vid="${encodeURIComponent(s.video_id)}">`;
-  const chan = readableChannel(s.channel_id);
+  const chan =
+    (typeof s.channel_name === "string" && s.channel_name) ||
+    readableChannel(s.channel_id);
   const thumbBox = chan
     ? `<div class="thumb-wrap">${thumb}<span class="chan">${escapeHtml(chan)}</span></div>`
     : thumb;
-  const href = watchUrl(s.video_id, lastPageCache?.platform);
+  const href = watchUrl(s.video_id, panelPlatform());
   // Age rather than how many times Keel saw it. "2w ago" is what people read a
   // video's age from everywhere else, so it needs no explaining; the
   // observation count meant something only to us.
@@ -261,6 +281,8 @@ function makeSuggestionLi(s) {
       ? `${fmtCount(s.view_count)} views`
       : "",
     s.published_at || "",
+    typeof s.dwell_pct === "number" ? `${Math.round(s.dwell_pct * 100)}% watched` : "",
+    typeof s.reason === "string" ? s.reason : "",
   ].filter(Boolean);
   li.innerHTML =
     `<div class="row-main">${thumbBox}<div class="row-text">` +
@@ -305,7 +327,7 @@ function makeSuggestionLi(s) {
       ? rpc("QUEUE_REMOVE", { index: queueIndexOf(s.video_id) })
       : rpc("QUEUE_ADD", {
           video_id: s.video_id,
-          platform: lastPageCache?.platform || "yt",
+          platform: panelPlatform(),
         });
     call
       .then((r) => renderQueue(r.queue))
@@ -553,7 +575,19 @@ async function loadQueue() {
 /** Seed the walk with the video currently being watched (context_video_id is
  * on every impression; they all share it on one page). Empty on non-watch
  * pages — the daemon then falls back to its last-watch context. */
+/** Seed the walk with the ACTIVE tab's video, not any tab's (WO-073). The
+ *  proof cache is window-global — whichever tab last reported — so a YT proof
+ *  must not seed a walk on a TikTok tab. */
 function currentSeed() {
+  // No watch page open in this window: nothing to seed a walk from. The SW
+  // closes the panel outright when it can (Chrome 141+); on engines without
+  // sidePanel.close this is what renders the honest "no watch page open" state.
+  if (!panelCtx.focus) return "";
+  // Window-global proof must not seed across platforms (WO-073): a YT tab's
+  // proof is not a seed for a TikTok walk.
+  if (lastPageCache?.platform && panelCtx.platform && lastPageCache.platform !== panelCtx.platform) {
+    return "";
+  }
   const imps = lastPageCache?.impressions || [];
   for (const imp of imps) if (imp.context_video_id) return imp.context_video_id;
   return "";
@@ -597,12 +631,89 @@ function renderSuggestions(res, seed) {
   for (const s of list) el.list.appendChild(makeSuggestionLi(s));
 }
 
+/** TikTok Mirror (WO-063): scroll history + local hashtag/sound clusters. */
+function renderScrollHistory(res) {
+  const items = (res && res.items) || [];
+  const tags = res?.hashtag_counts || {};
+  const sounds = res?.sound_counts || {};
+  if (!items.length) {
+    el.list.replaceChildren();
+    el.meta.textContent =
+      "No scroll history yet — open TikTok's For You feed and scroll a few clips.";
+    if (el.clusterMeta) {
+      el.clusterMeta.hidden = true;
+      el.clusterMeta.textContent = "";
+    }
+    return;
+  }
+  el.meta.textContent = `${items.length} clip(s) in your recent scroll history`;
+  const topTags = Object.entries(tags)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([t, n]) => `#${t} (${n})`);
+  const topSounds = Object.entries(sounds)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([id, n]) => `sound ${id.slice(-6)} (${n})`);
+  if (el.clusterMeta) {
+    const parts = [];
+    if (topTags.length) parts.push("Hashtags: " + topTags.join(" · "));
+    if (topSounds.length) parts.push("Sounds: " + topSounds.join(" · "));
+    el.clusterMeta.textContent = parts.join("\n") || "";
+    el.clusterMeta.hidden = !parts.length;
+  }
+  el.list.replaceChildren();
+  for (const it of items) {
+    el.list.appendChild(
+      makeSuggestionLi({
+        video_id: it.video_id,
+        title: it.title,
+        channel_name: it.channel_name || it.channel_id || "",
+        channel_id: it.channel_id,
+        reason: (it.hashtags || []).slice(0, 4).map((t) => `#${t}`).join(" ") ||
+          (it.sound_id ? `sound …${String(it.sound_id).slice(-6)}` : ""),
+        dwell_pct: it.dwell_pct,
+      })
+    );
+  }
+}
+
+function applyPlatformChrome() {
+  const tt = panelPlatform() === "tt";
+  if (el.primaryHeading) {
+    el.primaryHeading.textContent = tt ? "Scroll history" : "Our suggestions";
+  }
+  if (el.entropyRow) el.entropyRow.hidden = tt;
+  if (el.clusterMeta && !tt) {
+    el.clusterMeta.hidden = true;
+    el.clusterMeta.textContent = "";
+  }
+}
+
 /** Re-run the walk only when the watched video or the entropy changed — never
- * on every scan tick (WO-046). */
+ * on every scan tick (WO-046). On TikTok the Mirror shows scroll history
+ * instead (WO-063) — there is no rail to re-rank. */
 async function refreshSuggestions({ force = false } = {}) {
+  applyPlatformChrome();
+  const plat = panelPlatform();
+  if (plat === "tt") {
+    const key = `tt|history|${lastPageCache?.pageLoadId ?? ""}`;
+    if (!force && key === lastSuggestKey) return;
+    lastSuggestKey = key;
+    el.meta.textContent = "Loading scroll history…";
+    try {
+      const r = await rpc("SCROLL_HISTORY", { platform: "tt", limit: 50 });
+      renderScrollHistory(r.history || {});
+    } catch {
+      el.list.replaceChildren();
+      el.meta.textContent =
+        "History unavailable — start Keel's desktop app and scroll TikTok.";
+    }
+    return;
+  }
   const seed = currentSeed();
   const pageId = lastPageCache?.pageLoadId ?? "";
-  const key = `${lastPageCache?.platform || "yt"}|${pageId}|${seed}|${entropy}`;
+  const key = `${plat}|${pageId}|${seed}|${entropy}`;
   if (!force && key === lastSuggestKey) return;
   lastSuggestKey = key;
   el.meta.textContent = "Walking the graph…";
@@ -610,8 +721,9 @@ async function refreshSuggestions({ force = false } = {}) {
     const r = await rpc("SUGGEST", {
       // Scoped, never blended: a TikTok clip is not an answer to "what next"
       // after a YouTube video, and the two graphs are built by different
-      // systems (WO-057).
-      platform: lastPageCache?.platform || "yt",
+      // systems (WO-057). The platform is the ACTIVE tab's (WO-073), not the
+      // last tab that reported a page proof.
+      platform: plat,
       seed_video_id: seed,
       entropy,
       limit: 25,
@@ -626,6 +738,13 @@ async function refreshSuggestions({ force = false } = {}) {
 
 /** Absorb a page proof from the SW; re-run the walk on a new page_load_id. */
 function absorbLastPage(lastPage) {
+  // STORE_UPDATED is broadcast from whichever tab reported, so a background
+  // tab on the other platform can push its proof here. The window's panel
+  // must not take it: it would label suggestions, key, and seed as that
+  // platform's (WO-073). Only proofs of the active tab's platform qualify.
+  if (lastPage?.platform && panelCtx.platform && lastPage.platform !== panelCtx.platform) {
+    return;
+  }
   const changed =
     !lastPageCache || lastPageCache.pageLoadId !== lastPage.pageLoadId;
   lastPageCache = lastPage;
@@ -852,7 +971,50 @@ async function refresh() {
   await refreshStats({ force: true });
 }
 
+/**
+ * Track the active tab's context (WO-073): the window's active tab decides
+ * which platform the panel answers for, not whichever tab last wrote a page
+ * proof. Swapping YT→TT in the same window previously kept the YouTube
+ * suggestions because lastPage is window-global; here the broadcast re-scopes
+ * the panel to the active tab.
+ */
+function applyPanelContext(ctx) {
+  if (!ctx || typeof ctx !== "object") return;
+  // Panel is per-window; ignore another window's context broadcasts (the
+  // SW may not know every panel's window id on engines with no sidePanel.close).
+  if (panelCtx.windowId != null && ctx.windowId != null && ctx.windowId !== panelCtx.windowId) {
+    return;
+  }
+  const platformChanged = ctx.platform != null && ctx.platform !== panelCtx.platform;
+  panelCtx = {
+    windowId: ctx.windowId ?? panelCtx.windowId,
+    platform: ctx.platform ?? panelCtx.platform,
+    focus: ctx.focus ?? panelCtx.focus,
+  };
+  if (platformChanged) {
+    // The active tab moved to a different platform: the cached proof is the
+    // old platform's page and must not seed or label this one.
+    lastPageCache = null;
+    lastSuggestKey = "";
+    refreshSuggestions({ force: true }).catch(() => {});
+  }
+}
+
+/** Ask the SW which context this window's active tab has. Sent on load: the
+ * SW may have been evicted and missed the tabs.onActivated broadcast, and the
+ * panel never sees the moment it was opened. */
+async function queryPanelContext() {
+  try {
+    applyPanelContext(await rpc("PANEL_CONTEXT_QUERY", {}));
+  } catch {
+    // Best effort; a broadcast will catch up after the SW wakes.
+  }
+}
+
 browser.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "PANEL_CONTEXT") {
+    applyPanelContext(msg.payload);
+  }
   if (msg?.type === "DAEMON_STATUS") {
     setDaemonUi(Boolean(msg.payload?.connected), msg.payload?.detail || "");
     if (msg.payload?.connected) refreshStats({ force: true }).catch(() => {});
@@ -875,6 +1037,19 @@ function connectPanelPort() {
       // lastError is set on unexpected disconnect; still retry while visible.
       setTimeout(connectPanelPort, 300);
     });
+    // Tell the SW which window this panel lives in (WO-075): the toolbar
+    // toggle is per-window, so a panel open in another window must not block
+    // opening this one. Coming from an extension page, windows.getCurrent
+    // needs no permission. A null window id stays conservative (the SW then
+    // treats the port as "open everywhere").
+    browser.windows
+      ?.getCurrent?.()
+      .then((w) =>
+        port.postMessage({ type: "PANEL_HANDSHAKE", payload: { windowId: w?.id ?? null } })
+      )
+      .catch(() =>
+        port.postMessage({ type: "PANEL_HANDSHAKE", payload: { windowId: null } })
+      );
   } catch (err) {
     console.warn("[Keel panel] port", err?.message || err);
     setTimeout(connectPanelPort, 1000);
@@ -978,6 +1153,7 @@ setInterval(() => {
   refreshStats({ force: true }).catch(() => {});
 }, STATS_MIN_INTERVAL_MS);
 connectPanelPort();
+queryPanelContext();
 loadHideMode();
 loadBlocklist();
 loadQueue();
