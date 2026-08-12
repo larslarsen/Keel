@@ -15,6 +15,34 @@ import {
 
 const LOG = "[Keel native]";
 const ALARM_NAME = "keel-native-reconnect";
+
+/**
+ * Render an ERROR payload as text.
+ *
+ * The extension's error list on chrome://extensions — the one INSTALL.md tells
+ * people to paste when they report a problem — stringifies whatever it is
+ * handed, so logging the payload object arrives there as "[object Object]".
+ * That is the least useful thing a diagnostic can say, and it wasted a live QA
+ * session: the daemon had sent a perfectly clear reason and none of it survived
+ * to the screen.
+ *
+ * @param {unknown} p
+ * @returns {string}
+ */
+export function describeError(p) {
+  if (p === null || p === undefined) return "(no payload)";
+  if (typeof p !== "object") return String(p);
+  const rec = /** @type {Record<string, unknown>} */ (p);
+  const code = typeof rec.code === "string" ? rec.code : "";
+  const message = typeof rec.message === "string" ? rec.message : "";
+  if (code && message) return `${code}: ${message}`;
+  if (code || message) return code || message;
+  try {
+    return JSON.stringify(p);
+  } catch {
+    return Object.prototype.toString.call(p);
+  }
+}
 /** Chrome alarms min practical delay ~30s; first retries use 0.5 min. */
 const RECONNECT_DELAY_MIN = 0.5;
 
@@ -109,6 +137,10 @@ export function createNativeBridge(hooks) {
         ? p.reason
         : "desktop app update required";
     lastHelloFailure = { code, reason };
+    // Also log it: the panel shows one line of copy, but the extension's own
+    // error list on chrome://extensions is where INSTALL.md sends people, and a
+    // refused negotiation has to be legible there or it cannot be reported.
+    console.error(LOG, "HELLO refused", `${code}: ${reason}`);
     // Do not set connected/ready. Surface actionable copy; keep reconnecting
     // in case the user upgrades the desktop app while the extension stays open.
     hooks.onStatus(false, reason, { code, reason, incompatible: true });
@@ -125,7 +157,7 @@ export function createNativeBridge(hooks) {
     if (env.type === "HELLO_ACK") {
       applyHelloAck(env.payload);
     }
-    if (env.type === "ERROR") console.error(LOG, "ERROR", env.payload);
+    if (env.type === "ERROR") console.error(LOG, "ERROR", describeError(env.payload));
     const w = pending.get(env.id);
     if (w) {
       pending.delete(env.id);

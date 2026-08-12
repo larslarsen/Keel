@@ -505,6 +505,24 @@ func runInstall(args []string) int {
 		}
 	}
 
+	// Installing a new binary does not replace the owner that is already
+	// running. The owner outlives the browser by design, so after an upgrade the
+	// *previous* build stays resident and keeps answering — the new proxy simply
+	// connects to it. HELLO is then negotiated against old code, and an extension
+	// that requires a capability the running owner predates is refused with
+	// "desktop app update required" even though the update is sitting on disk.
+	//
+	// Best effort: "not running" is the normal case on a first install, and
+	// requestOwnerControl never starts one.
+	if !*dry {
+		if err := requestOwnerControl("shutdown"); err != nil {
+			rep.line("owner          not running; nothing to replace")
+		} else {
+			rep.line("owner          stopped; the next browser connection starts this binary")
+			fmt.Println("stopped the previously running desktop app so this one takes over")
+		}
+	}
+
 	if failed {
 		rep.finish(false)
 		fmt.Fprintln(os.Stderr, "\nInstallation is incomplete. See the report for the first error.")

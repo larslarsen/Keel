@@ -327,3 +327,35 @@ describe("native bridge (WO-004 §6.1, §6.2, WO-008)", () => {
     await assert.rejects(() => bridge.request("STATS", {}), /not connected/);
   });
 });
+
+// WO-091 live QA: the daemon sent a clear refusal and all that reached the
+// screen was "[object Object]". The extension error list on chrome://extensions
+// stringifies whatever it is handed, and INSTALL.md sends people there to
+// report problems, so the payload has to be text before it is logged.
+describe("describeError", () => {
+  let describeError;
+  before(async () => {
+    ({ describeError } = await import("../extension/lib/native.js"));
+  });
+
+  it("renders code and message as one readable line", () => {
+    assert.equal(
+      describeError({ code: "invalid_capability", message: "desktop app update required" }),
+      "invalid_capability: desktop app update required",
+    );
+  });
+
+  it("falls back through message, code and JSON", () => {
+    assert.equal(describeError({ message: "no code here" }), "no code here");
+    assert.equal(describeError({ code: "bare_code" }), "bare_code");
+    assert.equal(describeError({ odd: 1 }), '{"odd":1}');
+    assert.equal(describeError(null), "(no payload)");
+    assert.equal(describeError("already text"), "already text");
+  });
+
+  it("never emits [object Object]", () => {
+    for (const v of [{ code: "x" }, { message: "y" }, { odd: 1 }, null, undefined, 7]) {
+      assert.ok(!describeError(v).includes("[object Object]"), `leaked for ${JSON.stringify(v)}`);
+    }
+  });
+});
