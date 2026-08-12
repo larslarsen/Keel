@@ -11,14 +11,21 @@ const (
 	APIMin = 1
 	APIMax = 1
 
-	CapCore                 = "core"
-	CapSelectors            = "selectors"
-	CapTikTok               = "tiktok"
-	CapScrollHistory        = "scroll_history"
-	CapPeerSearch           = "peer_search"
-	CapWordStats            = "word_stats"
-	CapQueue                = "queue"
-	CapContributionRuntime  = "contribution_runtime"
+	CapCore                = "core"
+	CapSelectors           = "selectors"
+	CapTikTok              = "tiktok"
+	CapScrollHistory       = "scroll_history"
+	CapPeerSearch          = "peer_search"
+	CapWordStats           = "word_stats"
+	CapQueue               = "queue"
+	CapContributionRuntime = "contribution_runtime"
+	// CapNetworkConsent is WO-089's gate. Required, not optional — see below.
+	CapNetworkConsent = "network_consent"
+	// CapContributionImpact is WO-086's feedback panel. Brand new — unlike
+	// peer_search/distributed_search, there is no legacy revision of this RPC
+	// to reconcile, so one name serves both HELLO negotiation and
+	// ContributionRequiredDetail.Capability.
+	CapContributionImpact = "contribution_impact"
 
 	// Stable HELLO_ACK / ERROR codes.
 	CodeOK                    = "ok"
@@ -71,6 +78,8 @@ func DaemonCaps() map[string]int {
 		CapWordStats:           1,
 		CapQueue:               1,
 		CapContributionRuntime: 1,
+		CapNetworkConsent:      1,
+		CapContributionImpact:  1,
 	}
 }
 
@@ -245,6 +254,10 @@ func RPCCapability(typ string) string {
 		return CapQueue
 	case "GET_CONTRIBUTION", "SET_CONTRIBUTION":
 		return CapContributionRuntime
+	case "GET_NETWORK_CONSENT", "SET_NETWORK_CONSENT":
+		return CapNetworkConsent
+	case "GET_CONTRIBUTION_IMPACT", "RESET_CONTRIBUTION_IMPACT":
+		return CapContributionImpact
 	default:
 		// TikTok is a surface on IMPRESSIONS/SUGGEST, not a separate RPC.
 		// CapTikTok is UI/selector-facing; daemon still accepts tt rows under core.

@@ -45,7 +45,27 @@ func freshSupervisor(t *testing.T) *swarmSupervisor {
 	return s
 }
 
+// testStore is a store whose user has already accepted the current network
+// disclosure (WO-089).
+//
+// Consent is granted here rather than in each test because almost every test in
+// this file is about what happens *after* the network is permitted — ordering,
+// durability, which way a partial failure resolves — and a store without
+// consent has no network at all, so those tests would all be asserting against
+// the gate instead of against the thing they name. The gate has its own tests,
+// which use testStoreAwaitingConsent below.
 func testStore(t *testing.T, name string) *store.Store {
+	t.Helper()
+	st := testStoreAwaitingConsent(t, name)
+	if _, err := st.GrantNetworkConsent(store.NetworkConsentRevision); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// testStoreAwaitingConsent is a fresh store: corpus usable, network refused.
+// This is what a real install looks like before the consent screen is answered.
+func testStoreAwaitingConsent(t *testing.T, name string) *store.Store {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), name))
 	if err != nil {
@@ -62,16 +82,37 @@ func TestPolicyForLevelMatchesArchitectureTable(t *testing.T) {
 	one := swarm.PolicyForLevel(store.LevelPersonal)
 	two := swarm.PolicyForLevel(store.LevelBroad)
 
-	// Level 1 is a full consumer. Every one of these being on is the
+	// Level 1 is a full *consumer*. Every one of these being on is the
 	// product-boundary half of WO-077: withholding them would make privacy a
 	// toll booth rather than a promise.
 	for name, got := range map[string]bool{
-		"live":                    one.Live,
-		"fetch":                   one.Fetch,
-		"exchange_word_telemetry": one.ExchangeWordTelemetry,
+		"fetch":                one.Fetch,
+		"fetch_word_telemetry": one.FetchWordTelemetry,
 	} {
 		if !got {
 			t.Errorf("level 1 has %s off; it is a full consumer", name)
+		}
+	}
+	// And it publishes nothing derived from what the user was shown (WO-089).
+	// Live and the outbound word pack used to be on here, on the argument that
+	// their payloads were harmless. The boundary no longer turns on that
+	// argument: a sighting and a local word aggregate are both products of this
+	// user's feed, so both start at Level 2.
+	for name, got := range map[string]bool{
+		"live":                 one.Live,
+		"serve_word_telemetry": one.ServeWordTelemetry,
+	} {
+		if got {
+			t.Errorf("level 1 has %s on; nothing observation-derived leaves at the default", name)
+		}
+	}
+	for name, got := range map[string]bool{
+		"live":                 two.Live,
+		"serve_word_telemetry": two.ServeWordTelemetry,
+		"fetch_word_telemetry": two.FetchWordTelemetry,
+	} {
+		if !got {
+			t.Errorf("level 2 has %s off; sharing starts here", name)
 		}
 	}
 	// The one consumer capability Level 1 does not have (WO-085). Asserted
@@ -343,18 +384,21 @@ func TestDowngradedNodeKeepsEveryConsumerCapability(t *testing.T) {
 	}
 	p := n.Policy()
 	if !p.Fetch {
-		t.Error("the downgraded node cannot fetch; peer search and pre-walk are gone")
+		t.Error("the downgraded node cannot fetch; pre-walk and suggestions are gone")
 	}
-	if !p.Live {
-		t.Error("the downgraded node left the live network")
+	if !p.FetchWordTelemetry {
+		t.Error("the downgraded node stopped downloading global word statistics")
 	}
-	if !p.ExchangeWordTelemetry {
-		t.Error("the downgraded node stopped exchanging word telemetry")
-	}
-	// ...while offering nothing.
+	// ...while offering nothing. Live and the outbound word pack are in this
+	// list since WO-089: a downgrade has to take back everything derived from
+	// what the user was shown, not only the block corpus.
 	if p.ServeBroadBuckets || p.IncludeLocalGraph || p.IncludeLocalCatalogue ||
-		p.AnnounceProviders || p.JoinSearchTelemetry || p.PublishCohortMeasurements {
+		p.AnnounceProviders || p.JoinSearchTelemetry || p.PublishCohortMeasurements ||
+		p.Live || p.ServeWordTelemetry {
 		t.Errorf("the downgraded node still offers something: %+v", p)
+	}
+	if n.Live() != nil {
+		t.Error("the downgraded node still holds a live index")
 	}
 	if n.Serving() {
 		t.Error("the downgraded node reports itself as serving")
@@ -614,6 +658,20 @@ func TestContributionPayloadCarriesTheSearchEntitlementBothWays(t *testing.T) {
 	if down["distributed_search"] != false {
 		t.Error("level 1 was reported as entitled to distributed search")
 	}
+
+	if up["live"] != true || up["shares_word_stats"] != true {
+		t.Errorf("level 2 did not report Live/word sharing: live=%v words=%v",
+			up["live"], up["shares_word_stats"])
+	}
+	if down["live"] != false || down["shares_word_stats"] != false {
+		t.Errorf("level 1 reported Live/word sharing: live=%v words=%v",
+			down["live"], down["shares_word_stats"])
+	}
+	if down["consent_required"] != true {
+		// Zero-value Consent.Current is false, so a payload built without a
+		// store still has to tell the interface to ask.
+		t.Error("a payload with no consent record did not set consent_required")
+	}
 }
 
 // TestRuntimeLevelChangeFlipsTheSearchEntitlement drives the real transition
@@ -655,5 +713,38 @@ func TestRuntimeLevelChangeFlipsTheSearchEntitlement(t *testing.T) {
 	}
 	if state := s.state(st); contributionPayload(state)["distributed_search"] != false {
 		t.Error("the status broadcast after a downgrade would still enable the control")
+	}
+}
+
+// TestRestartCannotRestoreLevelTwoAtLevelOne is the persistence half of
+// WO-089: after a 2→1 downgrade a new process must reconstruct Level 1, with
+// no Live object and no word-serve path, even though this database once ran 2.
+func TestRestartCannotRestoreLevelTwoAtLevelOne(t *testing.T) {
+	st := testStore(t, "restart-level1.sqlite")
+	if err := st.SetContributionAndStartupLevel(store.LevelBroad); err != nil {
+		t.Fatal(err)
+	}
+	first := freshSupervisor(t)
+	first.start(t.Context(), st)
+	if first.currentNode() == nil {
+		t.Skip("swarm did not start in this environment")
+	}
+	if _, err := first.apply(t.Context(), st, store.LevelPersonal); err != nil {
+		t.Fatalf("downgrade: %v", err)
+	}
+	first.stopAll()
+
+	again := freshSupervisor(t)
+	again.start(t.Context(), st)
+	n := again.currentNode()
+	if n == nil {
+		t.Fatal("a consented Level-1 restart produced no node")
+	}
+	if n.Live() != nil || n.Policy().Live || n.Policy().ServeWordTelemetry {
+		t.Errorf("restart restored Level-2 observation sharing: live=%v policy=%+v",
+			n.Live() != nil, n.Policy())
+	}
+	if !n.Policy().Fetch || !n.Policy().FetchWordTelemetry {
+		t.Error("restart lost Level-1 consumer capabilities")
 	}
 }

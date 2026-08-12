@@ -34,15 +34,20 @@ type wordPeerPack struct {
 	pack  *store.WordTelemetry
 }
 
-// wordTelemetryCorpus is the SourceSet the word-telemetry pack is always built
-// with: everything this node holds, at every level.
+// wordTelemetryCorpus is the SourceSet the word pack is always built with:
+// everything this node holds.
 //
 // Named rather than written inline so the two call sites read as a decision
 // instead of a copied flag (WO-077), and deliberately *not*
 // Policy.CatalogueSources: this one is not the served-corpus selector every
-// other builder shares. A Level-1 node has no catalogue sources at all and
-// still answers this, because the pack is a fixed-shape aggregate rather than a
-// bucket of material.
+// other builder shares.
+//
+// The two call sites use it for opposite purposes, which is why the *level*
+// check lives at each of them rather than here. FetchWordStats builds a local
+// pack to merge into the number it displays to this user — that never leaves
+// the machine, so it includes the local corpus at every level. Only
+// handleWordTelemetry sends one, and only Level 2+ registers that handler
+// (WO-089).
 var wordTelemetryCorpus = store.AllSources
 
 // handleWordTelemetry serves this node's local pack. Request body is ignored
@@ -50,14 +55,17 @@ var wordTelemetryCorpus = store.AllSources
 // only, never word strings.
 func (n *Node) handleWordTelemetry(s network.Stream) {
 	defer s.Close()
-	// Its own capability, not block service: Level 1 answers this (WO-077).
-	if !n.mayExchangeWordTelemetry() {
+	// Its own capability, not block service, and Level 2+ since WO-089: what
+	// goes out here is an aggregate of the titles this user was shown. The
+	// handler is only registered at Level 2+, so this is the downgrade guard —
+	// the gate shuts before teardown and requests keep arriving meanwhile.
+	if !n.mayServeWordTelemetry() {
 		return
 	}
-	// Limited like every other serve path (WO-085). This one is on at Level 1,
-	// which is exactly why the limiter is not tied to the contribution level:
-	// a node that serves no blocks at all still answers this stream, and still
-	// has to survive a peer that asks for it in a loop.
+	// Limited like every other serve path (WO-085). The limiter is not tied to
+	// the contribution level: a Level-2 node that answers this stream still
+	// has to survive a peer that asks for it in a loop, and the downgrade
+	// window keeps the handler registered after the gate has shut.
 	release, ok := n.serve.admit(s.Conn().RemotePeer())
 	if !ok {
 		return
@@ -69,15 +77,12 @@ func (n *Node) handleWordTelemetry(s network.Stream) {
 
 	// wordTelemetryCorpus, NOT the served-corpus selector (WO-077, WO-084).
 	//
-	// This pack is a fixed-shape HLL/CMS aggregate — no plaintext words, ids,
-	// edges or query — so including locally observed titles is what makes the
-	// global word statistic actually cover this node's corpus. Passing
-	// mirror-only here (as this did when the flag was borrowed from block
-	// service) silently excluded every node from a statistic it was itself
-	// reading. ARCHITECTURE_CURRENT §3 requires the disclosure be stated in
-	// the consent copy rather than avoided by under-reporting; "no plaintext
+	// At Level 2+ the outbound pack includes locally observed titles, which is
+	// what makes this node's corpus part of the global statistic. That is a
+	// real disclosure and the Level-2 consent copy says so: "no plaintext
 	// words" is not zero disclosure, since a guessed word can be tested
-	// against a CMS.
+	// against a CMS. WO-089 is what moved the decision to serve at all behind
+	// the sharing level, rather than trying to argue the payload harmless.
 	pack, err := n.st.LocalWordTelemetry(wordTelemetryCorpus)
 	if err != nil {
 		n.logf("word telemetry: %v", err)
@@ -93,6 +98,9 @@ func (n *Node) handleWordTelemetry(s network.Stream) {
 		return
 	}
 	_, _ = s.Write(raw)
+	if err := n.st.RecordContributionServe(len(raw)); err != nil {
+		n.logf("word telemetry: recording contribution activity: %v", err)
+	}
 }
 
 // WordStats is the daemon→extension answer for one query's corpus bars.
@@ -135,14 +143,16 @@ type TokenCoverage struct {
 // (push-only WO-067 path — never a word-stat fetch).
 func (n *Node) FetchWordStats(ctx context.Context, query string) (WordStats, error) {
 	out := WordStats{Available: true, Words: []WordStat{}}
-	if !n.cfg.Policy.Fetch {
+	if !n.cfg.Policy.FetchWordTelemetry {
 		out.Available = false
 		return out, nil
 	}
 
-	// Same reasoning as handleWordTelemetry: the local half of the union is
-	// this node's own corpus, so excluding it would make the displayed
-	// percentages describe everyone except the person reading them.
+	// The local half of the union is this node's own corpus. It is included at
+	// every level, including Level 1, because this pack is never sent: it is
+	// merged into the number displayed to the person who owns the corpus.
+	// Excluding it would make the percentages describe everyone except the
+	// reader (WO-089 keeps this, and moves only the *outbound* half).
 	local, err := n.st.LocalWordTelemetry(wordTelemetryCorpus)
 	if err != nil {
 		return out, err

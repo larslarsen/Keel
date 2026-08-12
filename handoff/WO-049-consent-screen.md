@@ -6,6 +6,12 @@
 | **Status** | **Done** — `extension/consent/` first-run gate (commit 3be856b), restored after a regression (commit 3459a78). |
 | **Date** | 2026-08-04 |
 
+> **Correction required by WO-089 (2026-08-12):** the current page lost its
+> explicit Decline button and places network details below the affirmative
+> action. WO-089 restores Decline, moves the Level-1 recording/download
+> disclosure above the action, and requires daemon acknowledgement before the
+> observer or Level-1 network starts.
+
 `DESIGN_v2` §"Disclosure" requires **an in-extension consent screen**, plus the
 store listing, plus the privacy policy (WO-048). Only the extension part is
 missing, and a store listing alone does not satisfy it — most users never read

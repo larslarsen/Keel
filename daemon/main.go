@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,7 @@ import (
 	"github.com/keel-app/keel/daemon/store"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 // builtAt is when this binary was written, read from the executable itself.
 //
@@ -45,35 +46,55 @@ func main() {
 	// Native messaging: protocol on stdin/stdout. Logs must not go to stdout.
 	log.SetOutput(os.Stderr)
 
-	// Subcommands (WO-020). Checked explicitly rather than with flag.Parse:
-	// the browser launches this binary with the caller's origin as argv[1], so
-	// generic flag parsing would misread a normal native-messaging start.
-	if len(os.Args) > 1 {
-		switch strings.TrimLeft(os.Args[1], "-") {
-		case "install":
-			os.Exit(runInstall(os.Args[2:]))
-		case "uninstall":
-			os.Exit(runUninstall(os.Args[2:]))
-		case "owner":
-			os.Exit(runOwnerCommand(os.Args[2:]))
-		case "keys":
-			os.Exit(runKeys(os.Args[2:]))
-		case "bundle":
-			os.Exit(runBundle(os.Args[2:]))
-		case "sketch":
-			os.Exit(runSketch(os.Args[2:]))
-		case "seed":
-			os.Exit(runSeed(os.Args[2:]))
-		case "version":
-			fmt.Println("keel-host", version)
-			os.Exit(0)
-		case "help":
-			usage()
-			os.Exit(0)
-		}
+	switch cmd, rest := dispatch(runtime.GOOS, os.Args[1:]); cmd {
+	case "install":
+		os.Exit(runInstall(rest))
+	case "uninstall":
+		os.Exit(runUninstall(rest))
+	case "owner":
+		os.Exit(runOwnerCommand(rest))
+	case "keys":
+		os.Exit(runKeys(rest))
+	case "bundle":
+		os.Exit(runBundle(rest))
+	case "sketch":
+		os.Exit(runSketch(rest))
+	case "seed":
+		os.Exit(runSeed(rest))
+	case "version":
+		fmt.Println("keel-host", version)
+		os.Exit(0)
+	case "help":
+		usage()
+		os.Exit(0)
 	}
 
 	os.Exit(runProxy())
+}
+
+// dispatch decides what an invocation means, from the arguments alone.
+//
+// Subcommands are matched explicitly rather than with flag.Parse: the browser
+// launches this binary with the caller's origin as argv[1], so generic flag
+// parsing would misread a normal native-messaging start.
+//
+// On Windows, no arguments at all means install (WO-091). That is the
+// double-click, and it is the only install route available to someone who
+// cannot open a terminal. A browser always passes its origin or manifest path,
+// so a native-messaging launch still has arguments and still becomes a proxy —
+// installing can never happen underneath a running browser.
+func dispatch(goos string, args []string) (cmd string, rest []string) {
+	if len(args) == 0 {
+		if goos == "windows" {
+			return "install", nil
+		}
+		return "", nil
+	}
+	switch name := strings.TrimLeft(args[0], "-"); name {
+	case "install", "uninstall", "owner", "keys", "bundle", "sketch", "seed", "version", "help":
+		return name, args[1:]
+	}
+	return "", args
 }
 
 // syncWriter serializes writes from multiple goroutines onto one underlying
@@ -243,6 +264,10 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: err.Error(), Code: "thumb_failed"})
 		}
 		return reply(out, env.ID, "THUMBNAIL_RESULT", map[string]any{"video_id": p.VideoID, "data_url": url})
+	case "GET_NETWORK_CONSENT":
+		return reply(out, env.ID, "NETWORK_CONSENT_RESULT", contributionPayload(supervisor.state(st)))
+	case "SET_NETWORK_CONSENT":
+		return handleSetNetworkConsent(ctx, env, out, st)
 	case "GET_CONTRIBUTION":
 		return reply(out, env.ID, "CONTRIBUTION_RESULT", contributionPayload(supervisor.state(st)))
 	case "SET_CONTRIBUTION":
@@ -278,6 +303,13 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 			publishContributionStatus(ctx, state)
 		}
 		return writeErr
+	case "GET_CONTRIBUTION_IMPACT":
+		return handleGetContributionImpact(env, out, st)
+	case "RESET_CONTRIBUTION_IMPACT":
+		if err := st.ResetContributionActivity(); err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		return handleGetContributionImpact(env, out, st)
 	case "GET_DISK_BUDGET":
 		used, items, err := st.CacheUsage()
 		if err != nil {
@@ -371,7 +403,7 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 	case "GET_SELECTORS":
 		return handleGetSelectors(env, out)
 	case "LIVE_SEARCH":
-		return handleLiveSearch(env, out)
+		return handleLiveSearch(env, out, st)
 	default:
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
 			Message: fmt.Sprintf("unknown type %q", env.Type),
@@ -442,7 +474,75 @@ func replyQueue(out io.Writer, id string, st *store.Store) error {
 	return reply(out, id, "QUEUE_RESULT", bridge.QueueResultPayload{Items: items})
 }
 
-func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
+// handleSetNetworkConsent records or withdraws the WO-089 network disclosure
+// decision, and moves the network to match it in the same call.
+//
+// The two halves are inseparable on purpose. A grant that only wrote a row
+// would leave the user looking at "accepted" with no network until they
+// restarted the daemon, which is the precise failure WO-077 fixed for
+// contribution levels; a withdrawal that only wrote a row would leave a node
+// running after the user revoked permission, which is worse. So the durable
+// record and the running state move together, in the order that fails safe:
+// grant persists first and then starts, withdraw stops first and then persists.
+func handleSetNetworkConsent(ctx context.Context, env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	var p struct {
+		// Accepted is the decision. Absent or false is a decline, which is a
+		// valid answer and not an error.
+		Accepted bool `json:"accepted"`
+		// Revision the client says it displayed. Required for an acceptance:
+		// the client must name the disclosure it actually rendered, so a stale
+		// screen cannot accept wording it never showed.
+		Revision int `json:"revision"`
+	}
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "invalid SET_NETWORK_CONSENT payload",
+			Code:    "bad_payload",
+		})
+	}
+
+	// Serialized with contribution changes: both decide whether a node exists,
+	// and interleaving them could publish a status that describes neither.
+	contributionBridgeMu.Lock()
+	defer contributionBridgeMu.Unlock()
+	before := supervisor.state(st)
+
+	if !p.Accepted {
+		// Withdraw: stop first, then forget. The reverse order would leave a
+		// window in which the record says "no" while the host is still up, and
+		// a crash inside that window would restart into a running network with
+		// no consent behind it.
+		supervisor.stopForWithdrawnConsent()
+		if err := st.WithdrawNetworkConsent(); err != nil {
+			return replyErr(out, env.ID, err)
+		}
+		state := supervisor.state(st)
+		writeErr := reply(out, env.ID, "NETWORK_CONSENT_RESULT", contributionPayload(state))
+		if state != before {
+			publishContributionStatus(ctx, state)
+		}
+		return writeErr
+	}
+
+	if _, err := st.GrantNetworkConsent(p.Revision); err != nil {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: err.Error(),
+			Code:    "consent_rejected",
+			Detail:  contributionPayload(supervisor.state(st)),
+		})
+	}
+	// Durable before effective, matching the downgrade ordering in
+	// contribution_runtime.go: a crash between the two restarts into a network
+	// the user has agreed to, never into one they have not.
+	state := supervisor.resumeAfterConsent(context.Background(), st)
+	writeErr := reply(out, env.ID, "NETWORK_CONSENT_RESULT", contributionPayload(state))
+	if state != before {
+		publishContributionStatus(ctx, state)
+	}
+	return writeErr
+}
+
+func handleLiveSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	var p struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
@@ -455,12 +555,25 @@ func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
 	}
 	n := currentSwarmNode()
 	if n == nil || n.Live() == nil {
-		// The feed is available at every level, so this means the swarm itself
-		// did not start — no network, not a permission decision.
+		// Two different unavailabilities, and the interface needs to tell them
+		// apart (WO-089). "Live starts at Level 2" is a setting the user can
+		// change; "the network is not up" is a machine state they cannot. The
+		// old copy said only the latter, which after WO-089 would have been a
+		// plain lie to every default-level user.
+		reason := "not connected to the network yet"
+		code := ""
+		if allowed, _ := liveAllowed(st); !allowed {
+			reason = "Live starts at Broad sharing: the shared feed is built " +
+				"from livestream sightings people publish, so it is available " +
+				"to the levels that publish them."
+			code = bridge.CodeContributionRequired
+		}
 		return reply(out, env.ID, "LIVE_RESULT", map[string]any{
 			"query": p.Query, "streams": []any{}, "indexed": 0,
-			"available": false,
-			"reason":    "not connected to the network yet",
+			"available":      false,
+			"reason":         reason,
+			"code":           code,
+			"required_level": store.LevelBroad,
 		})
 	}
 	li := n.Live()
@@ -632,6 +745,7 @@ func usage() {
 	fmt.Print(`keel-host — Keel desktop host
 
 Usually launched by the browser; not run by hand.
+On Windows, running it with no arguments installs (that is the double-click).
 
   keel-host install   -extension-id <id>[,<id>]  register with detected browsers
                       [-firefox-id keel@local] [-all] [-dry-run]
@@ -776,6 +890,55 @@ func handlePeerSearchContext(requestCtx context.Context, env *bridge.Envelope, o
 		})
 	}
 	return nil
+}
+
+// handleGetContributionImpact answers GET_CONTRIBUTION_IMPACT and, after a
+// reset, RESET_CONTRIBUTION_IMPACT (WO-086).
+//
+// The Level-1 refusal here is defense in depth, not the extension's only
+// guard: the extension already gates the panel client-side off
+// effective_level, exactly the way it gates the Live tab (applyLiveEntitlement),
+// so this only matters against a stale or buggy client that asks anyway.
+func handleGetContributionImpact(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	if allowed, level := contributionImpactLevel(st); !allowed {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "contribution impact needs broad sharing: this panel shows " +
+				"evidence that your copy is doing useful serving work, which only " +
+				"exists once your node answers requests for other people.",
+			Code: bridge.CodeContributionRequired,
+			Detail: bridge.ContributionRequiredDetail{
+				Capability:     bridge.CapContributionImpact,
+				RequiredLevel:  store.LevelBroad,
+				EffectiveLevel: level,
+			},
+		})
+	}
+	n := currentSwarmNode()
+	if n == nil {
+		return reply(out, env.ID, "CONTRIBUTION_IMPACT_RESULT", bridge.ContributionImpactPayload{Available: false})
+	}
+	snap, err := n.ContributionImpact()
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	answered, bytesServed, since, err := st.ContributionActivity()
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	return reply(out, env.ID, "CONTRIBUTION_IMPACT_RESULT", bridge.ContributionImpactPayload{
+		RequestsAnswered:      answered,
+		BytesServed:           bytesServed,
+		SinceDay:              since,
+		GraphClaimsLocal:      snap.GraphClaimsLocal,
+		GraphClaimsPeerCached: snap.GraphClaimsPeerCached,
+		CatalogueLocal:        snap.CatalogueLocal,
+		CataloguePeerCached:   snap.CataloguePeerCached,
+		BucketsAnnounced:      snap.BucketsAnnounced,
+		ShardsAnnounced:       snap.ShardsAnnounced,
+		ConnectedPeers:        n.Peers(),
+		KeelPeers:             n.KeelPeers(),
+		Available:             true,
+	})
 }
 
 // handleWordStats answers WORD_STATS (WO-068): corpus-wide word % + nested

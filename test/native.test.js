@@ -214,6 +214,11 @@ describe("native bridge (WO-004 §6.1, §6.2, WO-008)", () => {
     assert.equal(hello.payload.client_version, "0.1.0");
     assert.deepEqual(hello.payload.api, { min: 1, max: 1 });
     assert.equal(hello.payload.required.core, 1);
+    assert.equal(
+      hello.payload.required.network_consent,
+      1,
+      "an old daemon without the consent gate must fail HELLO closed (WO-089)"
+    );
     assert.equal(hello.payload.optional.contribution_runtime, 1);
   });
 

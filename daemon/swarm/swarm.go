@@ -130,6 +130,11 @@ type Store interface {
 	RecordTokenSearch(token string, foundVideoIDs []string) error
 	// LocalWordTelemetry backs on-demand word corpus stats (WO-068).
 	LocalWordTelemetry(sources store.SourceSet) (*store.WordTelemetry, error)
+	// RecordContributionServe and ContributionImpactSnapshot back the WO-086
+	// contribution-impact panel — see contribution_impact.go in this package
+	// and daemon/store/contribution_impact.go.
+	RecordContributionServe(bytesWritten int) error
+	ContributionImpactSnapshot(prefixBits int, graphSources, catalogueSources store.SourceSet) (store.ImpactSnapshot, error)
 }
 
 // Config controls what a node offers and consumes.
@@ -257,10 +262,29 @@ func (n *Node) mayGossipSearchTelemetry() bool {
 	return n.cfg.Policy.JoinSearchTelemetry && n.outbound.Load()
 }
 
-// mayExchangeWordTelemetry reports whether the WO-068 word pack may be served.
-// Deliberately not tied to block service — see Policy.ExchangeWordTelemetry.
-func (n *Node) mayExchangeWordTelemetry() bool {
-	return n.cfg.Policy.ExchangeWordTelemetry && n.outbound.Load()
+// mayServeWordTelemetry reports whether the WO-068 word pack may be sent to a
+// peer right now. Level 2+ since WO-089: the pack is derived from the titles
+// this user was shown. Fetching one is a separate capability.
+func (n *Node) mayServeWordTelemetry() bool {
+	return n.cfg.Policy.ServeWordTelemetry && n.outbound.Load()
+}
+
+// mayServeLive reports whether the whole-index live snapshot may be handed to
+// a peer right now.
+//
+// Gate-aware, like every other serve path: startLive only registers the
+// handler at Level 2+, but a downgrade shuts the gate before the node is torn
+// down, and requests keep arriving in that window (WO-077). Without this, a
+// user who chose Level 1 could still be answering live snapshots for as long
+// as teardown took.
+func (n *Node) mayServeLive() bool {
+	return n.cfg.Policy.Live && n.outbound.Load()
+}
+
+// mayPublishLive reports whether a locally observed sighting may be gossiped.
+// Same gate, other direction — see PublishLive.
+func (n *Node) mayPublishLive() bool {
+	return n.cfg.Policy.Live && n.outbound.Load()
 }
 
 // Policy exposes the capability set this node was constructed with, so the
@@ -275,6 +299,14 @@ func (n *Node) Policy() Policy { return n.cfg.Policy }
 // level is stored" and "is this thing still serving" have different answers.
 // The second is the one a status display should show.
 func (n *Node) Serving() bool { return n.mayServeBlocks() }
+
+// ContributionImpact reports the live half of WO-086's panel: what this node
+// currently holds and would announce, computed from the exact selectors
+// Announce and the serve handlers already use, so it is provably the corpus
+// this node actually serves rather than a value that could drift from it.
+func (n *Node) ContributionImpact() (store.ImpactSnapshot, error) {
+	return n.st.ContributionImpactSnapshot(n.prefixBits(), n.cfg.Policy.GraphSources(), n.cfg.Policy.CatalogueSources())
+}
 
 // newNode builds a Node with its outbound gate open. Every construction goes
 // through here so a node can never exist with the gate in its zero value
@@ -410,12 +442,12 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 			n.logf("relay service unavailable: %v", err)
 		}
 	}
-	// Registered independently of block service (WO-077): the word pack is a
-	// fixed-shape display aggregate with no plaintext words, ids, edges or
-	// query, and Level 1 answers it — including its own corpus, so the global
-	// statistic actually covers this node. Tying it to ServeBroadBuckets made a
-	// Level-1 node silently absent from a statistic it was itself reading.
-	if cfg.Policy.ExchangeWordTelemetry {
+	// Registered independently of block service, and only for a node that may
+	// answer it (WO-089). The pack is built from the titles this node has
+	// seen, so serving it is observation-derived sharing even though the wire
+	// form is a fixed-shape sketch. Level 1 still *fetches* packs — that is
+	// Policy.FetchWordTelemetry, and it needs no handler.
+	if cfg.Policy.ServeWordTelemetry {
 		h.SetStreamHandler(WordTelemetryProtocol, n.handleWordTelemetry)
 	}
 
@@ -428,6 +460,11 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		n.ps = ps
 	}
 
+	// Level 2+ only since WO-089. Everything Live does — joining the topic,
+	// relaying, seeding from local sightings, serving the snapshot — hangs off
+	// this one call, so a Level-1 node has no live object, no subscription and
+	// no snapshot handler at all. There is deliberately no receive-only mode:
+	// see Policy.Live.
 	if cfg.Policy.Live {
 		if err := n.startLive(ctx); err != nil {
 			// The live index is additive: without it the rest works.
@@ -582,6 +619,9 @@ func (n *Node) handleBlockRequest(s network.Stream) {
 		return
 	}
 	_, _ = s.Write(raw)
+	if err := n.st.RecordContributionServe(len(raw)); err != nil {
+		n.logf("prefix %s: recording contribution activity: %v", prefix, err)
+	}
 }
 
 func trimLine(s string) string {
@@ -633,6 +673,9 @@ func (n *Node) handleCatalogueRequest(s network.Stream) {
 		return
 	}
 	_, _ = s.Write(raw)
+	if err := n.st.RecordContributionServe(len(raw)); err != nil {
+		n.logf("catalogue %s: recording contribution activity: %v", prefix, err)
+	}
 }
 
 // syncCatalogue fetches titles for every target in a graph bucket reply.

@@ -4,19 +4,39 @@ Updated 2026-08-12.
 
 ## Current stabilization queue
 
-The normative architecture is `ARCHITECTURE_CURRENT.md`. Every code order from
-the architecture review has landed: WO-077–081, WO-083, WO-084, WO-085 and
-WO-088. What remains is **live QA and one audit**, not implementation:
+The normative architecture is `ARCHITECTURE_CURRENT.md`. Every original code
+order from the architecture review has landed: WO-077–081, WO-083, WO-084,
+WO-085 and WO-088. WO-082's final policy pass then found one new runtime order
+and its small review follow-up; both have landed:
+
+- **WO-089 — observation-derived Live and word sharing start at Level 2.**
+  Implemented. Level 1 keeps discovery, seed/bucket fetch, graph pre-walk and
+  fetched global word statistics, but has no Live capability and sends no local
+  word aggregate. The daemon proves the corrected initial recording/consumer-
+  network consent before starting Level 1. Two-machine wire inspection remains.
+- **WO-090 — remove stale copy claiming Live works at Level 1.** Done. The two
+  full-page strings and their DOM regression tests now match WO-089.
+
+WO-082's architecture audit is closed. No architecture implementation order is
+open from this review.
+
+The current implementation queue is:
+
+- **WO-091 — Windows native-host installation.** Release-test blocker. The
+  current `install -all` lets Firefox overwrite the Chromium manifest used by
+  Brave, and installation cannot be diagnosed on the affected no-keyboard
+  machine. Fix and live-verify this first.
+- **WO-092 — contribution-impact accounting correctness.** Follow-up to
+  implemented WO-086: count only complete replies and enforce/propagate the
+  cumulative counter's database invariant. This follows WO-091.
+
+The remaining operational checks are:
 
 - WO-079 — Windows live QA.
 - WO-080 — multi-tab live QA.
 - WO-084 — two-machine network inspection.
 - WO-085 — two-machine serving-limit load check against a real uplink;
   the automated proof is loopback only.
-- WO-082 — the final consistency audit, which can now close against the real
-  tree rather than around open gaps. The 2026-08-12 pass reconciled the
-  already-shipped architecture but deliberately did not pretend the then-open
-  code orders had landed.
 
 Nothing here should be read as "ready to publish": the live QA above is the
 gate, and the release rule below it still stands.

@@ -367,6 +367,16 @@ CREATE TABLE IF NOT EXISTS local_claims (
   content_sha256 TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_local_claims_pub ON local_claims(public_key);
+
+-- Cumulative serving activity (WO-086). Exactly one row, counters only: no
+-- peer id, query, prefix/bucket identifier or per-request timestamp — see
+-- contribution_impact.go. Bounded by construction, not by a sweep: the code
+-- path only ever UPDATEs this row or INSERTs once into an empty table.
+CREATE TABLE IF NOT EXISTS contribution_activity (
+  requests_answered INTEGER NOT NULL DEFAULT 0,
+  bytes_served INTEGER NOT NULL DEFAULT 0,
+  since_day TEXT NOT NULL DEFAULT ''
+);
 `)
 	if err != nil {
 		return err

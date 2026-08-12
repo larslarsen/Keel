@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Contribution policy: what a running node is permitted to do (WO-077, WO-084).
+// Contribution policy: what a running node is permitted to do
+// (WO-077, WO-084, WO-085, WO-089).
 //
 // The capabilities below are selected independently rather than derived from
 // one "swarm enabled" boolean, because they are not one decision. The pairing
@@ -9,14 +10,34 @@
 // the capability, not at the subsystem.
 //
 // The consumer/contributor split is the product boundary, and it does not run
-// where a "do you share?" flag would put it. Level 1 fetches, pre-walks,
-// exchanges the whole word-telemetry pack and both receives and originates live
-// gossip. What it does not do is serve blocks, announce itself as their
-// provider, or join the three-gram topics — all of which exist to make *this
-// node's* cache findable. Privacy is not a toll booth: withholding the local
-// cache must not withhold the product.
+// where a "do you share?" flag would put it. Level 1 fetches, pre-walks and
+// downloads the whole word-telemetry pack, and uses all of it locally. What it
+// does not do is serve blocks, announce itself as their provider, or join the
+// three-gram topics — all of which exist to make *this node's* cache findable.
+// Privacy is not a toll booth: withholding the local cache must not withhold
+// the product.
 //
-// # The one exception, and why it is not a toll booth either (WO-085)
+// # What WO-089 moved, and the line it draws
+//
+// Level 1 used to run Live and answer the word-telemetry protocol. Both are
+// now Level 2+, and the rule that decides it is simpler than the one it
+// replaces: **anything derived from what this user was shown is Level 2.**
+//
+// The earlier reasoning asked whether a payload was aggregated enough, or
+// authorless enough, to be harmless by default. That question has no stable
+// answer — "no application-level sender" is not an anonymity proof against a
+// direct neighbour with topology and timing, and a fixed-shape CMS still
+// answers guesses about words in a personal corpus. The new line does not
+// require the answer. A live sighting and a local word aggregate are both
+// products of this user's feed, so neither leaves at the default, and consent
+// copy has one honest sentence to say instead of a graded one.
+//
+// Consumption is unchanged: the seed, broad bucket fetch, graph pre-walk and
+// the download of the global word statistic all remain Level 1, because none
+// of them publishes anything of the user's. Requests still expose IP, timing
+// and a coarse prefix, which the privacy policy states.
+//
+// # The capacity exception, which is not a disclosure boundary (WO-085)
 //
 // DistributedSearch is off at Level 1. That is a capacity boundary, not a
 // price on privacy: voluntary contribution plus unlimited consumption has no
@@ -71,10 +92,21 @@ var ErrDistributedSearchNotPermitted = errors.New(
 // network behaviour cannot quietly inherit an existing level's answer.
 type Policy struct {
 	// Live receives, relays and originates live gossip, and serves the whole
-	// live snapshot. On at every level: the shared live index is whole-feed
-	// gossip whose query privacy comes from holding the whole index, so a
-	// node that only listened would be taking without giving for no privacy
-	// gain. Its outbound disclosure is stated in the consent copy.
+	// live snapshot. Level 2+ (WO-089).
+	//
+	// It was on at every level, on the reasoning that whole-feed gossip has no
+	// per-query disclosure and that a listen-only node would take without
+	// giving. WO-089 overturns that, and the reason is the disclosure, not the
+	// reciprocity: a live notice is *derived from what this user was shown*.
+	// "No application-level author" is not an anonymity proof — a direct
+	// neighbour can use connection topology and timing to infer who originated
+	// a sighting probabilistically. So publishing one is observation-derived
+	// sharing, and observation-derived sharing is what Level 2 means.
+	//
+	// There is deliberately no receive-only or relay-only Live at Level 1.
+	// Relaying is publishing to the next hop, and a subscriber is visible on
+	// the mesh; a half-measure would put a Level-1 node on a topic while the
+	// interface told the user nothing of theirs was on the network.
 	Live bool
 
 	// Fetch requests graph/catalogue/search-shard blocks from peers and
@@ -102,8 +134,9 @@ type Policy struct {
 	// The pairing with ServeBroadBuckets is the whole point: a node may search
 	// the public graph because it also hosts the public graph and answers
 	// other people's searches. Level 1 stays a full consumer of everything
-	// bounded — local search, seed, pre-walk, shared suggestions, Live and
-	// word statistics — and is personal, not offline.
+	// bounded — local search, seed, pre-walk, shared suggestions and fetched
+	// word statistics — and is personal, not offline. Live and outbound word
+	// contribution begin at Level 2 (WO-089).
 	//
 	// UI gating cannot stop a modified client, so this is an honest-client
 	// product contract rather than a security boundary. The serving limits in
@@ -158,15 +191,29 @@ type Policy struct {
 	// searches anyway — the optimization is absent, the capability is not.
 	JoinSearchTelemetry bool
 
-	// ExchangeWordTelemetry fetches and answers the WO-068 word-level HLL/CMS
-	// pack.
+	// FetchWordTelemetry requests the WO-068 word-level HLL/CMS pack from
+	// peers, for the corpus bars under the search box.
 	//
-	// On at every level, and deliberately not tied to block service: it is a
-	// fixed-shape display aggregate with no plaintext words, ids, edges or
-	// query, and it is whole-pack, so answering it discloses no per-item
-	// interest the way a block request would. At Level 1 the pack still
-	// includes the local corpus, so the global statistic actually covers it.
-	ExchangeWordTelemetry bool
+	// On at every level. Asking for a fixed-shape aggregate is consumption,
+	// and the whole pack is the request — there is no per-word or per-query
+	// interest disclosed by making it.
+	FetchWordTelemetry bool
+
+	// ServeWordTelemetry answers the word-telemetry stream, with a pack that
+	// includes this node's own corpus. Level 2+ (WO-089).
+	//
+	// Split from fetching because they are opposite directions with opposite
+	// disclosures, and the old combined capability got that wrong. Answering
+	// the protocol means sending an aggregate *derived from the titles this
+	// user was shown*. The pack carries no plaintext words, video ids, edges
+	// or query — but a guessed word can be tested against a CMS, so it is
+	// aggregate metadata about a personal corpus, not zero disclosure.
+	//
+	// The consequence is accepted deliberately: a Level-1 node reads a global
+	// statistic it does not contribute to, so the statistic under-counts
+	// non-sharing installs. Under-reporting a display aggregate is the correct
+	// trade against publishing something derived from observation by default.
+	ServeWordTelemetry bool
 
 	// PublishCohortMeasurements publishes STAR-protected cohort measurements.
 	// Level 3+, and unimplemented — no STAR client exists.
@@ -193,11 +240,15 @@ type Policy struct {
 // erroring: an unreadable setting must never be read as consent to serve.
 func PolicyForLevel(level int) Policy {
 	p := Policy{
-		Live:                  true,
-		Fetch:                 true,
-		ExchangeWordTelemetry: true,
+		Fetch:              true,
+		FetchWordTelemetry: true,
 	}
 	if level >= store.LevelBroad {
+		// Everything derived from what this user was shown starts here
+		// (WO-089): live sightings and the local word aggregate join the
+		// graph blocks that were already Level 2's.
+		p.Live = true
+		p.ServeWordTelemetry = true
 		// Reciprocal, and set here beside the serving capabilities rather than
 		// with the consumer ones above so the pairing is visible in the code:
 		// the level that may search other people's shards is the level that

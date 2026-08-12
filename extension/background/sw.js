@@ -132,6 +132,11 @@ const router = createRpcRouter({
   broadcast,
   broadcastToSiteTabs,
   onHideModeChanged: broadcastHideState,
+  openConsentPage: () => {
+    browser.tabs
+      ?.create?.({ url: browser.runtime.getURL("consent/index.html") })
+      .catch((err) => log("openConsentPage", err?.message || err));
+  },
   log,
 });
 

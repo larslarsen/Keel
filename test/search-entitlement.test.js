@@ -47,6 +47,9 @@ let daemonState = {
 /** Capability map the fake daemon negotiated. */
 let capabilities = { core: 1, peer_search: 2, contribution_runtime: 1 };
 
+/** Swarm block the fake daemon reports via GET_STATS (WO-090). */
+let statsSwarm = { up: false };
+
 const listeners = [];
 
 /** Deliver a broadcast the way the SW does, then let the handlers settle. */
@@ -77,7 +80,11 @@ describe("network-search control follows the contribution level (WO-085)", () =>
             case "GET_CONTRIBUTION":
               return { ok: true, daemon: { ...daemonState } };
             case "GET_STATS":
-              return { ok: true, connected: true, stats: null };
+              return { ok: true, connected: true, stats: { swarm: statsSwarm } };
+            case "GET_CONSENT":
+              return { ok: true, consent: "granted" };
+            case "GET_NETWORK_CONSENT":
+              return { ok: true, daemon: { consent_required: false } };
             default:
               return { ok: true };
           }
@@ -121,6 +128,23 @@ describe("network-search control follows the contribution level (WO-085)", () =>
     assert.equal(route.hidden, false, "a disabled control with no route is a dead end");
   });
 
+  it("does not claim shared Live works at Level 1 (WO-090)", async () => {
+    daemonState = { ...daemonState, effective_level: 1, distributed_search: false };
+    await broadcast({ type: "CONTRIBUTION_STATUS", payload: { ...daemonState } });
+
+    const reason = document.getElementById("search-network-reason");
+    assert.doesNotMatch(
+      reason.textContent,
+      /Live[^.]*\ball work\b/i,
+      "the copy must not list Live among the things that work at Level 1"
+    );
+    assert.match(
+      reason.textContent,
+      /shared Live feed.*Broad sharing/i,
+      "the copy must say Live starts at Broad sharing, alongside distributed search"
+    );
+  });
+
   it("enables the control the moment the daemon reports Level 2, with no reload", async () => {
     daemonState = { ...daemonState, effective_level: 2, distributed_search: true };
     await broadcast({ type: "CONTRIBUTION_STATUS", payload: { ...daemonState } });
@@ -162,6 +186,63 @@ describe("network-search control follows the contribution level (WO-085)", () =>
       "there is nothing to explain when the control works"
     );
     capabilities = { core: 1, peer_search: 2, contribution_runtime: 1 };
+  });
+
+  it("gates the Live surface with its own copy and route (WO-089)", async () => {
+    const { renderLive } = await import(
+      "../extension/page/index.js"
+    );
+    renderLive({
+      available: false,
+      code: "contribution_required",
+      required_level: 2,
+      reason: "Live starts at Broad sharing: the shared feed is built from " +
+        "livestream sightings people publish.",
+      streams: [],
+    });
+    const note = document.getElementById("live-note");
+    const reason = document.getElementById("live-reason");
+    const route = document.getElementById("live-route");
+    assert.equal(note.hidden, false, "the reason must be shown, not left blank");
+    assert.match(reason.textContent, /broad sharing/i);
+    assert.equal(route.hidden, false, "a gated surface needs a route to the setting");
+    assert.equal(
+      document.getElementById("live-q").disabled,
+      true,
+      "the filter must be disabled — there is nothing to filter"
+    );
+    assert.equal(
+      document.getElementById("live-table").hidden,
+      true,
+      "no table under a gated feed"
+    );
+
+    // A plain network outage is a different answer and must not offer a route
+    // to a setting that would not fix it.
+    renderLive({ available: false, reason: "not connected to the network yet", streams: [] });
+    assert.equal(document.getElementById("live-note").hidden, true);
+    assert.equal(document.getElementById("live-route").hidden, true);
+    assert.equal(document.getElementById("live-q").disabled, false);
+    assert.match(document.getElementById("live-meta").textContent, /not connected/i);
+
+    // And an available feed clears the gate copy rather than leaving it under
+    // a working table.
+    renderLive({ available: true, streams: [], indexed: 0 });
+    assert.equal(document.getElementById("live-note").hidden, true);
+    assert.equal(document.getElementById("live-q").disabled, false);
+  });
+
+  it("does not except livestreams from the disconnected-swarm message at Level 1 (WO-090)", async () => {
+    // refreshStats() ran once already on module load, against the disconnected
+    // swarm the mock reports by default — exercising the real render path
+    // rather than calling renderSwarm() directly.
+    const row = document.getElementById("swarm-row");
+    assert.match(row.textContent, /no peer connection/i);
+    assert.doesNotMatch(
+      row.textContent,
+      /livestream/i,
+      "disconnected-at-Level-1 must not carve out an exception for Live"
+    );
   });
 
   it("disables the control with the update message when peer_search is absent", async () => {

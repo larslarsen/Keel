@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Sonnet/Opus) |
-| **Status** | **Done 2026-08-11** — see "What was closed" at the end. |
+| **Status** | **Historical — implemented 2026-08-11, then Level-1 Live decision superseded by WO-089** |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 
@@ -20,6 +20,12 @@ The privacy policy discloses an exception, but the product still calls Level 1
 all be true as written.
 
 ## Decision — 2026-08-11, Lars
+
+> **Superseded 2026-08-12:** WO-089 moves the entire Live gossip/snapshot
+> capability and outbound word telemetry to Level 2+. Level 1 keeps
+> fetch/pre-walk and may fetch global word statistics, but has no Live receive,
+> relay, origination or snapshot path and serves no word pack. The text below
+> records the earlier decision and why it changed; it is not normative.
 
 > **Later capability correction:** WO-085 keeps the fetch/pre-walk and
 > disclosure boundary decided here but makes user-triggered distributed peer

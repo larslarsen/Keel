@@ -82,6 +82,9 @@ func (n *Node) handleShardRequest(s network.Stream) {
 		return
 	}
 	_, _ = s.Write(raw)
+	if err := n.st.RecordContributionServe(len(raw)); err != nil {
+		n.logf("shard %d: recording contribution activity: %v", shard, err)
+	}
 }
 
 func parseShard(s string) (int, bool) {

@@ -7,6 +7,11 @@
 observed graph (the swarm's view of YouTube) contains: how big it is, what words
 appear, and a per-word percentage bar in the search UI. NOT a search/fetch axis.
 
+> **Contribution-policy amendment, 2026-08-12:** WO-089 keeps word-statistics
+> fetch at Level 1 but moves word-protocol service and local-corpus contribution
+> to Level 2+. The transport and data structure below remain unchanged; the
+> level gate is superseded.
+
 ## Correction (2026-08-10)
 
 The character tokenizer is `ShardK = 3` CHARACTER n-grams over `TokenDictAlphabet`

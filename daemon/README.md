@@ -44,8 +44,35 @@ what it wrote. Per-user only: no admin rights, nothing outside your own config d
 
 To remove: `./keel-host uninstall` (add `-dry-run` to preview).
 
-**Windows** registers through the registry rather than a directory, so the manifests are written and
-the exact `reg add` commands are printed for you to run.
+### Windows
+
+Windows registers through the registry rather than a directory, so the installer writes the
+manifests and then executes the `reg add` calls itself — nothing is printed for the user to run.
+Specifically (WO-091):
+
+- **Double-clicking `keel-host.exe` with no arguments installs.** A native-messaging launch always
+  carries the caller's origin (Chromium) or manifest path (Firefox) in `argv`, so an invocation
+  with arguments still becomes a proxy and never reinstalls underneath a running browser.
+- **Two manifests, one per schema**, because a Chromium manifest has `allowed_origins` and a
+  Firefox manifest has `allowed_extensions`:
+  - `%LOCALAPPDATA%\Keel\chromium\com.keel.host.json` — Chrome, Chromium, Brave, Edge
+  - `%LOCALAPPDATA%\Keel\firefox\com.keel.host.json` — Firefox
+
+  The base comes from `LOCALAPPDATA`; if it is unset the install fails rather than guessing.
+- **All five browsers are always registered.** An HKCU key only that browser reads is harmless, and
+  there is no directory to detect them by.
+- **Every write is read back.** Each manifest is decoded and checked (host name, current executable
+  path, `stdio`, the right extension list, no field from the other schema), and each registry key
+  is re-queried and compared with the exact intended path. A missing key, wrong value, invalid
+  manifest or absent executable fails the install with a non-zero exit — never a warning.
+- **`install-report.txt` is written beside the executable** on every real install, progressively, so
+  a failure that happens before the console appears is still readable. It holds the version, the
+  executable path, both manifests and their validation, every registry key with expected and
+  observed value, the extension-folder result, `SUCCESS`/`FAILED`, and the first actionable error.
+  It contains paths and registry keys only — no corpus, observation, peer, query or credential data.
+
+`uninstall` removes both manifests and every registry key the installer owns. It does not delete
+`keel.sqlite`.
 
 Then reload the extension. The SidePanel should show **Desktop app connected**.
 
@@ -128,11 +155,14 @@ File name: `com.keel.host.json`.
 | Edge | `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.keel.host` |
 | Firefox | `HKCU\Software\Mozilla\NativeMessagingHosts\com.keel.host` |
 
-The registry value is the full path to a `com.keel.host.json` file (same JSON shape as Linux/macOS).
+The registry value is the full path to a `com.keel.host.json` file. The **Firefox key must point at a
+different file** from the four Chromium keys: the schemas are not interchangeable, and one file
+serving both means whichever browser was written last is the only one that works.
 
 5. Reload the extension. SidePanel should show **Desktop app connected**.
 
-*(Implemented — `keel-host install` writes registration for every detected Chromium variant, not only Chrome.)*
+*(Implemented — `keel-host install` registers every supported Chromium variant, not only Chrome, and
+on Windows verifies each key by reading it back.)*
 
 ## Brave notes
 

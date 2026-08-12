@@ -126,6 +126,12 @@ func TestOwnerMultiplexesSessionsAndSurvivesClientEOF(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// The user has accepted the current network disclosure (WO-089). Without
+	// it SET_CONTRIBUTION is refused, no status event is published, and the
+	// broadcast this test exists to check would correctly never arrive.
+	if _, err := st.GrantNetworkConsent(store.NetworkConsentRevision); err != nil {
+		t.Fatal(err)
+	}
 	// Keep this transport test off the public network while still exercising a
 	// successful runtime transition through the same supervisor path as the
 	// owner. WO-077's real-node policy transitions have their own tests.
@@ -355,6 +361,12 @@ func TestUnnegotiatedSessionReceivesNoOwnerBroadcast(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// The user has accepted the current network disclosure (WO-089). Without
+	// it SET_CONTRIBUTION is refused, no status event is published, and the
+	// broadcast this test exists to check would correctly never arrive.
+	if _, err := st.GrantNetworkConsent(store.NetworkConsentRevision); err != nil {
+		t.Fatal(err)
+	}
 
 	oldSupervisor := supervisor
 	testSupervisor := &swarmSupervisor{

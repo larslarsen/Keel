@@ -97,6 +97,12 @@ func TestRPCCapabilityMap(t *testing.T) {
 	if RPCCapability("SET_CONTRIBUTION") != CapContributionRuntime {
 		t.Fatal("SET_CONTRIBUTION")
 	}
+	if RPCCapability("GET_NETWORK_CONSENT") != CapNetworkConsent {
+		t.Fatal("GET_NETWORK_CONSENT")
+	}
+	if RPCCapability("SET_NETWORK_CONSENT") != CapNetworkConsent {
+		t.Fatal("SET_NETWORK_CONSENT")
+	}
 }
 
 // TestNegotiateSelectsLowerOfTheTwoRevisions pins what "highest mutually

@@ -40,13 +40,37 @@
       all of it, at any time.
     </p>
 
+    <h2>What it downloads</h2>
+    <p class="meta">
+      Keel joins a peer-to-peer network and <strong>downloads</strong> three
+      things: a starter recommendation dataset, groups of shared recommendation
+      data that make its suggestions work, and a global word statistic used for
+      the bars under the search box. Asking for those is a request other
+      computers can see — they learn your address, the time, and roughly which
+      slice of the catalogue you asked about, never the video you wanted. There
+      is no Keel server; the answers come from other people running Keel.
+    </p>
+    <p class="meta">
+      <strong>Nothing derived from what you were shown is sent.</strong> Not a
+      recommendation, not a livestream you saw, not a word from your own
+      library. Sharing any of that is a separate choice called
+      <em>Broad sharing</em>, on the Your data page, and it is off unless you
+      turn it on.
+    </p>
+
     <div class="btn-row" id="choices">
-      <button type="button" class="btn" id="btn-accept">Start recording</button>
+      <button type="button" class="btn" id="btn-accept">
+        Start recording and downloading
+      </button>
+      <button type="button" class="btn" id="btn-decline">Not now</button>
     </div>
     <p class="meta" id="status" role="status"></p>
 
     <p class="meta">
-      Nothing is recorded until you press that. Recording <em>is</em> Keel — its
+      Nothing is recorded and nothing is downloaded until you press that, and
+      the desktop app enforces the second part itself: it will not open a
+      network connection until it has your answer, whatever this browser
+      thinks. Recording <em>is</em> Keel — its
       suggestions, search and analysis are all computed from what it has kept
       here — so until you do, it has nothing to show you. If you change your
       mind later, remove the extension or delete the desktop app; the Your data
@@ -54,25 +78,18 @@
     </p>
 
     <p class="meta">
-      <strong>Publishing recommendation blocks is separate, and off by
-      default.</strong> At every level Keel still participates in the peer
-      network: it requests broad shared data, announces livestreams it sees,
-      and exchanges a whole fixed-shape word-popularity aggregate that includes
-      its local corpus. The word pack carries no plaintext words, video ids,
-      edges or search query, but known-word guesses can be tested against it.
-      Choosing "broad sharing" additionally sends counts derived from your
-      recording: which video appeared alongside which, grouped by rough
-      position and day, with no raw timestamp, title, query, page visit or watch
-      order. Your computer serves each complete broad bucket with both its own
-      claims and cached peer claims, without labelling which is which. Different
-      neighbourhoods use unlinkable claim keys, but peers still see ordinary
-      connection metadata and may link deliveries by address or timing.
-    </p>
-    <p class="meta">
-      A livestream notice carries the video and no application-level sender —
-      not your name or an identifier for your copy of Keel. A directly
-      connected peer still sees your network address and may infer an origin
-      from topology and timing.
+      <strong>Sharing what you were shown is separate, and off by
+      default.</strong> Choosing <em>Broad sharing</em> on the Your data page
+      is the decision that publishes livestreams you saw, contributes your
+      word-popularity aggregate, answers other people's searches, and serves
+      complete broad buckets containing both cached peer claims and aggregated
+      recommendation counts derived from your recording. A livestream notice
+      carries no sender field, but a peer you are connected to can still infer
+      that it started with you from timing. The word pack carries no plaintext
+      words, video ids, edges or search query, but a guessed word can be tested
+      against it. Recommendation counts are grouped by rough position and day,
+      with no raw timestamp, title, query, page visit or watch order, and are
+      sent only as whole buckets of thousands of videos.
     </p>
 
     <p class="meta">

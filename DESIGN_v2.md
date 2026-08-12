@@ -514,8 +514,8 @@ honestly rather than dressed as anonymity.
 
 | Slider setting | What leaves the device | Mechanism | Partner needed |
 |---|---|---|---|
-| **L1 — Strictly Personal** *(default)* | Livestream notices and the whole fixed-shape word HLL/CMS aggregate; no raw words, recommendation edges, watch trail or served blocks | Live gossip/snapshot (§7.5) + WO-068 word telemetry | No Keel-operated partner |
-| **L2 — Broad sharing** | The same Level-1 products plus aggregated, stringless graph blocks derived locally and cached from peers, served only in complete broad prefix buckets with their broad catalogue/search companions | Broad hashed buckets/shards (§7.4); no selected-video response | No |
+| **L1 — Strictly Personal** *(default)* | No observation-derived application payload. It makes broad consumer requests and may fetch global word telemetry, but has no Live capability and serves no word pack or graph/search block. | Consumer-only broad fetch/pre-walk; fetch-only WO-068 word telemetry | No Keel-operated partner |
+| **L2 — Broad sharing** | Livestream notices, the local word HLL/CMS aggregate, and aggregated stringless graph blocks derived locally and cached from peers, served only in complete broad prefix buckets with their broad catalogue/search companions | Live gossip/snapshot (§7.5), bidirectional WO-068 word telemetry and broad hashed buckets/shards (§7.4); no selected-video response | No |
 | **L3 — Cohort** *(not built)* | Level-2 broad blocks plus threshold-protected cohort measurements | STAR (§6.2) | **Yes** — OPRF helper |
 | **L4 — Transparency** *(not built)* | Signed public observations, attributed | Direct publication | No |
 
@@ -1093,15 +1093,17 @@ Implementation gaps against this contract are listed in
 
 | Level | Asks the network | Serves | Publishes its own observations | Live feed |
 |---|---|---|---|---|
-| 1 Personal | Seed and prefix buckets for suggestions/pre-walk, word telemetry; no user-triggered distributed search | Live snapshot + whole word HLL/CMS pack; no graph/catalogue/search blocks | Live notice + aggregate word HLL/CMS only | Full participant |
-| 2 Broad sharing | Level-1 requests plus user-triggered distributed peer search | Complete local-plus-cached broad graph/catalogue/search buckets | Aggregated stringless local graph blocks + live notice + word HLL/CMS; no ordered trail | Full participant |
-| 3 Cohort | Prefix buckets | Same broad buckets as Level 2 | Level-2 products + STAR aggregate (not built) | Full participant |
-| 4 Transparency | Prefix buckets | Same broad buckets as Level 2 | Word telemetry + deliberately attributed funnel publication (not built) | Full participant |
+| 1 Personal | Seed and prefix buckets for suggestions/pre-walk, word telemetry fetch; no user-triggered distributed search | Nothing | None | Off |
+| 2 Broad sharing | Level-1 requests plus user-triggered distributed peer search | Complete local-plus-cached broad graph/catalogue/search buckets, live snapshot, word HLL/CMS pack | Aggregated stringless local graph blocks + live notice + word HLL/CMS; no ordered trail | Full participant |
+| 3 Cohort | Prefix buckets | Same as Level 2 | Level-2 products + STAR aggregate (not built) | Full participant |
+| 4 Transparency | Prefix buckets | Same as Level 2 | Word telemetry + deliberately attributed funnel publication (not built) | Full participant |
 
-The live feed is outside contribution gating. It avoids per-item query leakage
-because every node requests the whole index (§7.3a), and reports carry no stable
-application author (§7.5). It is still network disclosure: a direct neighbour
-may infer origin from topology and timing. Level 1 both receives and reports.
+**Superseded 2026-08-12 by WO-089.** The live feed used to sit outside contribution
+gating, on the argument that whole-index gossip avoids per-item query leakage
+and that reports carry no stable application author (§7.5). That is still
+network disclosure: a direct neighbour may infer origin from topology and
+timing, and a sighting is derived from what this user was shown. Live and
+outbound word telemetry therefore begin at Level 2.
 
 **Level 1 is a full consumer.** It receives the common seed, requests whole
 graph/catalogue/search prefix buckets and pre-walks the graph. It does not join
@@ -1110,13 +1112,14 @@ optimization data is treated as unknown and fetching still works. Requests expos
 coarse prefix set, but access is not gated on contribution: the privacy promise
 is not a toll booth.
 
-Level 1 has two outbound products. It originates/relays live notices, and it
-answers WO-068's whole fixed-shape word HLL/CMS telemetry request, including its
-aggregate local corpus. That pack contains no plaintext word, video id, edge or
-query, but its CMS can answer guesses for known words; it is aggregate
-disclosure, not zero disclosure. Level 1 does not serve graph, catalogue or
-search blocks, including data it fetched and cached, and it makes no provider
-announcement.
+Level 1 has one outbound product: the network request itself. It fetches the
+seed, whole prefix buckets and the WO-068 word HLL/CMS telemetry pack, but it
+does not originate/relay live notices and does not answer the word-telemetry
+request with its own local corpus — those are Level-2 capabilities under WO-089.
+The fetched word pack contains no plaintext word, video id, edge or query, but
+its CMS can answer guesses for known words; it is aggregate disclosure, not zero
+disclosure. Level 1 does not serve graph, catalogue or search blocks, including
+data it fetched and cached, and it makes no provider announcement.
 
 **At Level 2, broad block service includes locally produced and cached graph
 blocks; Level 1 serves no blocks.** The contribution unit is the complete hashed
@@ -1227,10 +1230,12 @@ this analysis still holds, not to bump a dependency.
 
 ## 7.5 Livestreams — an ephemeral index
 
-**Status: built 2026-08-06.** Daemon, gossip transport, cold-start backfill and
-the Live tab in the full-page surface. Tested with real gossipsub between nodes;
-like the rest of §7, not yet exercised between two machines on the open
-internet.
+**Status: built 2026-08-06; contribution boundary moved to Level 2+ by WO-089 on
+2026-08-12.** Daemon, gossip transport, cold-start backfill and the Live tab in
+the full-page surface are implemented. Level 1 has no Live object, topic,
+snapshot, relay or publish path; Level 2+ runs the complete existing system.
+Tested with real gossipsub between nodes; like the rest of §7, not yet exercised
+between two machines on the open internet.
 
 Livestreams are the case the block/catalogue split handles badly. A stream is
 interesting for hours and worthless afterwards, so persisting it into the
@@ -1323,7 +1328,7 @@ bucket-selection disclosure that gossip avoids entirely.
 
 Gossip first.
 
-### Keeping the swarm alive, and cold starts
+### Keeping the Level-2+ Live swarm alive, and cold starts
 
 **Subscription is permanent, not tied to the user opening the feed.** Limiting
 gossip to nodes currently viewing the page was considered and rejected: the
@@ -1334,17 +1339,19 @@ only once it was already popular.
 **No project-run node keeps it alive, and none is needed.** Running an always-on
 seeder was considered — it would fit beside the STAR server — and dropped
 (Lars, 2026-08-06). The two decisions are linked and the dependency runs one way:
-*not* running a node is viable **only because** subscription is permanent. Every
-running Keel daemon is a subscriber, so the mesh sustains itself. Had the page-
+*not* running a node is viable **only because** subscription is permanent at
+Level 2+. Every running Level-2+ Keel daemon is a subscriber, so the mesh
+sustains itself. Had the page-
 gated design been adopted, a seeder would have been mandatory, and the network
 would have depended on infrastructure we operate.
 
 It also avoids a channel we would otherwise have created for ourselves. Under
 page-gated subscription, joining the topic announces "this person is looking at
 livestreams right now", and always-on nodes see every join. Permanent
-subscription reveals only that a node runs Keel. Declining to build the seeder
-keeps `PRIVACY.md`'s claim that no Keel-operated server exists literally true,
-which is worth more than the bandwidth it would have saved.
+subscription reveals that a node runs Keel and chose Broad sharing or above.
+Declining to build the seeder keeps `PRIVACY.md`'s claim that no Keel-operated
+server exists literally true, which is worth more than the bandwidth it would
+have saved.
 
 **What is worth protecting here is *which* streams, not *that* someone looks at
 streams.** Somebody running a livestream discovery feature is looking at
@@ -1378,8 +1385,9 @@ therefore asks a connected peer for the whole index over
 Requesting it reveals no item-level query: the whole index is asked for every
 time, and it is the same index every node holds — §7.3a tier 1, the same shape
 as the seed pack. It still reveals that the node participates in Keel's live
-network. Serving it is ungated because the records are what gossip already
-broadcast to every participant.
+network. Within Level 2+, serving it needs no additional gate because the
+records are what gossip already broadcasts to every participant. Level 1 has
+neither the snapshot client nor server.
 
 Backfilled records count as **one publisher, the peer that sent them**.
 Inheriting a snapshot's corroboration counts would let a single node manufacture
@@ -1409,7 +1417,7 @@ instant's worth. A day-long TTL against a million concurrent streams might hold
 several million records — a few hundred KB per bucket, still comfortable. Tune
 the TTL against bucket size, not against freshness.
 
-### Nothing here is gated — decided 2026-08-06
+### Historical decision: nothing here was gated — superseded 2026-08-12
 
 Reports carry **no signature and no author**. An earlier build signed them and
 counted distinct publishers as corroboration, which forced publishing behind
@@ -1424,9 +1432,11 @@ publication metadata-free.
 
 After relay, an authorless notice has no payload field that distinguishes its
 originator from a forwarder. A direct neighbour can nevertheless combine
-topology and timing to infer an origin probabilistically. Every node receives,
-relays and reports at every level, including the default; consent and privacy
-copy must disclose that residual honestly.
+topology and timing to infer an origin probabilistically. **Superseded by
+WO-089 (2026-08-12):** the complete Live capability moved to Level 2+, so Level
+1 neither receives, relays nor reports livestreams. The residual disclosure that
+remains at every level is the network request itself — IP, timing and a coarse
+catalogue prefix — and consent and privacy copy must disclose that honestly.
 
 **What this costs.** Records remain unverifiable claims — nothing signs YouTube
 state (§6.4) — and without authorship they cannot be corroborated by counting

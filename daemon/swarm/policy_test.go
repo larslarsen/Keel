@@ -2,9 +2,10 @@
 // WO-077 over the wire: what a node at each level actually answers.
 //
 // These are the acceptance proofs that cannot be made by reading the policy
-// struct. A Level-1 node holding a fully populated cache must still refuse
-// every block stream, while answering the word-telemetry stream from the same
-// cache — that pair only means something if a real peer tries both.
+// struct. A Level-1 node holding a fully populated cache must refuse every
+// block stream, the live snapshot and the word-telemetry pack built from that
+// same cache, while still fetching all three from other people — and that pair
+// of claims only means something if a real peer tries both directions.
 package swarm
 
 import (
@@ -81,10 +82,20 @@ func TestLevelOneServesNoBlocksEvenWithAFullCache(t *testing.T) {
 	}
 }
 
-// TestLevelOneStillAnswersWordTelemetry is the other half of the same
-// boundary, and the one most easily got wrong: the word pack rides its own
-// capability, so a node that serves no blocks still answers it.
-func TestLevelOneStillAnswersWordTelemetry(t *testing.T) {
+// TestLevelOneNeverAnswersWordTelemetry is the other half of the same
+// boundary, and it reversed with WO-089.
+//
+// The old test asserted the opposite — that a Level-1 node answers this stream
+// even though it serves no blocks — on the reasoning that a fixed-shape HLL/CMS
+// aggregate discloses nothing per-item. What changed is not that reasoning but
+// the question being asked: the pack is built from the titles this user was
+// shown, so sending one is observation-derived sharing whatever its shape, and
+// a guessed word can still be tested against a CMS.
+//
+// The accepted cost is that the global word statistic under-counts every
+// non-sharing install. Downloading it is unaffected, which is the half the
+// user actually sees.
+func TestLevelOneNeverAnswersWordTelemetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -106,18 +117,43 @@ func TestLevelOneStillAnswersWordTelemetry(t *testing.T) {
 	if err := aNode.host.Connect(ctx, qNode.AddrInfo()); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	pack, err := aNode.fetchWordTelemetry(ctx, qNode.host.ID())
+	if _, err := aNode.fetchWordTelemetry(ctx, qNode.host.ID()); err == nil {
+		t.Error("a Level 1 node answered the word-telemetry stream from its own corpus")
+	}
+	if qNode.Policy().ServeWordTelemetry {
+		t.Error("a Level 1 policy permits serving word telemetry")
+	}
+	// Fetching is the half that stays: the corpus bars under the search box are
+	// a consumer feature, and Level 1 keeps every consumer feature.
+	if !qNode.Policy().FetchWordTelemetry {
+		t.Error("a Level 1 node cannot download global word statistics")
+	}
+
+	// Level 2 answers, and its pack covers its own corpus — the reason for
+	// including local titles at all is that a sharing node is not missing from
+	// the statistic it contributes to.
+	sharing := newStore(t, "sharing.sqlite")
+	seed(t, sharing, "seedaaaaaaa", "cachedvid02", 0)
+	sNode, err := Start(ctx, sharing, levelCfg(t, store.LevelBroad))
 	if err != nil {
-		t.Fatalf("a Level 1 node refused the word telemetry stream: %v", err)
+		t.Fatal(err)
 	}
-	if pack == nil {
-		t.Fatal("word telemetry pack was nil")
+	defer sNode.Close()
+	if err := aNode.host.Connect(ctx, sNode.AddrInfo()); err != nil {
+		t.Fatalf("connect: %v", err)
 	}
-	// The pack must cover the serving node's own corpus — the point of
-	// including local titles is that the global statistic is not systematically
-	// missing every node that reads it.
-	if pack.DistinctWords() == 0 {
-		t.Error("a Level 1 node's word pack excluded its own corpus")
+	pack, err := aNode.fetchWordTelemetry(ctx, sNode.host.ID())
+	if err != nil {
+		t.Fatalf("a Level 2 node refused the word telemetry stream: %v", err)
+	}
+	if pack == nil || pack.DistinctWords() == 0 {
+		t.Error("a Level 2 node's word pack excluded its own corpus")
+	}
+
+	// And the gate takes it back immediately on a downgrade, before teardown.
+	sNode.CloseOutbound()
+	if _, err := aNode.fetchWordTelemetry(ctx, sNode.host.ID()); err == nil {
+		t.Error("a gated node still answered the word-telemetry stream")
 	}
 }
 
@@ -142,10 +178,13 @@ func TestLevelOneJoinsNoSearchTopics(t *testing.T) {
 	if oneNode.MayGossipSearchTelemetryForTest() {
 		t.Error("a Level 1 node would originate three-gram telemetry")
 	}
-	// Live is a different category and must remain on: the shared index is
-	// whole-feed gossip at every level.
-	if !oneNode.LiveStartedForTest() {
-		t.Error("a Level 1 node did not join the live index")
+	// Live is off here too since WO-089, for a different reason than the
+	// three-gram topics: those exist to advertise blocks this node serves,
+	// while Live is off because a sighting is derived from what this user was
+	// shown. Same answer, different question — asserted here so a future change
+	// that re-enables one cannot quietly re-enable the other.
+	if oneNode.LiveStartedForTest() {
+		t.Error("a Level 1 node joined the live index; Live begins at Level 2 (WO-089)")
 	}
 
 	two := newStore(t, "two.sqlite")
@@ -158,6 +197,9 @@ func TestLevelOneJoinsNoSearchTopics(t *testing.T) {
 	yieldJoined, sketchJoined = twoNode.JoinedSearchTopicsForTest()
 	if !yieldJoined || !sketchJoined {
 		t.Errorf("a Level 2 node did not join search topics (yield=%v sketch=%v)", yieldJoined, sketchJoined)
+	}
+	if !twoNode.LiveStartedForTest() {
+		t.Error("a Level 2 node did not join the live index")
 	}
 }
 

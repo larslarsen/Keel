@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Architect |
-| **Status** | **Final audit performed 2026-08-12 — completion waits on WO-085, WO-088 and WO-083** |
+| **Status** | **Done — final architecture audit closed 2026-08-12** |
 | **Date** | 2026-08-12 |
 | **Source** | Architecture review, 2026-08-11 |
 
@@ -27,11 +27,12 @@ This defeats the repository rule that decisions live in documents.
 - Added `ARCHITECTURE_CURRENT.md` as the normative current contract; retained
   `DESIGN_v2.md` as rationale/history where not explicitly amended.
 - Updated `AGENTS.md`, `ROADMAP.md` and `handoff/README.md` to point at the
-  current architecture-review implementation order. WO-085 is now the current
-  implementation order; WO-088 and WO-083 follow it.
-- Decided the four-level contribution matrix, including Level-1 full
-  consumption, live gossip, word HLL/CMS exchange, no block service and no
-  three-gram telemetry origination.
+  current architecture-review implementation order and, at final close, the
+  newly discovered WO-089 consent blocker.
+- Decided the four-level contribution matrix, including Level-1 full non-Live
+  consumption, fetch-only word HLL/CMS, no block service and no three-gram
+  telemetry. The final compliance decision moved the complete Live system and
+  outbound word telemetry to Level 2+ in WO-089.
 - Decided single daemon ownership, bridge capability negotiation, tab-scoped
   proofs and extension module boundaries in WO-079–083.
 - Corrected the daemon-only browser-persistence rule and the standing phase
@@ -50,30 +51,45 @@ Graphify and direct inspection confirm:
   consent page also claimed TikTok was out of scope and overstated claim-key
   unlinkability as protection against network-metadata linkage. This pass
   corrected those shipped disclosures.
-- WO-083 has **not** landed. `sw.js` remains a 1,100+ line stateful dispatcher;
-  only `lib/native.js` and WO-080's pure `page_proofs.js` match the selected
-  module table. There is no `background/panel_context.js`, `background/rpc.js`,
-  background storage adapter or surface render-module split.
-- WO-085 has **not** landed. `PolicyForLevel` has no distributed-search
-  entitlement, `handlePeerSearchContext` contacts the current node without a
-  level check, and the Level-1 test still permits the feature. User-facing copy
-  therefore continues to describe peer search as currently available at Level
-  1; WO-085 must change daemon behavior and copy together.
-- WO-081's protocol and session gate are implemented, but its contribution UI
-  violates the accepted “visible and disabled” rule by deleting the radio rows
-  when `contribution_runtime` is absent. WO-088 records the narrow UI/test fix.
+- WO-083, WO-085 and WO-088 subsequently landed. Graphify confirms the service
+  worker is now a composition root, Level-1 peer search is refused before peer
+  contact, serving paths are bounded, and unavailable contribution controls
+  remain visible and disabled.
+- The final Chrome Web Store policy pass found a different boundary problem.
+  Level 1 is the default while the shipped daemon runs the full Live system, and
+  the first-run network disclosure appears below an action labelled only
+  `Start recording`. The independently starting daemon also lacks the current
+  initial-consent record. WO-089 moves Live wholly to Level 2+ and makes the
+  corrected Level-1 recording/consumer-network consent enforceable by the
+  daemon. Level 1 may fetch global word statistics but does not serve or add its
+  local corpus to them.
+- WO-089's runtime is implemented and its automated suites pass. The review
+  found two stale strings in `extension/page/index.js` that still tell Level-1
+  users Live works. WO-090 owns only those copy corrections and their DOM
+  regression tests; no architecture or network-policy change remains.
 
-## Remaining final pass
+## Closure record
 
-1. Implement WO-085, then update `PRIVACY.md`, consent and level UI atomically
-   from “currently available at Level 1” to reciprocal Level-2 peer search.
-2. Implement WO-088, preserving visible disabled controls without inventing an
-   effective level, then implement WO-083 and reduce `sw.js` to the recorded
-   composition boundary.
-3. Re-run Graphify's standing-document/implementation audit, remove the
-   remaining implementation-gap notes from `ARCHITECTURE_CURRENT.md`, and then
-   close this order. Do not treat the three outstanding live/network QA items
-   as implemented code gaps, but keep them visible in the handoff index.
+1. WO-085, WO-088 and WO-083 were checked against their implementation records,
+   code graph and regression tests; the standing architecture now describes the
+   landed boundaries.
+2. Outbound-data copy was reconciled so Level 1 is never described as
+   network-silent and Level 2 is never described as mirror-only.
+3. Current Chrome Web Store rules were checked against the actual process
+   boundary. The selected conservative correction is not a partial Live mode:
+   Level 1 has no Live topic, gossip, snapshot, local seed or publish path;
+   Level 2+ retains the complete feature.
+4. WO-089 runtime and primary disclosures landed (Level 1 has no Live or
+   outbound word pack; daemon-acknowledged consent is required before any
+   swarm node). WO-090 corrected the last two contradictory UI strings and
+   added DOM regression coverage.
+5. The closing Graphify pass found no current Level-1 Live or outbound-word
+   contradiction. `DESIGN_v2` retains the rejected Level-1 Live rationale as
+   history, labels it superseded, and now uses Level-2+ wording for the live
+   swarm and snapshot behavior.
+
+Operational QA remains for WO-079, WO-080, WO-084, WO-085 and WO-089. Those are
+deployment/wire checks, not unresolved architecture or documentation gaps.
 
 ## Do not
 
@@ -85,9 +101,11 @@ Graphify and direct inspection confirm:
 
 - [x] A new engineer can identify the current architecture, current work order,
       and applicable hard constraints without resolving contradictions.
-- [ ] Every stated persistence and outbound-data rule agrees across standing and
-      user-facing documents. Shipped Level-2 disclosure is reconciled; the
-      selected Level-1 peer-search boundary still awaits WO-085 implementation.
+- [x] Every stated persistence and outbound-data rule agrees across standing,
+      runtime and user-facing documents. Standing docs (ARCHITECTURE_CURRENT,
+      DESIGN_v2, PRIVACY, README, policy handoffs) now describe Level-1
+      fetch-only / no-Live. WO-090 corrected and regression-tested the final
+      two stale full-page status strings.
 - [x] The current phase map has one numbering scheme and one dependency story;
       historical phase ledgers are labelled or updated.
 
@@ -96,7 +114,7 @@ Graphify and direct inspection confirm:
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`
-- `npm test` (11 suites)
+- `npm test` (16 test files, 169 tests)
 - `git diff --check`
 
 ## Challenge

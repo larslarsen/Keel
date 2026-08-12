@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Done for runtime transitions; Level-2 mirror-only policy superseded by WO-084** |
+| **Status** | **Done for runtime transitions; Level-2 source policy superseded by WO-084 and Level-1 Live policy superseded by WO-089** |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 
@@ -16,6 +16,11 @@
 > the STAR boundary. Its instruction to keep user-triggered peer search at
 > Level 1 is also superseded by WO-085: fetch/pre-walk remain Level 1, while
 > distributed `PEER_SEARCH` becomes reciprocal at Level 2+.
+
+> **Correction, 2026-08-12:** WO-089 moves the complete Live capability from
+> Level 1 to Level 2+ and makes Level-1 word telemetry fetch-only. The table
+> below remains the implementation history of WO-077, not the current outbound
+> contract. Level-1 graph/seed fetch and pre-walk remain unchanged.
 
 `SET_CONTRIBUTION` persists a new level in SQLite, but the swarm reads that
 level only once when the native host starts. A displayed Level 1 can therefore

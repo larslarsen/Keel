@@ -42,9 +42,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func liveCfg(t *testing.T, serve bool) Config {
 	c := isolated(serve, t)
-	// Live is its own capability and is on at every level (WO-077), so there
-	// is nothing to force on here. It used to be reached via Fetch, which is
-	// why this helper existed at all.
+	// Live tests that want a subscriber must force the capability on: isolated
+	// clients are Level 1, and Level 1 has no Live object since WO-089.
 	c.Policy.Live = true
 	return c
 }
@@ -136,13 +135,21 @@ func TestLiveLongTailSurvives(t *testing.T) {
 	})
 }
 
-// TestLevelOneParticipatesFully pins what this feature gates: nothing.
+// TestLevelOneHasNoLiveAtAll is WO-089's central Live assertion.
 //
-// Reports carry no author, so publishing one discloses nothing about who saw the
-// stream, and in a gossip mesh originating is indistinguishable from forwarding.
-// Every node therefore both receives and reports at every level, which is also
-// what fills the long tail the feed exists for.
-func TestLevelOneParticipatesFully(t *testing.T) {
+// The previous test here was TestLevelOneParticipatesFully, and it asserted the
+// opposite: that a default-level node both received the feed and reported its
+// own sightings. That was WO-078's decision, made on the argument that a live
+// notice carries no application-level author and so discloses nothing about who
+// saw the stream. WO-089 overturns it, and not because the argument was wrong
+// in detail — a notice really does carry no author — but because "no author" is
+// not an anonymity proof against a direct neighbour who can watch which
+// connection a message first arrived on, and because a sighting is derived from
+// what this user was shown either way.
+//
+// So the assertion is now total. Not "does not originate": no index, no
+// subscription, no snapshot handler, nothing on the wire.
+func TestLevelOneHasNoLiveAtAll(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -152,28 +159,113 @@ func TestLevelOneParticipatesFully(t *testing.T) {
 	}
 	defer publisher.Close()
 
-	// Level 1: Fetch and Serve both off.
 	lvl1, err := Start(ctx, newStore(t, "l1.sqlite"), isolated(false, t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer lvl1.Close()
 
-	if lvl1.Live() == nil {
-		t.Fatal("a Level 1 node has no live index; the feed should work at every level")
+	if lvl1.Live() != nil {
+		t.Fatal("a Level 1 node built a live index; Live begins at Level 2 (WO-089)")
 	}
+	if lvl1.LiveStartedForTest() {
+		t.Error("a Level 1 node started the live subsystem")
+	}
+	if lvl1.Policy().Live {
+		t.Error("a Level 1 policy permits Live")
+	}
+
 	connect(t, lvl1, publisher)
 	waitFor(t, "mesh", func() bool { return lvl1.Peers() > 0 })
 	time.Sleep(1500 * time.Millisecond)
 
-	publisher.PublishLive(ctx, LiveRecord{VideoID: "dQw4w9WgXcQ", Title: "Open feed"})
-	waitFor(t, "record at level 1", func() bool { return lvl1.Live().Size() > 0 })
-
-	// And it reports its own sightings, at the default setting.
+	// Publishing from Level 1 is a no-op rather than a panic: announceLive
+	// calls this on every observed batch, so it has to be safe to call.
 	lvl1.PublishLive(ctx, LiveRecord{VideoID: "shouldnotgo", Title: "Level one leak"})
 	time.Sleep(1500 * time.Millisecond)
-	if got := publisher.Live().Search("level one leak", 10); len(got) == 0 {
-		t.Error("a Level 1 node's report did not reach the network")
+	if got := publisher.Live().Search("level one leak", 10); len(got) != 0 {
+		t.Errorf("a Level 1 node's sighting reached the network: %v", got)
+	}
+
+	// The snapshot stream is not served either — it is registered inside
+	// startLive, which never ran.
+	if _, err := publisher.requestOn(
+		ctx, lvl1.AddrInfo(), "", LiveSnapshotProtocol,
+	); err == nil {
+		t.Error("a Level 1 node answered a live-snapshot request")
+	}
+}
+
+// TestLevelTwoRunsTheWholeLiveSystem is the other half: everything WO-089 moved
+// must still work where it moved to, or the change is a removal rather than a
+// relocation.
+func TestLevelTwoRunsTheWholeLiveSystem(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	publisher, err := Start(ctx, newStore(t, "pub2.sqlite"), liveCfg(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publisher.Close()
+
+	lvl2, err := Start(ctx, newStore(t, "l2.sqlite"), isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lvl2.Close()
+
+	if lvl2.Live() == nil {
+		t.Fatal("a Level 2 node has no live index")
+	}
+	connect(t, lvl2, publisher)
+	waitFor(t, "mesh", func() bool { return lvl2.Peers() > 0 })
+	time.Sleep(1500 * time.Millisecond)
+
+	publisher.PublishLive(ctx, LiveRecord{VideoID: "dQw4w9WgXcQ", Title: "Open feed"})
+	waitFor(t, "record at level 2", func() bool { return lvl2.Live().Size() > 0 })
+
+	lvl2.PublishLive(ctx, LiveRecord{VideoID: "sharedsight", Title: "Level two sighting"})
+	waitFor(t, "sighting reaches the network", func() bool {
+		return len(publisher.Live().Search("level two sighting", 10)) > 0
+	})
+}
+
+// TestDowngradeStopsLivePublishingImmediately is the gate half. A user who
+// chooses Level 1 must stop publishing from that instant, not once the
+// replacement node has finished coming up — teardown is not instant, and
+// announceLive keeps arriving from the browser meanwhile.
+func TestDowngradeStopsLivePublishingImmediately(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	watcher, err := Start(ctx, newStore(t, "watch.sqlite"), liveCfg(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+
+	sharer, err := Start(ctx, newStore(t, "sharer.sqlite"), isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sharer.Close()
+
+	connect(t, sharer, watcher)
+	waitFor(t, "mesh", func() bool { return sharer.Peers() > 0 })
+	time.Sleep(1500 * time.Millisecond)
+
+	// Same node, same subscription, same connection — gated anyway.
+	sharer.CloseOutbound()
+	sharer.PublishLive(ctx, LiveRecord{VideoID: "aftergateshut", Title: "After the gate shut"})
+	time.Sleep(1500 * time.Millisecond)
+	if got := watcher.Live().Search("after the gate shut", 10); len(got) != 0 {
+		t.Errorf("a gated node published a sighting: %v", got)
+	}
+	if _, err := watcher.requestOn(
+		ctx, sharer.AddrInfo(), "", LiveSnapshotProtocol,
+	); err == nil {
+		t.Error("a gated node answered a live-snapshot request")
 	}
 }
 

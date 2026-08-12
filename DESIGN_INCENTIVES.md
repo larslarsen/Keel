@@ -25,20 +25,20 @@ Fortunately the architecture supplies real intrinsic differences.
 history, searchable, with channel blocking and hiding.
 
 This is the personal product: local search and funnel inspection, shared
-suggestions, graph pre-walk, global word statistics and the Live feed. Search
-across other people's recommendations is not part of Level 1; it is the
-reciprocal Level-2 network capability selected in WO-085.
+suggestions, graph pre-walk and fetched global word statistics. The shared Live
+feed and search across other people's recommendations are not part of Level 1;
+they begin at Level 2 under WO-089 and WO-085 respectively.
 
-Level 1 is not offline. It makes whole-prefix requests, participates in live
-gossip, and exchanges WO-068's whole fixed-shape word HLL/CMS aggregate. It does
-not serve graph/catalogue/search blocks or join the three-gram yield/token
-sketch topics that advertise and size those blocks. See
-`ARCHITECTURE_CURRENT.md` §3.
+Level 1 is not offline. It makes whole-prefix requests and fetches WO-068's
+whole fixed-shape word HLL/CMS aggregate. It does not participate in Live,
+answer the word protocol, include its local corpus in an outbound word pack,
+serve graph/catalogue/search blocks, or join the three-gram yield/token-sketch
+topics that advertise and size those blocks. See `ARCHITECTURE_CURRENT.md` §3.
 
 ## Level 2 — broad sharing
 
-**Earns: distributed peer search, a warm cache, and visible contribution
-impact.**
+**Earns: the shared Live feed, distributed peer search, a warm cache, and
+visible contribution impact.**
 
 Level 2 holds and serves complete hashed-prefix buckets containing both its own
 aggregated, stringless graph blocks and blocks cached from peers. Broadness is

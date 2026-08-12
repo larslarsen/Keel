@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Sonnet) |
-| **Status** | **Architecture ready — implement after WO-084 and WO-085** |
+| **Status** | **Implemented — WO-092 correctness follow-up open** |
 | **Date** | 2026-08-11 |
 | **Source** | Lars contribution-level incentive discussion, 2026-08-11 |
 
@@ -54,16 +54,51 @@ are local, unaudited feedback and may reset after repair or migration.
 
 ## Acceptance
 
-- [ ] Tests prove the data model contains no query/token/prefix/peer identifier
+- [x] Tests prove the data model contains no query/token/prefix/peer identifier
       and no request-level timestamp.
-- [ ] Counts come from the same local-plus-cached served corpus as WO-084.
-- [ ] A request refused by policy is not counted as successfully answered.
-- [ ] Level transitions update the view across all connected browsers through
+- [x] Counts come from the same local-plus-cached served corpus as WO-084.
+- [x] A request refused by policy is not counted as successfully answered.
+- [x] Level transitions update the view across all connected browsers through
       the owner status path without restarting the daemon.
-- [ ] Extension storage remains free of contribution metrics.
-- [ ] Copy does not imply cryptographic proof, unique users or upload credit.
+- [x] Extension storage remains free of contribution metrics.
+- [x] Copy does not imply cryptographic proof, unique users or upload credit.
 
 ## Do not
 
 Do not turn an encouragement panel into a surveillance log. If a proposed
 metric needs remembering who asked for what, omit the metric.
+
+## Implementation review — 2026-08-12
+
+Split the metrics by kind rather than persisting all of them. "Eligible to
+serve," the local-vs-peer-cached claim split, and buckets/shards announced are
+current corpus state — recomputed fresh from `LocalGraphKeys`/`PeerGraphKeys`/
+`heldCatalogue`/`LocalPrefixes`/`LocalShards` on every call, nothing stored,
+nothing to bound. Connected-peer/provider reach reused the existing
+`Node.Peers()`/`KeelPeers()` gauges unchanged — already instantaneous, already
+history-free. Only "requests answered and bytes served" is genuinely
+cumulative, so it is the one thing persisted: a single-row
+`contribution_activity(requests_answered, bytes_served, since_day)` table,
+day-precision only, proven column-exact by a schema-introspection test rather
+than a source-text search. All five serve handlers (block, catalogue, shard,
+word-telemetry, live-snapshot) record a success only after their reply is
+actually written to the wire — never from a policy refusal or a
+serving-budget drop, proven end-to-end over real libp2p connections.
+`GET_CONTRIBUTION_IMPACT`/`RESET_CONTRIBUTION_IMPACT` are gated by their own
+negotiated capability (`contribution_impact`, brand new — no legacy revision
+to reconcile the way `peer_search`/`distributed_search` do) and refuse
+server-side below Broad sharing with the same typed `CodeContributionRequired`
+refusal `PEER_SEARCH` uses, as defense in depth behind the extension's
+client-side gate. The extension panel mirrors the Live-tab/search-network
+pattern exactly: visible and disabled with a reason at Level 1 or against an
+un-negotiating daemon, never an invented zero; live-updates off the existing
+`CONTRIBUTION_STATUS` broadcast with no reload. Go (daemon + swarm + store,
+race-clean) and extension (174/174) test suites pass; `git diff --check`
+clean.
+
+## Reviewer follow-up — 2026-08-12
+
+WO-092 records two defects found after implementation: reply handlers discard
+`Write` results before counting a full success, and the cumulative table neither
+enforces its single-row invariant nor distinguishes `sql.ErrNoRows` from real
+read failures. The privacy model and UI boundary remain accepted.

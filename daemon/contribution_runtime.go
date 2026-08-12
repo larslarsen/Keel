@@ -46,7 +46,17 @@ const (
 	transitionStarting = "starting"
 	transitionStopping = "stopping"
 	transitionFailed   = "failed"
+	// transitionConsentRequired means no node exists and none will be built
+	// until the user accepts the current network disclosure (WO-089).
+	//
+	// Its own state rather than a failure: nothing went wrong, and the
+	// interface's response is to ask, not to retry or report a fault.
+	transitionConsentRequired = "consent_required"
 )
+
+// consentDetail is what the interface shows while the gate is shut. Stated
+// once so the daemon and the tests cannot drift apart on the wording.
+const consentDetail = "waiting for you to accept what Keel downloads and records"
 
 // contributionState is what the bridge reports: the user's choice, the policy
 // actually running, and whether the two are mid-flight or stuck.
@@ -59,6 +69,11 @@ type contributionState struct {
 	Startup    int    `json:"startup_level"`
 	Transition string `json:"transition"`
 	Detail     string `json:"detail,omitempty"`
+	// Consent is the WO-089 network-data gate. Carried here rather than in a
+	// separate status because the two are one question for the interface: a
+	// level control means nothing while no network may exist, and the surfaces
+	// that render the level already receive this payload on every change.
+	Consent store.NetworkConsent `json:"network_consent"`
 }
 
 // contributionStatusPublisher is supplied by the owner session boundary.
@@ -152,6 +167,7 @@ func (s *swarmSupervisor) state(st *store.Store) contributionState {
 		Startup:    st.StartupLevel(),
 		Transition: transition,
 		Detail:     detail,
+		Consent:    st.NetworkConsent(),
 	}
 }
 
@@ -191,6 +207,19 @@ func contributionPayload(s contributionState) map[string]any {
 		// radio buttons do.
 		"distributed_search":           swarm.PolicyForLevel(s.Effective).DistributedSearch,
 		"distributed_search_min_level": store.LevelBroad,
+		// Live and outbound word statistics moved to Level 2+ (WO-089). Sent
+		// the same way and for the same reason as distributed_search: one
+		// broadcast has to be able to re-render every level-dependent control,
+		// or each one needs its own RPC and its own chance to disagree.
+		"live":              swarm.PolicyForLevel(s.Effective).Live,
+		"live_min_level":    store.LevelBroad,
+		"shares_word_stats": swarm.PolicyForLevel(s.Effective).ServeWordTelemetry,
+		// The gate. `network_consent.current` false means no node exists and
+		// none will until the user accepts — which the interface must present
+		// as a question, not as a fault.
+		"network_consent":  s.Consent,
+		"consent_required": !s.Consent.Current,
+		"consent_revision": store.NetworkConsentRevision,
 	}
 }
 
@@ -204,6 +233,18 @@ func (s *swarmSupervisor) effectiveLevel() int {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.effective
+}
+
+// liveAllowed answers the entitlement question for the Live feed (WO-089),
+// by the same rule as distributedSearchLevel: ask the running node when there
+// is one, because that is the policy actually in force, and fall back to the
+// stored choice when there is not.
+func liveAllowed(st *store.Store) (allowed bool, level int) {
+	if n := currentSwarmNode(); n != nil {
+		return n.Policy().Live, supervisor.effectiveLevel()
+	}
+	stored := st.ContributionLevel()
+	return swarm.PolicyForLevel(stored).Live, stored
 }
 
 // distributedSearchLevel is the entitlement question answered for the RPC
@@ -224,6 +265,20 @@ func distributedSearchLevel(st *store.Store) (allowed bool, level int) {
 	}
 	stored := st.ContributionLevel()
 	return swarm.PolicyForLevel(stored).DistributedSearch, stored
+}
+
+// contributionImpactLevel answers the entitlement question for
+// GET_CONTRIBUTION_IMPACT (WO-086), by the same rule as distributedSearchLevel
+// and liveAllowed: ask the running node's actual policy for the allow
+// decision — the policy actually in force is what would actually be enforced
+// a layer down — and supervisor.effectiveLevel() only for the level to
+// report, exactly as distributedSearchLevel does with MayDistributedSearch.
+func contributionImpactLevel(st *store.Store) (allowed bool, level int) {
+	if n := currentSwarmNode(); n != nil {
+		return n.Serving(), supervisor.effectiveLevel()
+	}
+	stored := st.ContributionLevel()
+	return swarm.PolicyForLevel(stored).ServeBroadBuckets, stored
 }
 
 // replyNetworkBusy declines one RPC for the duration of a node replacement.
@@ -247,6 +302,19 @@ func replyNetworkBusy(out io.Writer, id string) error {
 func (s *swarmSupervisor) start(ctx context.Context, st *store.Store) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// The consent gate, ahead of everything else (WO-089). The daemon starts
+	// on its own schedule with no browser attached, so this is the only place
+	// that can stop a network from existing before the user has seen the
+	// current disclosure. It is checked before the level is even read: an
+	// unaccepted disclosure means network-off regardless of what level is
+	// stored, including a level a previous build's screen sold them.
+	if c := st.NetworkConsent(); !c.Current {
+		log.Printf("swarm: %s (disclosure revision %d, accepted %d)",
+			consentDetail, c.Required, c.Revision)
+		s.setState(0, transitionConsentRequired, consentDetail)
+		return
+	}
 
 	stored, startup := st.ContributionLevel(), st.StartupLevel()
 	level := startup
@@ -272,6 +340,44 @@ func (s *swarmSupervisor) start(ctx context.Context, st *store.Store) {
 		return
 	}
 	s.setState(level, transitionIdle, "")
+}
+
+// resumeAfterConsent brings the network up once the user accepts (WO-089).
+//
+// Consent arrives while the process is already running — the daemon started,
+// found no acceptance, and stopped at the gate — so something has to open it
+// without a restart. This is that something, and it is deliberately just
+// `start` again: the gate check lives inside it, so a call that arrives with
+// consent still missing is a no-op that re-reports the same state rather than
+// a second code path that could disagree with the first.
+//
+// Idempotent. A node already running means the gate was open, and start's own
+// mutex plus its consent check make a redundant call harmless.
+func (s *swarmSupervisor) resumeAfterConsent(ctx context.Context, st *store.Store) contributionState {
+	if s.currentNode() != nil {
+		return s.state(st)
+	}
+	s.start(ctx, st)
+	return s.state(st)
+}
+
+// stopForWithdrawnConsent tears the network down when consent is withdrawn.
+//
+// Same asymmetry as a downgrade, for the same reason: the gate shuts
+// synchronously before teardown begins, so from the first instruction nothing
+// further is offered — regardless of how long stopping the host takes.
+func (s *swarmSupervisor) stopForWithdrawnConsent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeMu.Lock()
+	n, stop := s.node, s.stop
+	s.node, s.stop = nil, nil
+	s.nodeMu.Unlock()
+	if n != nil {
+		n.CloseOutbound()
+	}
+	s.teardown(n, stop)
+	s.setState(0, transitionConsentRequired, consentDetail)
 }
 
 // launch constructs and starts one node at the given level, plus the announce
@@ -339,7 +445,6 @@ func (s *swarmSupervisor) apply(
 	if err := store.ValidateContributionLevel(level); err != nil {
 		return s.state(st), err
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -350,8 +455,22 @@ func (s *swarmSupervisor) apply(
 	if level == effective && st.ContributionLevel() == level && st.StartupLevel() == level {
 		return s.state(st), nil
 	}
+	// Asking for *less* never needs permission, and must never be blocked by
+	// the consent gate (WO-089). The whole point of the downgrade path is that
+	// it shuts the outbound gate before anything else can fail, so a check in
+	// front of it would leave a higher-level node running exactly when the
+	// user asked it to stop — including on an unreadable database, where the
+	// consent read itself fails closed. Removing capability is always allowed.
 	if level < effective {
 		return s.downgrade(ctx, st, level)
+	}
+	// Raising one does need it. A level is a choice about what to send, and it
+	// cannot be exercised before the user has accepted what Keel does at all.
+	// Refused rather than stored-and-deferred: storing a 2 here would leave a
+	// database whose setting says "sharing" while nothing has been agreed, and
+	// the next start would honour it the moment consent arrived.
+	if c := st.NetworkConsent(); !c.Current {
+		return s.state(st), fmt.Errorf("%s", consentDetail)
 	}
 	return s.upgrade(ctx, st, level)
 }

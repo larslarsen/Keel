@@ -34,7 +34,7 @@
  * replaced — by reconnection in production and by the test seam in the suite —
  * and a captured reference would keep answering from a dead port.
  */
-import { validateImpressionList } from "../lib/protocol.js";
+import { validateImpressionList, CONSENT_REVISION } from "../lib/protocol.js";
 import { isChannelId, coerceHideMode, isHideMode } from "../lib/prefs.js";
 import { surfaceFromUrl } from "../content/extract.js";
 
@@ -51,6 +51,7 @@ const BUFFER_MAX = 200;
  *   broadcast: (msg: object) => void,
  *   broadcastToSiteTabs: (msg: object) => Promise<void>,
  *   onHideModeChanged: (mode: string) => Promise<void>,
+ *   openConsentPage?: () => void,
  *   log?: (...args: unknown[]) => void,
  * }} deps
  */
@@ -63,6 +64,7 @@ export function createRpcRouter({
   broadcast,
   broadcastToSiteTabs,
   onHideModeChanged,
+  openConsentPage,
   log = () => {},
 }) {
   /**
@@ -202,6 +204,37 @@ export function createRpcRouter({
     if (ok) {
       flushBuffer();
       reportCohort().catch(() => {});
+      maybePromptNetworkConsent().catch(() => {});
+    }
+  }
+
+  /**
+   * Existing installs accepted a screen that is no longer the current
+   * disclosure (WO-089). Their chrome.storage "granted" is not that acceptance.
+   *
+   * First-run users already get the tab from onInstalled, so this only opens
+   * when this profile already recorded a grant — the migration case. The
+   * daemon stays network-off until they answer, whether the tab is opened or
+   * not.
+   */
+  let promptedNetworkConsent = false;
+  async function maybePromptNetworkConsent() {
+    if (!hasCap("network_consent") || promptedNetworkConsent) return;
+    let payload;
+    try {
+      payload = await relay("GET_NETWORK_CONSENT");
+    } catch {
+      return;
+    }
+    broadcast({ type: "CONTRIBUTION_STATUS", payload });
+    if (payload?.consent_required !== true) return;
+    const local = await prefs.readConsent().catch(() => null);
+    if (local !== "granted") return;
+    promptedNetworkConsent = true;
+    try {
+      openConsentPage?.();
+    } catch (err) {
+      log("openConsentPage", err?.message || err);
     }
   }
 
@@ -217,7 +250,11 @@ export function createRpcRouter({
     // Owner-wide policy changes are unsolicited events, not RPC replies. Every
     // browser/profile connected to the shared owner receives one (WO-079).
     if (env?.type === "CONTRIBUTION_STATUS") {
-      broadcast({ type: "CONTRIBUTION_STATUS", payload: env.payload || {} });
+      const payload = env.payload || {};
+      broadcast({ type: "CONTRIBUTION_STATUS", payload });
+      if (payload.consent_required === true) {
+        maybePromptNetworkConsent().catch(() => {});
+      }
     }
   }
 
@@ -555,14 +592,75 @@ export function createRpcRouter({
       case "GET_CONSENT":
         return { consent: await prefs.readConsent() };
 
+      /**
+       * The affirmative action, in the order WO-089 requires.
+       *
+       * Two records have to move together and they are not interchangeable.
+       * The daemon's is the one that governs the network — it is a separate
+       * process that starts with no browser attached, so a permission living
+       * only in a browser profile cannot gate it. The browser's is the one the
+       * content observer reads, so it can fail closed before sending a record
+       * without waiting on an RPC.
+       *
+       * Granting goes daemon-first and only then enables observation locally,
+       * so there is no window in which this profile is recording against a
+       * disclosure the daemon has not acknowledged. If the daemon refuses or is
+       * unreachable, nothing is enabled and the caller is told why — a consent
+       * screen that said "recording is on" while the daemon sat at its gate
+       * would be the misreport this ticket exists to remove.
+       *
+       * Declining writes only the local decision. There is nothing to withdraw
+       * from a daemon that was never granted anything, and a decline must not
+       * fail because the desktop app is not installed yet.
+       */
       case "SET_CONSENT": {
-        const v = await prefs.writeConsent(message.payload?.consent);
+        const want = message.payload?.consent;
+        if (want === "granted") {
+          requireDaemon();
+          requireCap("network_consent", "consent");
+          await relay(
+            "SET_NETWORK_CONSENT",
+            { accepted: true, revision: CONSENT_REVISION },
+            "the desktop app did not accept the disclosure"
+          );
+        }
+        const v = await prefs.writeConsent(want);
         // Content scripts gate on this; tell them without waiting for a reload.
         await broadcastToSiteTabs({
           type: "CONSENT_CHANGED",
           payload: { consent: v },
         });
         return { consent: v };
+      }
+
+      /**
+       * The daemon's own view of the gate, for the consent screen and for the
+       * migration banner an existing install sees when its acceptance predates
+       * the current disclosure.
+       */
+      case "GET_NETWORK_CONSENT": {
+        requireDaemon();
+        requireCap("network_consent", "consent");
+        return { daemon: await relay("GET_NETWORK_CONSENT") };
+      }
+
+      /**
+       * Withdrawal, and the re-acceptance path for an existing install.
+       *
+       * Withdrawing stops the network but deliberately leaves the local
+       * recording decision alone: they are different permissions, and turning
+       * one off must not silently turn the other off too.
+       */
+      case "SET_NETWORK_CONSENT": {
+        requireDaemon();
+        requireCap("network_consent", "consent");
+        const accepted = message.payload?.accepted === true;
+        return {
+          daemon: await relay("SET_NETWORK_CONSENT", {
+            accepted,
+            revision: accepted ? CONSENT_REVISION : 0,
+          }),
+        };
       }
 
       // Plain daemon relays. THUMBNAIL belongs here and was once stranded
@@ -583,6 +681,18 @@ export function createRpcRouter({
         ) {
           requireCap("contribution_runtime", "contribution controls");
         }
+        return { daemon: await relay(message.type, message.payload || {}, message.type) };
+      }
+
+      // WO-086: the Level-2 contribution-impact panel. Its own capability
+      // rather than piggybacking on contribution_runtime — a daemon can
+      // negotiate the level control without yet implementing the impact
+      // query, and the panel must fail closed to "unavailable", never to an
+      // invented zero, when this specific capability is absent.
+      case "GET_CONTRIBUTION_IMPACT":
+      case "RESET_CONTRIBUTION_IMPACT": {
+        requireDaemon();
+        requireCap("contribution_impact", "contribution impact");
         return { daemon: await relay(message.type, message.payload || {}, message.type) };
       }
 

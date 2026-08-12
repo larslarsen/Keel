@@ -19,18 +19,21 @@ receiving your data, and no analytics. The record of what you were shown, which
 videos you opened, and which TikTok clips the feed presented is never sent as a
 raw history, published, or served to another peer at any setting.
 
-**Three things do leave, at every setting, including the default: requests for
-shared data, livestream notices, and a word-popularity aggregate.** Keel asks
-peers for the graph/catalogue/search data suggestions are built from, in
-batches of thousands so which one you wanted is not visible. When it sees a
-livestream it tells other Keel users the stream exists — a video id and title
-with no sender field; a directly connected peer may still infer an origin from
-network topology and timing after it is relayed. And it exchanges a whole,
-fixed-shape word-popularity pack with peers — no plaintext words, ids, edges or
-query, but not a zero-disclosure aggregate either. These three are detailed
-below. At Level 2, additional broad recommendation claims derived from the
-recording leave as described under “Contributing”; raw rows and an ordered
-history never do.
+**One thing leaves at the default setting: requests.** Keel asks peers for the
+graph/catalogue/search data its suggestions are built from, and for a global
+word-popularity statistic, in batches of thousands so which one you wanted is
+not visible. A request tells the peer answering it your address, the time, and
+roughly which coarse slice of the catalogue you are interested in. That is a
+real disclosure, and it is why this page does not describe the default as
+network-silent — but it is a disclosure about *asking*, not about what you were
+shown.
+
+**Nothing derived from your recording leaves at the default setting.** Not a
+recommendation, not a livestream you saw, not a word from your own library.
+Publishing livestream sightings, contributing your word aggregate, and serving
+broad recommendation claims all begin at Level 2 — “Broad sharing” — which you
+choose deliberately. Raw rows and an ordered history are never sent at any
+level.
 
 ---
 
@@ -98,7 +101,10 @@ The browser extension stores **no observation data at all** — not in
 `localStorage`, not in IndexedDB, not in extension storage. The only thing the extension
 keeps is UI preferences and recording consent. Your channel
 blocklist, contribution level and disk-space limit all live in the local
-database.
+database — as do, at Broad sharing, two running counts of requests answered
+and bytes served, shown back to you as evidence your copy is doing useful
+work. Both are plain totals with no peer id, query, prefix or per-request
+timestamp behind them, and you can reset them at any time.
 
 ## Network activity
 
@@ -129,30 +135,37 @@ than privacy: those searches are answered by the machines that have chosen to
 serve, so the level that answers them is the level that can ask. Searching what
 Keel has recorded on your own device works at every setting.
 
-**At every setting, Keel announces livestreams it sees.** When a stream appears
-in your recommendations, Keel tells other Keel users that the stream exists — a
-video id and title. The notice carries **no sender field**: not your name and not
-an application identifier for your copy of Keel. Once relayed, its payload does
-not say whether you saw the stream or forwarded somebody else's notice. A
-directly connected peer still sees ordinary peer-to-peer connection metadata
-and may infer an origin from topology and timing. This is what fills the Live
-tab, for you and for everyone.
+**Announcing livestreams starts at Level 2.** When a stream appears in your
+recommendations, a sharing node tells other Keel users the stream exists — a
+video id and title. The notice carries **no sender field**: not your name and
+not an application identifier for your copy of Keel, and once relayed its
+payload does not say whether the sender saw the stream or forwarded somebody
+else's notice.
 
-**At every setting, Keel exchanges a whole word-popularity aggregate.** Every
-node fetches and answers the same fixed-shape statistics pack — how common each
-word is across everyone's recordings, including your own local corpus. It
-carries no plaintext word, video id, edge or search query, but it is built so
-that a guess at a specific word ("was 'giveaway' common?") can still be checked
-against it. That is an aggregate disclosure, not zero disclosure, and it is why
-this page does not describe the default setting as network-silent.
+That is deliberately not described as anonymous. A peer you are directly
+connected to sees ordinary peer-to-peer connection metadata and can infer from
+timing and topology that a notice started with you. Because a sighting is
+derived from what you were shown, publishing one is a sharing decision, and it
+is made at Level 2 rather than for you. **At the default setting Keel does not
+join the Live topic, receive, relay, publish or serve the feed at all** — the
+Live tab says so and points at the setting.
 
-**None of the above makes the default node a graph, catalogue or search
-host.** Keel does not answer another peer's request for those blocks — including
-data it has itself fetched and cached — and does not announce that it holds
-them at the default setting. Level 1 does still relay/serve the shared Live
-snapshot and answer the whole word-aggregate protocol described above.
-Broad graph/catalogue/search service starts at Level 2, below, and so does
-sending recommendation claims derived from the durable recording.
+**Downloading the word statistic happens at every setting; contributing to it
+starts at Level 2.** Every node fetches the same fixed-shape pack — how common
+each word is across everyone's recordings — to draw the bars under the search
+box. A sharing node also answers with its own, which includes the words in what
+it was shown. That pack carries no plaintext word, video id, edge or search
+query, but it is built so a guess at a specific word ("was 'giveaway' common?")
+can still be checked against it. Aggregate disclosure is not zero disclosure,
+which is why contributing one is a choice. The cost is accepted openly: the
+global statistic under-counts everyone who has not opted in.
+
+**None of the above makes the default node a host of anything.** Keel does not
+answer another peer's request for graph, catalogue or search blocks — including
+data it has itself fetched and cached — does not announce that it holds them,
+does not serve the Live snapshot, and does not answer the word protocol. All of
+that starts at Level 2, below, and so does sending recommendation claims derived
+from the durable recording.
 
 Keel does not use the YouTube API, and never contacts any Keel-operated server,
 because none exists. Peer discovery uses the public IPFS network, which nobody
@@ -188,12 +201,13 @@ deliberate choice you make.
 
 **Level 1 — personal (the default).** Nothing you record or watch is published,
 served to another peer, or told to anyone — that is what "personal" means here,
-not "silent." Level 1 is a full participant on the network described above: it
-fetches shared graph/catalogue/search data so suggestions and graph pre-walk
-work, searches what it has recorded on this device, announces livestreams it
-sees, and exchanges the word-popularity aggregate. What it never does is answer
-another peer's request for data, announce itself as holding anything, or publish
-what you recorded.
+not "silent." Level 1 participates on the network described above, but only to
+download: it fetches shared graph/catalogue/search data so suggestions and graph
+pre-walk work, and fetches the global word-popularity statistic shown under the
+search box. It searches what it has recorded on this device. What it never does
+is announce a livestream it saw, contribute a word aggregate, answer another
+peer's request for data, announce itself as holding anything, or publish what you
+recorded. The shared Live feed and word contribution begin at Level 2.
 
 One feature is held back rather than disclosed differently: searching other
 people's recommendations. Nothing about it would leak more of yours — it is a

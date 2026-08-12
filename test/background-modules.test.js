@@ -230,10 +230,17 @@ describe("background/panel_context.js — panel policy without a browser", () =>
 });
 
 describe("background/rpc.js — dispatch, validation and capability gates", () => {
-  function makeRouter({ caps = {}, helloOk = true, reply } = {}) {
+  function makeRouter({
+    caps = {},
+    helloOk = true,
+    reply,
+    prefs,
+    openConsentPage,
+  } = {}) {
     const sent = [];
     const broadcasts = [];
     const siteBroadcasts = [];
+    const opened = [];
     const bridge = {
       helloOk,
       lastHelloFailure: null,
@@ -249,7 +256,7 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     const router = createRpcRouter({
       getBridge: () => bridge,
       proofs,
-      prefs: createPrefs({ storage: fakeStorage() }),
+      prefs: prefs || createPrefs({ storage: fakeStorage() }),
       panel: {
         panelAllowedFor: () => true,
         panelOpen: () => false,
@@ -261,8 +268,9 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
       broadcast: (m) => broadcasts.push(m),
       broadcastToSiteTabs: async (m) => siteBroadcasts.push(m),
       onHideModeChanged: async () => {},
+      openConsentPage: openConsentPage || (() => opened.push(true)),
     });
-    return { router, bridge, sent, broadcasts, siteBroadcasts, proofs };
+    return { router, bridge, sent, broadcasts, siteBroadcasts, proofs, opened };
   }
 
   it("refuses an un-negotiated optional RPC with actionable copy, not a crash", async () => {
@@ -372,14 +380,107 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     assert.equal(proofs.size?.() ?? 0, 0);
   });
 
-  it("relays consent to content scripts without waiting for a reload", async () => {
-    const { router, siteBroadcasts } = makeRouter();
+  it("grants the daemon's disclosure before enabling local recording (WO-089)", async () => {
+    const { router, sent, siteBroadcasts } = makeRouter({
+      caps: { network_consent: 1 },
+    });
     const r = await router.handle(
       { type: "SET_CONSENT", payload: { consent: "granted" } },
       {}
     );
     assert.equal(r.consent, "granted");
+    // Daemon first. The reverse order would leave a window in which this
+    // profile records against a disclosure the daemon has not acknowledged.
+    assert.equal(sent[0]?.type, "SET_NETWORK_CONSENT");
+    assert.equal(sent[0]?.payload?.accepted, true);
+    assert.equal(
+      sent[0]?.payload?.revision,
+      1,
+      "the client must name the disclosure revision it actually rendered"
+    );
     assert.equal(siteBroadcasts.at(-1)?.type, "CONSENT_CHANGED");
+  });
+
+  it("does not enable recording when the daemon refuses the disclosure", async () => {
+    const { router, siteBroadcasts } = makeRouter({
+      caps: { network_consent: 1 },
+      reply: (type) =>
+        type === "SET_NETWORK_CONSENT"
+          ? { type: "ERROR", payload: { message: "consent revision 1 is newer" } }
+          : { type: "OK", payload: {} },
+    });
+    await assert.rejects(
+      () => router.handle({ type: "SET_CONSENT", payload: { consent: "granted" } }, {}),
+      /consent revision/
+    );
+    assert.deepEqual(
+      siteBroadcasts,
+      [],
+      "a refused grant must not switch the observer on anyway"
+    );
+  });
+
+  it("refuses to grant against a daemon that predates the consent gate", async () => {
+    // An old daemon would start its network without acknowledging anything and
+    // would run Live at the default level. Failing closed is the only honest
+    // answer the extension can give.
+    const { router, sent } = makeRouter({ caps: {} });
+    await assert.rejects(
+      () => router.handle({ type: "SET_CONSENT", payload: { consent: "granted" } }, {}),
+      /consent unavailable — desktop app update required/
+    );
+    assert.deepEqual(sent, []);
+  });
+
+  it("re-asks an existing grant when the daemon still needs current consent", async () => {
+    const opened = [];
+    const { router, broadcasts } = makeRouter({
+      caps: { network_consent: 1 },
+      prefs: createPrefs({ storage: fakeStorage({ consent: "granted" }) }),
+      openConsentPage: () => opened.push("consent"),
+      reply: (type) =>
+        type === "GET_NETWORK_CONSENT"
+          ? { type: "NETWORK_CONSENT_RESULT", payload: { consent_required: true } }
+          : { type: "OK", payload: {} },
+    });
+    router.onBridgeStatus(true, "", { capabilities: { network_consent: 1 } });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.deepEqual(opened, ["consent"]);
+    assert.equal(
+      broadcasts.some((m) => m.type === "CONTRIBUTION_STATUS" && m.payload?.consent_required),
+      true,
+      "surfaces have to hear about the gate without a second RPC"
+    );
+  });
+
+  it("does not open a second consent tab for a first-run profile", async () => {
+    // onInstalled already opened the screen. Connecting must not duplicate it.
+    const opened = [];
+    const { router } = makeRouter({
+      caps: { network_consent: 1 },
+      prefs: createPrefs({ storage: fakeStorage() }),
+      openConsentPage: () => opened.push("consent"),
+      reply: (type) =>
+        type === "GET_NETWORK_CONSENT"
+          ? { type: "NETWORK_CONSENT_RESULT", payload: { consent_required: true } }
+          : { type: "OK", payload: {} },
+    });
+    router.onBridgeStatus(true, "", { capabilities: { network_consent: 1 } });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.deepEqual(opened, []);
+  });
+
+  it("lets a decline through without needing the daemon at all", async () => {
+    // There is nothing to withdraw from a daemon that was never granted
+    // anything, and declining must not fail because the desktop app is missing.
+    const { router, sent, siteBroadcasts } = makeRouter({ helloOk: false });
+    const r = await router.handle(
+      { type: "SET_CONSENT", payload: { consent: "declined" } },
+      {}
+    );
+    assert.equal(r.consent, "declined");
+    assert.deepEqual(sent, []);
+    assert.equal(siteBroadcasts.at(-1)?.payload?.consent, "declined");
     await assert.rejects(
       () => router.handle({ type: "SET_CONSENT", payload: { consent: "sure" } }, {}),
       /bad consent value/

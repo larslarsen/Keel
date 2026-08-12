@@ -932,6 +932,10 @@ browser.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "DAEMON_STATUS") {
     setDaemonUi(Boolean(msg.payload?.connected), msg.payload?.detail || "", msg.payload || {});
     if (msg.payload?.connected) refreshStats({ force: true }).catch(() => {});
+    refreshConsentBanner().catch(() => {});
+  }
+  if (msg?.type === "CONTRIBUTION_STATUS") {
+    refreshConsentBanner().catch(() => {});
   }
   if (msg?.type === "STORE_UPDATED") {
     applyStoreUpdate(msg.payload || {});
@@ -1084,13 +1088,26 @@ refresh();
  */
 async function refreshConsentBanner() {
   let missing = false;
+  let daemonPending = false;
   try {
     const bag = await browser.storage?.local?.get(CONSENT_KEY);
     missing = !consentGranted(bag?.[CONSENT_KEY]);
   } catch {
     missing = false; // never nag on a storage error
   }
-  if (el.consentBanner) el.consentBanner.hidden = !missing;
+  try {
+    const r = await rpc("GET_NETWORK_CONSENT");
+    daemonPending = r?.daemon?.consent_required === true;
+  } catch {
+    daemonPending = false;
+  }
+  if (el.consentBanner) el.consentBanner.hidden = !(missing || daemonPending);
+  const text = document.getElementById("consent-banner-text");
+  if (text) {
+    text.textContent = daemonPending
+      ? "Keel needs you to accept what it records and downloads before the network starts."
+      : "Keel is not recording yet — it needs your go-ahead first.";
+  }
 }
 
 refreshConsentBanner().catch(() => {});

@@ -99,8 +99,11 @@ func announceLoop(ctx context.Context, n *swarm.Node) {
 // announceLive publishes any livestream in a batch of observations.
 //
 // The extractor already tags live cards with a LIVE badge, so detection costs
-// nothing. Live notices are one of Level 1's explicit narrow outbound products
-// (WO-078); they carry no watched-video context, slot, query or stable author.
+// nothing. Level 2+ only since WO-089: a sighting is derived from what this
+// user was shown, and n.Live() is nil at Level 1, so this is a no-op there
+// before any record is built. The notice still carries no watched-video
+// context, slot, query or stable author — that was never the question WO-089
+// turned on.
 func announceLive(imps []bridge.Impression) {
 	n := currentSwarmNode()
 	if n == nil || n.Live() == nil {

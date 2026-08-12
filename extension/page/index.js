@@ -56,8 +56,16 @@ const el = {
   suggestMeta: document.getElementById("suggest-meta"),
   suggestions: document.getElementById("suggestions"),
   liveQ: document.getElementById("live-q"),
+  liveNote: document.getElementById("live-note"),
+  liveReason: document.getElementById("live-reason"),
+  liveRoute: document.getElementById("live-route"),
   liveMeta: document.getElementById("live-meta"),
   liveList: document.getElementById("live-list"),
+  contribImpactNote: document.getElementById("contrib-impact-note"),
+  contribImpactReason: document.getElementById("contrib-impact-reason"),
+  contribImpact: document.getElementById("contrib-impact"),
+  contribImpactActions: document.getElementById("contrib-impact-actions"),
+  contribImpactReset: document.getElementById("contrib-impact-reset"),
 };
 
 async function rpc(type, payload) {
@@ -173,6 +181,14 @@ for (const t of ["search", "suggest", "live", "analysis", "config"]) {
 // WO-085 requires a direct route, not just an explanation: the setting that
 // would enable this control lives in another tab, and telling someone to go
 // find it is how a disabled control becomes a dead end.
+el.liveRoute?.addEventListener("click", async () => {
+  selectTab("config");
+  await refreshContribution().catch(() => {});
+  const levels = document.getElementById("contrib-levels");
+  levels?.scrollIntoView?.({ block: "center" });
+  levels?.querySelector('input[name="contrib"][value="2"]')?.focus?.();
+});
+
 el.searchNetworkRoute?.addEventListener("click", async () => {
   selectTab("config");
   // Awaited rather than fired alongside selectTab's own call: refreshContribution
@@ -181,6 +197,17 @@ el.searchNetworkRoute?.addEventListener("click", async () => {
   const levels = document.getElementById("contrib-levels");
   levels?.scrollIntoView?.({ block: "center" });
   levels?.querySelector('input[name="contrib"][value="2"]')?.focus?.();
+});
+
+// WO-086: local-only counters, so resetting them is a plain click — nothing
+// destructive of the observation corpus is at stake, unlike Wipe below.
+el.contribImpactReset?.addEventListener("click", async () => {
+  try {
+    await rpc("RESET_CONTRIBUTION_IMPACT");
+    await refreshContributionImpact();
+  } catch {
+    /* daemon down; the banner already says so */
+  }
 });
 
 /* ---------- live ---------- */
@@ -192,9 +219,25 @@ export function renderLive(res) {
   if (table) table.hidden = true;
 
   if (res && res.available === false) {
-    el.liveMeta.textContent = res.reason || "Not connected to the network yet.";
+    // Two different unavailabilities (WO-089). "Live starts at Broad sharing"
+    // is a setting the reader can change; "not connected" is a machine state
+    // they cannot, and offering a route to the contribution page for the second
+    // one would send them somewhere that cannot help.
+    const gated = res.code === "contribution_required";
+    el.liveMeta.textContent = gated ? "" : res.reason || "Not connected to the network yet.";
+    if (el.liveNote && el.liveReason) {
+      el.liveReason.textContent = gated ? res.reason || "" : "";
+      el.liveNote.hidden = !gated;
+    }
+    if (el.liveRoute) el.liveRoute.hidden = !gated;
+    if (el.liveQ) el.liveQ.disabled = gated;
     return;
   }
+  // Back to available: clear the gate copy rather than leaving it under a
+  // working table.
+  if (el.liveNote) el.liveNote.hidden = true;
+  if (el.liveRoute) el.liveRoute.hidden = true;
+  if (el.liveQ) el.liveQ.disabled = false;
   if (!streams.length) {
     el.liveMeta.textContent = res?.query
       ? `Nothing matching “${res.query}” among ${res.indexed || 0} known streams.`
@@ -599,21 +642,26 @@ const LEVELS = [
     body:
       "Your recordings and recommendation trail stay here — Keel never " +
       "serves them or any cached graph/catalogue/search block to another " +
-      "peer. You still get the " +
-      "personal product: local search, suggestions and graph pre-walk. " +
-      "Searching other people's recommendations is the one thing held back, " +
-      "because those searches run on the machines that also answer them. " +
-      "Keel requests broad shared data, " +
-      "announces livestreams it sees without an application-level sender, " +
-      "and exchanges a whole aggregate word-popularity pack with peers " +
-      "(no plaintext words, video ids, edges or query — see Privacy).",
+      "peer, and nothing derived from what you were shown leaves this " +
+      "computer at all. You still get the personal product: local search, " +
+      "suggestions and graph pre-walk. Keel downloads the starter dataset, " +
+      "broad groups of shared recommendation data and the global " +
+      "word-popularity statistic, and uses them here. Asking for those does " +
+      "tell the peer answering your address, the time and a coarse slice of " +
+      "the catalogue — never the video you wanted. Two things are held back " +
+      "for the level that supplies them: searching other people\u2019s " +
+      "recommendations, and the shared Live feed.",
   },
   {
     n: 2,
     name: "Broad sharing",
     body:
-      "Unlocks searching other people's recommendations, because from here " +
-      "your machine also answers those searches. " +
+      "Unlocks the shared Live feed and searching other people\u2019s " +
+      "recommendations, because from here your machine also supplies both: it " +
+      "publishes the livestreams it sees, contributes its word-popularity " +
+      "aggregate, and answers other people\u2019s searches. A livestream " +
+      "notice carries no sender field, but a peer you are connected to can " +
+      "still infer that it started with you from timing alone. " +
       "Your computer starts answering other peers, with two things at once: " +
       "data other people published that it is passing on, and aggregated " +
       "recommendation blocks built from what you were shown. So something " +
@@ -678,10 +726,12 @@ function renderSwarm(sw) {
   const row = document.getElementById("swarm-row");
   if (!row) return;
   if (!sw || !sw.up) {
+    // No livestream exception here (WO-090): the shared Live feed starts at
+    // Broad sharing, so at the default setting there is nothing this row can
+    // point to as the thing a peer connection would have been carrying.
     row.textContent =
-      "Not connected to the peer network. That is normal at the default " +
-      "setting for everything except livestreams, and expected if this " +
-      "machine has no route out.";
+      "No peer connection at the moment. That is normal at the default " +
+      "setting, and expected if this machine has no route out.";
     return;
   }
   // Headline the count of other Keel installs, never the raw libp2p figure.
@@ -758,7 +808,23 @@ async function refreshConsent() {
   } catch {
     return;
   }
+  let daemonPending = false;
+  try {
+    const r = await rpc("GET_NETWORK_CONSENT");
+    daemonPending = r.daemon?.consent_required === true;
+  } catch {
+    // Daemon unreachable: the local recording decision is still the thing
+    // this row can honestly report.
+  }
   const on = v === "granted";
+  if (daemonPending) {
+    row.textContent =
+      "Keel is waiting for you to accept what it records and downloads. " +
+      "The desktop app will not open a network connection until that " +
+      "answer is stored there — an older go-ahead in this browser is not enough.";
+    if (actions) actions.hidden = false;
+    return;
+  }
   row.textContent = on
     ? "Keel is recording the recommendations YouTube shows you, to this device only. To stop it, remove the extension or the desktop app — Wipe, below, erases what it already holds."
     : "Keel is not recording. It asks first, and has not been given the go-ahead on this browser.";
@@ -794,16 +860,16 @@ async function refreshContribution() {
     // (WO-085), so it is refreshed from the same answer rather than from a
     // second RPC that could disagree with this one.
     setSearchEntitlement(r.daemon);
+    applyLiveEntitlement(r.daemon);
+    applyContributionImpactEntitlement(r.daemon);
   } catch {
     return;
   }
   const disagree = stored != null && stored !== level;
   note.textContent =
     maxImpl < 2
-      ? "Keel does not yet serve or publish anything for other people; the " +
-        "livestream notice and word-aggregate exchange described below " +
-        "happen at every level, including this one. Higher levels are not " +
-        "available yet."
+      ? "Keel does not yet serve or publish anything for other people. " +
+        "Higher contribution levels are not available yet."
       : "Choose how much this node contributes.";
   if (transition === "starting" || transition === "stopping") {
     note.textContent = "Applying your choice to the network…";
@@ -1075,6 +1141,113 @@ async function refreshSearchEntitlement() {
   }
 }
 
+/**
+ * Mirror the search-control pattern for Live (WO-089): a contribution
+ * broadcast has to be able to disable the feed without waiting for the next
+ * LIVE_SEARCH, or an already-open Live tab would keep looking available.
+ */
+function applyLiveEntitlement(d) {
+  if (!d || typeof d.live !== "boolean") return;
+  if (d.live === false) {
+    renderLive({
+      available: false,
+      code: "contribution_required",
+      required_level: Number(d.live_min_level) || 2,
+      reason:
+        "Live starts at Broad sharing: the shared feed is built " +
+        "from livestream sightings people publish, so it is available " +
+        "to the levels that publish them.",
+      streams: [],
+    });
+    return;
+  }
+  loadLive().catch(() => {});
+}
+
+/**
+ * Mirror the search-control / Live pattern once more (WO-086): a
+ * contribution broadcast has to be able to gate the impact panel without
+ * waiting for the config tab to be reselected.
+ */
+function applyContributionImpactEntitlement(d) {
+  if (!d || typeof d.effective_level !== "number") return;
+  if (d.effective_level < 2) {
+    renderContributionImpact(null, {
+      reason:
+        "Your impact starts at Broad sharing: this panel shows evidence " +
+        "that your copy is doing useful serving work, which only exists " +
+        "once your node answers requests for other people.",
+    });
+    return;
+  }
+  refreshContributionImpact().catch(() => {});
+}
+
+/** Fetch and render the WO-086 contribution-impact panel. */
+async function refreshContributionImpact() {
+  if (!hasCap("contribution_impact")) {
+    renderContributionImpact(null, {
+      reason: "Your impact requires a desktop app that negotiates contribution_impact.",
+    });
+    return;
+  }
+  try {
+    const r = await rpc("GET_CONTRIBUTION_IMPACT");
+    if (r.daemon?.available === false) {
+      renderContributionImpact(null, {
+        reason: "The peer network isn't connected right now.",
+      });
+      return;
+    }
+    renderContributionImpact(r.daemon, null);
+  } catch {
+    /* daemon down; the banner already says so */
+  }
+}
+
+/**
+ * Render the WO-086 panel. `d` is a populated ContributionImpactPayload, or
+ * null while gated — the two are mutually exclusive so a caller can never
+ * show stale numbers under a gate note left over from a prior render.
+ */
+function renderContributionImpact(d, gate) {
+  const root = el.contribImpact;
+  if (!root) return;
+  if (el.contribImpactNote && el.contribImpactReason) {
+    el.contribImpactReason.textContent = gate?.reason || "";
+    el.contribImpactNote.hidden = !gate;
+  }
+  if (el.contribImpactActions) el.contribImpactActions.hidden = !d;
+  if (!d) {
+    root.replaceChildren();
+    root.className = "";
+    return;
+  }
+  const claims = (d.graph_claims_local ?? 0) + (d.graph_claims_peer_cached ?? 0);
+  const catalogue = (d.catalogue_local ?? 0) + (d.catalogue_peer_cached ?? 0);
+  const bytesServed = d.bytes_served ?? 0;
+  const rows = [
+    [String(d.requests_answered ?? 0), "broad requests answered"],
+    [
+      bytesServed >= MB
+        ? `${(bytesServed / MB).toFixed(1)} MB`
+        : `${(bytesServed / 1024).toFixed(1)} KB`,
+      "sent to other people",
+    ],
+    [String(claims), "recommendation claims eligible to serve"],
+    [String(catalogue), "catalogue entries eligible to serve"],
+    [String((d.buckets_announced ?? 0) + (d.shards_announced ?? 0)), "buckets/shards announced"],
+    [String(d.keel_peers ?? 0), "Keel peers connected right now"],
+  ];
+  root.className = "stats";
+  root.innerHTML = rows
+    .map(
+      ([n, label]) =>
+        `<div><strong>${escapeHtml(n)}</strong><span>${escapeHtml(label)}</span></div>`
+    )
+    .join("");
+}
+
 /** Record what the daemon reported, from either the RPC or the broadcast. */
 function setSearchEntitlement(d) {
   if (!d || typeof d !== "object") return;
@@ -1117,9 +1290,10 @@ function applyCapabilityUi() {
         `Searching other people's recommendations needs Broad sharing ` +
         `(level ${searchEntitlement.minLevel}). Those searches run on the ` +
         `machines that also answer them, so the level that serves is the ` +
-        `level that can ask. Everything else here is unaffected: local ` +
-        `search, suggestions, graph pre-walk, Live and word statistics all ` +
-        `work at level ${searchEntitlement.level}.`;
+        `level that can ask. Local search, suggestions, graph pre-walk and ` +
+        `the downloaded global word statistics all work at level ` +
+        `${searchEntitlement.level}. The shared Live feed and distributed ` +
+        `peer search both start at Broad sharing.`;
     }
     if (row) row.title = reason;
     if (el.searchNetworkNote && el.searchNetworkReason) {
@@ -1143,6 +1317,13 @@ function applyCapabilityUi() {
         "reference and cannot be changed here yet.";
     }
     if (contribHead && contribHead.tagName === "H2") contribHead.hidden = false;
+    // Losing contribution_runtime entirely means the daemon cannot even
+    // report which level is running, so the impact panel — which depends on
+    // that level — cascades to the same disabled state rather than being
+    // left showing stale or invented numbers.
+    renderContributionImpact(null, {
+      reason: "Your impact requires a desktop app that negotiates contribution_runtime.",
+    });
   }
 }
 
@@ -1237,7 +1418,10 @@ browser.runtime.onMessage.addListener((msg) => {
     // profile has to reach an already-open search view, and the payload
     // carries everything the control needs.
     setSearchEntitlement(msg.payload);
+    applyLiveEntitlement(msg.payload);
+    applyContributionImpactEntitlement(msg.payload);
     refreshContribution().catch(() => {});
+    refreshConsent().catch(() => {});
   }
 });
 

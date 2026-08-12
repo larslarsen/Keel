@@ -279,9 +279,15 @@ func (n *Node) seedLiveFromLocal() {
 // handleLiveSnapshot returns every record this node holds.
 func (n *Node) handleLiveSnapshot(s network.Stream) {
 	defer s.Close()
-	// Ungated by policy — the whole live index is served at every level — but
-	// not unlimited (WO-085). The snapshot is the largest single reply this
-	// node produces on demand, so it needs the byte budget most.
+	// Level 2+ (WO-089), and gate-aware. startLive is the only thing that
+	// registers this handler, so a Level-1 node never reaches it — but a
+	// downgrade shuts the gate before the node is torn down, and the snapshot
+	// is built from an index this user's own sightings seeded.
+	if !n.mayServeLive() {
+		return
+	}
+	// Limited as well as gated (WO-085). The snapshot is the largest single
+	// reply this node produces on demand, so it needs the byte budget most.
 	release, ok := n.serve.admit(s.Conn().RemotePeer())
 	if !ok {
 		return
@@ -300,6 +306,9 @@ func (n *Node) handleLiveSnapshot(s network.Stream) {
 		return
 	}
 	_, _ = s.Write(raw)
+	if err := n.st.RecordContributionServe(len(raw)); err != nil {
+		n.logf("live snapshot: recording contribution activity: %v", err)
+	}
 }
 
 // Snapshot returns the live records this node holds.
@@ -774,13 +783,20 @@ func (li *LiveIndex) setLocalSeenAt(platform, videoID string, seenAt int64) {
 // Live returns the index, or nil when not subscribed.
 func (n *Node) Live() *LiveIndex { return n.live }
 
-// PublishLive announces a stream.
+// PublishLive announces a stream this node saw.
 //
-// Ungated at every level, including the default. A report carries no author, so
-// it discloses nothing about who saw the stream, and every node reporting is
-// what fills the long tail this feed exists for.
+// Level 2+ (WO-089). This used to run at every level on the argument that an
+// authorless report discloses nothing about who saw the stream. That argument
+// does not survive a direct neighbour with connection topology and timing, and
+// a sighting is derived from what this user was shown either way — so it is
+// sharing, and sharing starts at Level 2.
+//
+// A Level-1 node has no index at all, so the nil check below is the whole
+// stop. The gate check after it is for the downgrade window: the supervisor
+// shuts the gate synchronously and tears the node down afterwards, and a
+// sighting published in between is one the user has already declined to send.
 func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
-	if n.live == nil {
+	if n.live == nil || !n.mayPublishLive() {
 		return
 	}
 	// Track our local observation so merge can corroborate peer claims.

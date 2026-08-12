@@ -28,9 +28,19 @@ If a release is available, download the desktop app instead of building it:
    - Mac (Intel) — `keel-host-darwin-amd64`
 2. Download `keel-extension.zip` from the same page and unzip it somewhere you
    will keep — that folder is the extension.
-3. Put the desktop app next to the unzipped folder, open a terminal there, and
-   run it with `install` (see Step 3 below for the exact command).
+3. Put the desktop app next to the unzipped folder and install it:
+   - **Windows — just double-click `keel-host-windows-amd64.exe`.** No terminal.
+     Running it with no arguments *is* the install. A window may flash and
+     close; that is expected, and the result is written to a file (below).
+   - **Mac** — open a terminal in that folder and run it with `install`
+     (Step 3 below has the exact command).
 4. Load the extension folder as described in Step 4.
+
+**Windows leaves a report.** Every install writes `install-report.txt` next to
+the app. Open it in Notepad: the last line says `RESULT: SUCCESS` or
+`RESULT: FAILED`, and a failure names the first thing that went wrong. It holds
+file paths and browser settings keys only — nothing you have watched or
+searched — so it is safe to attach to an issue.
 
 **Your computer will warn you about these files.** They are not code-signed —
 a certificate costs money this project has not spent, and saying so is better
@@ -113,11 +123,14 @@ are seconds. When it finishes it prints nothing at all — that is success.
 
 ## Step 3 — Connect it to your browser
 
-**Windows:**
+**Windows:** double-click `keel-host.exe` in File Explorer, or from PowerShell:
 
 ```powershell
 .\keel-host.exe install
 ```
+
+Both do the same thing. On Windows the result is also written to
+`install-report.txt` beside the app, so you do not have to read the console.
 
 **macOS / Linux:**
 
@@ -213,9 +226,14 @@ Your recordings are kept — updating never touches them.
 ## If something goes wrong
 
 **The panel says the desktop app is not connected.**
-Run the install command from Step 3 again, then reload the extension from the
-extensions page. The browser only looks for the desktop app when the extension
-loads.
+Run the install command from Step 3 again (on Windows, double-click the app),
+then reload the extension from the extensions page. The browser only looks for
+the desktop app when the extension loads.
+
+On Windows, open `install-report.txt` beside the app first. If it ends in
+`RESULT: FAILED`, the line beginning `First error:` says what to fix. If it ends
+in `RESULT: SUCCESS` and the panel is still not connected, attach that file to
+an issue — the registration itself is verified, so the problem is elsewhere.
 
 **"Load unpacked" says the manifest is missing or invalid.**
 Step 3 was skipped, or was run from somewhere other than the `daemon` folder

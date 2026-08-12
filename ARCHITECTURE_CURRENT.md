@@ -68,10 +68,26 @@ does not match its active tab.
 Contribution is a daemon-owned policy. Recording consent and contribution
 consent are separate.
 
+Recording consent covers both local observation and the default Level-1 network
+uses. The affirmative screen must disclose, before the action, broad shared-data
+requests. These are disclosed uses of the observed context even though requests
+use broad prefixes. Live and locally derived word telemetry are not Level-1 data
+practices.
+
+The enforcement boundary is the daemon, not only the browser profile. A current,
+revisioned network-data consent record in SQLite is required before any swarm
+node exists. Missing or obsolete consent means network-off, independently of the
+stored contribution level. Browser storage retains only that profile's
+observation decision so its content observer can fail closed before sending a
+record. The initial affirmative action grants the current daemon network-data
+revision and only then enables observation in that profile. Level 2 remains a
+separate opt-in. WO-089 implements this boundary; no build predating it is
+eligible for publication or external recruitment.
+
 | Level | Peer network | Own observations sent | What the user receives |
 |---|---|---|---|
-| **1 — Strictly Personal** (default) | Consumer: peer discovery, seed receipt, whole-bucket graph/catalogue/search-shard fetch needed by shared suggestions and graph pre-walk. Also receives, relays and originates live gossip/snapshots, and exchanges the whole fixed-shape word-level HLL/CMS telemetry pack. It does not initiate user-triggered distributed peer search, serve blocks, announce itself as their provider, or join three-gram yield/token-sketch topics. | Livestream notices plus aggregate word HLL/CMS telemetry. No raw words, recommendation edges, watch trail or stable application author. | Local search, the funnel inspector, shared suggestions/graph pre-walk, global word statistics and the shared live index. |
-| **2 — Broad sharing** | Level 1 plus user-triggered distributed peer search, and serving broad hashed-prefix buckets containing both locally produced graph blocks and cached blocks, provider announcements, and three-gram availability/sketch telemetry for everything it serves. Supporting catalogue/search data is also served only as complete broad buckets/shards. | Aggregated, stringless recommendation blocks derived from local observations, mixed into complete broad buckets; live notices and word aggregates. No page-load ids, raw timestamps, selected-video response or ordered watch trail. | Search across other people's recommendation records, a self-growing shared graph and warm cache; contributed storage/data also improve local latency and network reach. |
+| **1 — Strictly Personal** (default) | Consumer: peer discovery, seed receipt, whole-bucket graph/catalogue/search-shard fetch needed by shared suggestions and graph pre-walk, plus fetch of the global fixed-shape word-level HLL/CMS telemetry pack. It has no Live topic or snapshot capability. It does not initiate user-triggered distributed peer search, serve any peer data, announce itself as a provider, or join three-gram yield/token-sketch topics. | None. No Live sighting, local word aggregate, recommendation edge, watch trail or stable application author. Broad requests still expose IP/timing and coarse requested prefixes. | Local search, the funnel inspector, shared suggestions/graph pre-walk and fetched global word statistics. Shared Live is unavailable. |
+| **2 — Broad sharing** | Level 1 plus the full Live gossip/snapshot system, bidirectional word telemetry, user-triggered distributed peer search, and serving broad hashed-prefix buckets containing both locally produced graph blocks and cached blocks, provider announcements, and three-gram availability/sketch telemetry for everything it serves. Supporting catalogue/search data is also served only as complete broad buckets/shards. | Livestream notices, aggregate word HLL/CMS telemetry, and aggregated stringless recommendation blocks derived from local observations and mixed into complete broad buckets. No page-load ids, raw timestamps, selected-video response or ordered watch trail. | The shared Live index, search across other people's recommendation records, a self-growing shared graph and warm cache; contributed storage/data also improve local latency and network reach. |
 | **3 — Cohort** | Level 2 plus threshold-protected aggregate publication. | The Level-2 broad blocks plus STAR-protected cohort measurements; never a raw ordered trail. | STAR-derived cohort/funnel comparison when built. |
 | **4 — Transparency** | Level 3 plus attributed publication. | Explicitly public, attributed funnel records. | No gated reward. |
 
@@ -88,21 +104,22 @@ privacy. Level 1 retains local search and is “personal,” not “offline.” 
 requests still expose peer participation and coarse interests as described in
 the privacy policy.
 
-Level 1 has two narrow outbound data products: live notices, and the global
-word-level telemetry pack. The latter is the WO-068 HLL/CMS fixed-shape pack,
-served whole and without plaintext words, video ids, edges or queries. It is
-display telemetry, not a block-discovery signal. It includes locally observed
-titles so the global statistic covers the corpus; this aggregate disclosure must
-be stated explicitly. Known word guesses can still be tested against a CMS, so
-“no plaintext words” must not be described as zero disclosure.
+Level 1 sends no observation-derived application payload. It may request broad
+shared buckets and fetch the global WO-068 HLL/CMS pack, so it is a networked
+consumer rather than an offline mode. Those requests still expose IP/timing and
+coarse requested prefixes. It does not answer the word protocol or merge its
+local corpus into an outbound pack. At Level 2+ the pack includes locally
+observed titles; it carries no plaintext words, video ids, edges or queries, but
+known word guesses can still be tested against a CMS. That is aggregate
+metadata, not zero disclosure.
 
-The live network exists at Level 1 so the long-tail feed can both receive and
-originate sightings. It does not carry recommendation edges or a watch trail.
-“No author” is not a complete anonymity proof: live reports omit application
-authorship and become indistinguishable after relaying, but a direct neighbour
-may use connection topology and timing to infer an origin probabilistically.
-Consent and privacy copy must state both Level-1 outbound products rather than
-describe Level 1 as network-silent.
+The Live network begins at Level 2. Level 1 does not join the topic, receive or
+relay gossip, fetch or serve snapshots, seed the index from local observations,
+or originate sightings. Level 2+ runs the complete existing Live system. A Live
+notice does not carry recommendation edges or a watch trail, but “no author” is
+not a complete anonymity proof: a direct neighbour may use connection topology
+and timing to infer an origin probabilistically. Level-2 consent and privacy copy
+must state that residual disclosure.
 
 Level 2 is where locally observed graph data enters the shared graph. The
 privacy unit is the complete broad bucket, not one selected neighbourhood: a
@@ -126,9 +143,10 @@ cross-block attribution belongs only to Level 4.
 
 The shared live index remains whole-feed gossip with local search, no popularity
 ranking, bounded memory and expiry. Its query privacy comes from holding the
-whole index, not from a claim that publication has no metadata. Subscription and
-relay are permanent at every contribution level, not tied to opening the Live
-tab.
+whole index, not from a claim that publication has no metadata. At Level 2+,
+subscription and relay are permanent and not tied to opening the Live tab. At
+Level 1 the Live surface stays visible but unavailable with a direct Level-2
+explanation; there is no partial receive-only Live mode.
 
 The following capabilities are independently selected; they are not inferred
 from one generic “swarm enabled” boolean:
@@ -136,11 +154,11 @@ from one generic “swarm enabled” boolean:
 | Capability | Level 1 | Level 2+ |
 |---|---:|---:|
 | Peer discovery/connection | On | On |
-| Live topic + live-snapshot stream | Receive, relay, originate, serve whole snapshot | Same |
+| Live topic + live-snapshot stream | Off | Receive, relay, originate, serve whole snapshot |
 | Seed receipt + graph/catalogue/search-shard fetch/pre-walk | On | On |
 | User-triggered distributed peer search | Off; local search remains on | On |
 | Three-gram yield + token-sketch topics | Off | Receive/relay/originate for the full served corpus |
-| Whole word HLL/CMS telemetry stream | Fetch and serve the fixed-shape aggregate, including local corpus | Same |
+| Whole word HLL/CMS telemetry stream | Fetch only; never serve or include local corpus | Fetch, serve and include local corpus |
 | Broad graph/catalogue/search serve + provider announcements | Off | On; includes locally derived and cached members of each complete bucket/shard |
 | STAR-protected cohort measurement | Off | Level 3+ only |
 | Attributed funnel publication | Off | Level 4 only |
@@ -154,7 +172,8 @@ from one generic “swarm enabled” boolean:
   user-triggered distributed `PEER_SEARCH`. Level 2 joins and originates them
   for its full local-plus-cached served corpus.
 - `WordTelemetryProtocol` is the separate WO-068 display aggregate. Level 1
-  fetches and answers the whole HLL/CMS pack, including local-corpus input.
+  fetches the whole HLL/CMS pack but does not answer the protocol or include
+  local-corpus input. Level 2+ does both.
 - The diagnostic HLL over recommendation edge keys used to measure cross-user
   overlap is neither of those. It is not an automatic Level-1 network protocol;
   any future automatic exchange requires its own consent/threat-model decision.
@@ -195,9 +214,8 @@ rather than auto-escalating. Only the single daemon owner may change this state.
   local node exists, not that the public DHT is reachable.
 - Every block serve, provider-announcement and three-gram topic path reads
   the effective runtime owner, not the SQLite setting independently. Graph
-  fetch/pre-walk, whole word-level HLL/CMS exchange, and live
-  receive/relay/publish remain enabled in the Level-1 policy; three-gram topics
-  are absent.
+  fetch/pre-walk and word-level HLL/CMS fetch remain enabled in the Level-1
+  policy; word service, Live and three-gram topics are absent.
 
 The current node construction binds stream handlers and pubsub topics at start,
 so the selected implementation is a supervisor-controlled node replacement, not
@@ -211,7 +229,8 @@ mutation of a live node:
    imported, or both) derived from those capabilities, never by a boolean that
    can only choose one of the two.
 2. For 2→1, close the old node's outbound permission gate, durably set stored
-   and startup levels to 1, then stop/detach it and start the consumer-only node.
+   and startup levels to 1, then stop/detach it and start the consumer-only node
+   with no Live object, topic, snapshot handler or local seed path.
    If consumer-node startup fails, remain network-stopped and report failure;
    never resurrect Level 2.
 3. For 1→2, persist the explicit user choice while retaining startup level 1,
@@ -264,8 +283,10 @@ The owner accepts concurrent clients and multiplexes each as an independent
 bridge session over shared Store and SwarmRuntime instances. Correlation IDs are
 scoped to a client connection. A client disconnect never stops the owner.
 
-The owner is long-lived for the user session because Level 1's live gossip
-relay—and Level 2's provider duties—cannot depend on a browser tab remaining open. Packaging may
+The owner is long-lived for the user session because Level 1's seed, graph and
+word-statistic fetches — and Level 2's Live gossip plus provider duties — cannot
+depend on a browser tab remaining open. The owner still does not construct a
+swarm node until current network-data consent exists (WO-089). Packaging may
 later register user-session startup; connect-or-spawn remains the recovery path.
 Uninstall and an explicit owner command provide clean shutdown. Upgrades use a
 version-negotiated controlled restart; a proxy must not kill an unknown owner.
@@ -280,10 +301,10 @@ envelope, not every RPC payload revision. Compatibility is negotiated inside
 {
   "client_version": "0.1.0",
   "api": { "min": 1, "max": 1 },
-  "required": { "core": 1 },
+  "required": { "core": 1, "network_consent": 1 },
   "optional": { "selectors": 1, "tiktok": 1, "scroll_history": 1,
                 "peer_search": 2, "word_stats": 1, "queue": 1,
-                "contribution_runtime": 1 }
+                "contribution_runtime": 1, "contribution_impact": 1 }
 }
 ```
 
@@ -302,6 +323,8 @@ interpreting “unknown type.”
 Privacy/security behavior never silently downgrades. In particular, Level 2
 controls require `contribution_runtime:1`; an older daemon may continue the
 local core but the extension must not claim it can change effective networking.
+`contribution_impact:1` is optional the same way (WO-086): its absence disables
+the Level-2 impact panel with an update reason, never an invented zero.
 `peer_search:2` carries WO-085's reciprocal contract on the same principle in
 the other direction: a negotiated `1` means the peer daemon has no level rule,
 so the extension leaves the control enabled rather than imposing a restriction
@@ -356,11 +379,13 @@ moved into a new file.
 
 ## 8. Implementation status and order
 
-The decisions above are normative but not yet all implemented. WO-077/078 now
-enforce the Level-1 capability boundary: fetch/pre-walk, live gossip and whole
-word telemetry remain on; block service/provider announcements and three-gram
-topics remain off; contribution changes replace the running node immediately
-with crash-safe stored/effective/startup state. WO-079 supplies the one
+The decisions above are the current contract. WO-077/078 implemented the earlier
+Level-1 capability boundary: fetch/pre-walk, Live gossip and whole word
+telemetry on; block service/provider announcements and three-gram topics off.
+WO-089 supersedes its Level-1 outbound decision: fetch/pre-walk and
+word-statistics fetch remain on, while the entire Live capability and word
+serve/local contribution move to Level 2+. Contribution changes already replace
+the running node immediately with crash-safe stored/effective/startup state. WO-079 supplies the one
 authenticated per-user owner and broadcasts terminal policy status across its
 browser sessions. WO-084 replaced WO-077's mirror-only Level-2 source filter:
 Level 2 now serves the union of locally derived and imported claims in each
@@ -383,9 +408,16 @@ bytes on every serve path at every level, independently of contribution.
 WO-088 made capability-gated controls stay visible and disabled rather than
 vanishing. WO-083 split the service worker's control plane into the module
 boundaries §7 now describes, with the structural rules enforced by test rather
-than by convention. Every architecture-review implementation gap identified in
-the 2026-08-11/12 passes is now closed; what remains is live QA (below) and
-WO-082's final consistency audit.
+than by convention. Every original architecture-review implementation gap is
+closed. WO-082's final policy audit then exposed two release-boundary defects
+now owned by WO-089: the default Level-1 node must not run Live, and the
+independently starting daemon must prove the corrected initial disclosure
+before beginning Level-1 network work. WO-089 removes Live from Level 1
+entirely, makes word telemetry fetch-only there, and makes initial
+recording/consumer-network consent enforceable by the daemon.
+WO-090 corrected the final two full-page strings that implied Live still worked
+at Level 1 and added DOM regression coverage. WO-082's closing Graphify pass
+found no remaining current architecture, runtime or disclosure contradiction.
 
 Senior-development order:
 
@@ -404,10 +436,15 @@ Senior-development order:
 8. ~~WO-083 — split the extension control plane after state ownership is
    correct.~~ Implemented; `sw.js` is 373 lines of wiring with no command
    switch, and `test/background-structure.test.js` keeps it that way.
-9. WO-082 — complete this final consistency audit now that WO-085/088/083 have
-   landed. The 2026-08-12 pass reconciled implemented WO-080/081/084 state and
-   user-facing Level-2 disclosure while the code gaps were still open; those
-   gaps are closed, so the audit can now be closed against the real tree.
+9. ~~WO-089 — move the whole Live capability and outbound word telemetry to
+   Level 2+, retain Level-1 graph/seed/word consumption, and enforce the
+   corrected initial consent before the daemon constructs Level 1.~~
+   Implemented.
+10. ~~WO-090 — correct the final stale Level-1 Live strings and add DOM
+    regression coverage.~~ Implemented.
+11. ~~WO-082 — close the final consistency audit after the runtime and
+    user-facing disclosures agree.~~ Done 2026-08-12.
 
 Do not publish or recruit external testers from a build whose displayed
-contribution level differs from its effective graph-sharing policy.
+contribution level differs from its effective graph-sharing policy, or whose
+daemon cannot prove the current network-data consent revision.

@@ -17,8 +17,28 @@ export const MAX_HOST_MSG = MAX_HOST_TO_BROWSER;
 export const CLIENT_VERSION = "0.1.0";
 /** Inclusive API range this extension speaks. */
 export const CLIENT_API = Object.freeze({ min: 1, max: 1 });
-/** Required capability revisions (fail closed if missing). */
-export const CLIENT_REQUIRED = Object.freeze({ core: 1 });
+/**
+ * Required capability revisions (fail closed if missing).
+ *
+ * `network_consent` is required, not optional (WO-089). A daemon without it
+ * predates the consent gate, which means two things at once: it would start its
+ * network before anyone had accepted the corrected disclosure, and it would run
+ * Live and answer the word protocol at the default level. Neither is something
+ * the extension can compensate for from its side, so the session fails closed
+ * with "desktop app update required" rather than connecting to a daemon whose
+ * defaults contradict what this build's screens say.
+ */
+export const CLIENT_REQUIRED = Object.freeze({ core: 1, network_consent: 1 });
+
+/**
+ * The network-data disclosure this build's consent screen renders.
+ *
+ * Sent with an acceptance so the daemon records *which* wording was agreed to,
+ * and refused if it names a revision the daemon does not know. Must match
+ * store.NetworkConsentRevision in the daemon, and must be raised in the same
+ * change as the screen's text.
+ */
+export const CONSENT_REVISION = 1;
 /** Optional capability ceilings; negotiated map may omit any of these. */
 export const CLIENT_OPTIONAL = Object.freeze({
   selectors: 1,
@@ -33,6 +53,7 @@ export const CLIENT_OPTIONAL = Object.freeze({
   word_stats: 1,
   queue: 1,
   contribution_runtime: 1,
+  contribution_impact: 1,
 });
 
 /** peer_search revision at which distributed search became Level-2+. */

@@ -392,6 +392,35 @@ type TokenProgress struct {
 	Known bool `json:"known"`
 }
 
+// ContributionImpactPayload is GET_CONTRIBUTION_IMPACT_RESULT body (WO-086).
+//
+// Aggregate numbers only. The counts are two different kinds: the six
+// corpus-state fields plus ConnectedPeers/KeelPeers are recomputed fresh on
+// every call and persist nowhere; RequestsAnswered/BytesServed/SinceDay are
+// the one thing the daemon persists for this feature, as coarse running
+// totals with no peer id, query, prefix/bucket identifier or per-request
+// timestamp behind them — see daemon/store/contribution_impact.go.
+type ContributionImpactPayload struct {
+	RequestsAnswered int64  `json:"requests_answered"`
+	BytesServed      int64  `json:"bytes_served"`
+	SinceDay         string `json:"since_day"`
+
+	GraphClaimsLocal      int `json:"graph_claims_local"`
+	GraphClaimsPeerCached int `json:"graph_claims_peer_cached"`
+	CatalogueLocal        int `json:"catalogue_local"`
+	CataloguePeerCached   int `json:"catalogue_peer_cached"`
+	BucketsAnnounced      int `json:"buckets_announced"`
+	ShardsAnnounced       int `json:"shards_announced"`
+
+	ConnectedPeers int `json:"connected_peers"`
+	KeelPeers      int `json:"keel_peers"`
+
+	// Available is false only when no swarm node is running, mirroring
+	// PeerSearchResultPayload — distinct from the CodeContributionRequired
+	// refusal below Level 2, which never reaches this payload shape at all.
+	Available bool `json:"available"`
+}
+
 // WordStatsPayload is WORD_STATS request body (WO-068): the query whose
 // words the UI wants corpus-frequency bars for. Telemetry only — does not
 // trigger shard or word-bucket fetches.

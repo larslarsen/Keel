@@ -411,9 +411,10 @@ This was the interim conclusion. Under the current decision, **Level 1 keeps the
 complete personal recommendation path.** It receives the common seed, fetches
 whole prefix buckets and pre-walks the graph; Level 2 adds broad block service
 and reciprocal user-triggered distributed search rather than gating ordinary
-suggestions. Level 1 also participates in live gossip and whole word-level
-HLL/CMS telemetry while serving no graph/catalogue/search blocks. See
-`ARCHITECTURE_CURRENT.md` §3 and WO-078/085.
+suggestions. Level 1 fetches the seed, whole prefix buckets and the global
+word statistic, but does not participate in live gossip and serves no word-level
+HLL/CMS telemetry — Live and outbound word statistics begin at Level 2 (WO-089).
+See `ARCHITECTURE_CURRENT.md` §3 and WO-078/085/089.
 
 ## Who the seed is built from — decided 2026-08-05
 

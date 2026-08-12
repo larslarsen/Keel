@@ -104,6 +104,15 @@
           />
         </label>
         <p class="meta" id="live-meta"></p>
+        <!-- WO-089: shown, never hidden, when Live is unavailable at this
+             contribution level. Same pattern as the network-search control:
+             a disabled surface with the reason and a route beside it. -->
+        <p class="meta" id="live-note" hidden>
+          <span id="live-reason"></span>
+          <button type="button" class="btn-link" id="live-route" hidden>
+            Change contribution level
+          </button>
+        </p>
         <table id="live-table" hidden>
           <thead>
             <tr>
@@ -122,10 +131,17 @@
           an older entry may open the recording instead.
         </p>
         <p class="note">
+          The shared feed starts at <strong>Broad sharing</strong>. It is built
+          from livestream sightings people publish, so the levels that publish
+          them are the levels that have it — at the default setting nothing you
+          saw is reported and this feed is unavailable.
+        </p>
+        <p class="note">
           Reports carry no application-level sender, so the payload does not
-          identify who saw or relayed a stream. A directly connected peer can
-          still infer an origin from network topology and timing. This works
-          the same at every setting, including the default.
+          identify who saw or relayed a stream. That is not a proof of
+          anonymity: a directly connected peer can still infer an origin from
+          network topology and timing, which is why publishing them is a
+          sharing decision rather than a default.
         </p>
         <p class="note">
           Most livestreams have almost no audience, which is exactly why they are
@@ -175,14 +191,14 @@
           and in what position — are never sent as rows or an ordered trail.
         </p>
         <p class="meta">
-          Three network disclosures exist at every setting, including the
-          default. Keel requests broad shared buckets, announces livestreams it
-          sees, and exchanges a whole fixed-shape word-popularity aggregate
-          that includes its local corpus. The live payload has
-          <strong>no application-level sender</strong>, and the word pack has no
-          plaintext words, video ids, edges or query. Direct peers still see
-          ordinary connection metadata; see the Privacy policy for the full
-          residual risk.
+          At the default setting the only network disclosure is asking. Keel
+          requests broad shared buckets and fetches a global word-popularity
+          statistic; a request tells the answering peer your address, the time
+          and a coarse slice of the catalogue, never the video you wanted.
+          Nothing derived from what you were shown is sent — not a livestream
+          you saw, not a word from your own library, not a recommendation
+          claim. Direct peers still see ordinary connection metadata; see the
+          Privacy policy for the full residual risk.
         </p>
         <p class="meta">
           At Broad sharing, Keel also answers requests with complete buckets of
@@ -208,13 +224,29 @@
         <p class="meta" id="consent-row"></p>
         <div class="btn-row" id="consent-actions" hidden>
           <a class="btn" href="../consent/index.html" target="_blank" rel="noreferrer">
-            Read what it records
+            Read what it records and downloads
           </a>
         </div>
 
         <h2>Contributing</h2>
         <p class="meta" id="contrib-note"></p>
         <div id="contrib-levels"></div>
+
+        <h2>Your impact</h2>
+        <!-- WO-086: shown, never hidden, when the panel is unavailable —
+             below Broad sharing or against a daemon that has not negotiated
+             contribution_impact. Same rule as every other gated surface on
+             this page: a disabled panel with the reason beside it, never an
+             invented zero. -->
+        <p class="meta" id="contrib-impact-note" hidden>
+          <span id="contrib-impact-reason"></span>
+        </p>
+        <div id="contrib-impact"></div>
+        <div class="btn-row" id="contrib-impact-actions" hidden>
+          <button type="button" class="btn" id="contrib-impact-reset">
+            Reset these numbers
+          </button>
+        </div>
 
         <h2>Disk space</h2>
         <p class="meta">

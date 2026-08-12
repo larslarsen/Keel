@@ -115,12 +115,15 @@ Publishing with open defects is fine; publishing while implying they don't exist
 Chrome's updated policy is enforced from **1 August 2026**. Two hard
 requirements, both verified against the policy text rather than assumed:
 
-- [ ] **In-product consent before any collection.** All data collection must be
+- [x] **In-product consent before any collection.** All data collection must be
       prominently disclosed and affirmatively consented to *inside the
       extension's own interface*, not only in a privacy policy. There is no
       carve-out for data that never leaves the device — "user data" is defined
       as information collected about a user or a user's use of the product.
-      *Done: `extension/consent/index.html`, gating the observer.*
+      WO-089 put the Level-1 recording/download disclosure above the action,
+      moved Live plus outbound word telemetry to Level 2+, and requires a
+      current daemon acknowledgement before any swarm node exists. Hosted
+      privacy-policy URL and listing declarations below remain.
 - [ ] **A hosted privacy policy URL.** A file in the repository does not
       satisfy this; the listing needs a page. Enable GitHub Pages on this
       repository — Settings → Pages → deploy from `main`, folder `/ (root)` —
@@ -129,6 +132,10 @@ requirements, both verified against the policy text rather than assumed:
       one source of truth; a copy elsewhere would drift, and a privacy policy
       that disagrees with itself is worse than none.
 - [ ] Listing privacy declarations match `PRIVACY.md` exactly.
+- [ ] Listing and in-product level copy match WO-089 exactly: Level 1 receives
+      broad graph/seed/word data but has no Live capability and sends no local
+      word pack; Level 2+ enables full Live, local word telemetry and broad
+      local-plus-cached graph/search service.
 - [ ] Single-purpose description, and a justification for every permission.
 
 Sources: [policy updates](https://developer.chrome.com/blog/cws-policy-updates-2026),

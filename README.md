@@ -32,12 +32,12 @@ The raw recording lives in a SQLite file on your machine. There is no account
 and no Keel-operated server. At the default Level 1, Keel does not serve graph,
 catalogue or search blocks and does not publish recommendation edges.
 
-Level 1 is not network-silent. It requests broad shared buckets for suggestions
-and graph pre-walk, announces livestreams it sees, and exchanges a fixed-shape
-word-popularity aggregate that includes its local corpus. The live payload has
-no application-level sender and the word pack has no plaintext words, ids,
-edges or query, but directly connected peers still see ordinary network
-metadata. The full residual disclosure is in [PRIVACY.md](PRIVACY.md).
+Level 1 is not network-silent, but only about asking: it requests broad shared
+buckets for suggestions and graph pre-walk, and fetches the global
+word-popularity statistic. Nothing derived from what you were shown leaves — no
+livestream sighting, no word aggregate, no recommendation block. Those are
+published only at Level 2 (Broad sharing), which is off by default. The full
+residual disclosure is in [PRIVACY.md](PRIVACY.md).
 
 At Level 2, your computer also serves complete broad buckets containing both
 cached peer claims and aggregated, stringless recommendation claims derived

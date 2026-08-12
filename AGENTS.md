@@ -9,9 +9,11 @@ Browser extension + local Go daemon. Gives people control over the video recomme
 ## Read before coding
 
 1. `handoff/README.md` — **the work-order index and every order's status. Start here.**
-   No implementation order is open: WO-083, WO-085 and WO-088 all closed
-   2026-08-12. What remains is live QA (Windows, multi-tab, two-machine) and
-   WO-082's final consistency audit — see `ROADMAP.md`.
+   WO-089 is implemented: Level 1 remains the default graph/seed/word consumer,
+   but the whole Live capability and outbound word telemetry begin at Level 2+;
+   the daemon proves corrected initial consent before starting Level 1.
+   WO-082 and WO-090 are closed. Two-machine wire inspection for WO-089 remains;
+   there is no open architecture implementation order from that review.
 2. `ARCHITECTURE_CURRENT.md` — normative current architecture and implementation order.
 3. `ROADMAP.md` — product stages and current stabilization queue.
 4. `BUILD_P0.md` — P0 spec; §9 is the closed acceptance record.
@@ -29,10 +31,12 @@ the project, not just the code. If one seems wrong, say so and cite the section 
 
 - **No observation data in browser storage.** Not IndexedDB, not `chrome.storage`, not
   `localStorage`. In-memory only, bounded (~200), flushed on reconnect. (§2.1)
-- **Level 1 is a full consumer and a live-gossip participant.** It may receive
+- **Level 1 is a full consumer, not a live-gossip participant.** It may receive
   the seed, fetch graph/catalogue/search buckets, pre-walk the graph,
+  and fetch the fixed-shape word-level HLL/CMS telemetry pack. It does not
   receive/relay/originate authorless livestream
-  notices, and exchange the whole fixed-shape word-level HLL/CMS telemetry pack.
+  notices, and it does not serve word-level telemetry — Live and outbound word
+  statistics begin at Level 2 (WO-089).
   It must not serve cached or own blocks, announce block providers, originate
   or join three-gram yield/token-sketch topics, publish recommendation edges,
   or initiate user-triggered distributed peer search. Local search and shared
