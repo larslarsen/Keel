@@ -41,6 +41,12 @@ const LIST_FIELDS = new Set([
   "metadataRow",
   "leadingIcon",
   "links",
+  // TikTok FYP: player host whose id attribute embeds the video id
+  // (e.g. id="xgwrapper-0-7654326932623887630"). Where to look is data;
+  // how to parse the id string is compiled in extract.js.
+  "playerId",
+  "hashtag",
+  "sound",
   "containers",
   "overlay",
 ]);

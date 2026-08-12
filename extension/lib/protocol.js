@@ -121,6 +121,20 @@ export function validateImpression(value) {
   if (r.surface === "WATCH_NEXT" && r.context_video_id == null) {
     e.push("WATCH_NEXT needs context_video_id");
   }
+  // Optional TikTok fields (WO-063). Absent on YouTube rows.
+  if (r.hashtags != null) {
+    if (!Array.isArray(r.hashtags) || !r.hashtags.every((t) => typeof t === "string")) {
+      e.push("hashtags");
+    }
+  }
+  if (r.sound_id != null && typeof r.sound_id !== "string") e.push("sound_id");
+  if (
+    r.dwell_pct != null &&
+    (typeof r.dwell_pct !== "number" || r.dwell_pct < 0 || r.dwell_pct > 1)
+  ) {
+    e.push("dwell_pct");
+  }
+  if (r.engagement != null && typeof r.engagement !== "string") e.push("engagement");
   if (e.length) return { ok: false, errors: e };
   return {
     ok: true,
@@ -142,6 +156,11 @@ export function validateImpression(value) {
       view_count: r.view_count,
       published_at: r.published_at,
       badges: [...r.badges],
+      platform: r.platform ?? "yt",
+      hashtags: Array.isArray(r.hashtags) ? [...r.hashtags] : [],
+      sound_id: r.sound_id ?? null,
+      dwell_pct: r.dwell_pct ?? null,
+      engagement: r.engagement ?? null,
     },
   };
 }

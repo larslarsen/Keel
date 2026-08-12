@@ -215,6 +215,10 @@ CREATE TABLE IF NOT EXISTS impressions (
   view_count REAL,
   published_at TEXT,
   badges_json TEXT NOT NULL DEFAULT '[]',
+  hashtags_json TEXT NOT NULL DEFAULT '[]',
+  sound_id TEXT,
+  dwell_pct REAL,
+  engagement TEXT,
   PRIMARY KEY (page_load_id, surface, video_id)
 );
 CREATE INDEX IF NOT EXISTS idx_imp_observed ON impressions(observed_at);
@@ -330,6 +334,11 @@ CREATE TABLE IF NOT EXISTS peer_catalogue (
 	}
 	s.addColumnIfMissing("impressions", "context_title", "TEXT")
 	s.addColumnIfMissing("impressions", "platform", "TEXT NOT NULL DEFAULT 'yt'")
+	// WO-063: TikTok Mirror fields. Nullable; YouTube rows leave them empty.
+	s.addColumnIfMissing("impressions", "hashtags_json", "TEXT NOT NULL DEFAULT '[]'")
+	s.addColumnIfMissing("impressions", "sound_id", "TEXT")
+	s.addColumnIfMissing("impressions", "dwell_pct", "REAL")
+	s.addColumnIfMissing("impressions", "engagement", "TEXT")
 	// WO-016: apply known channel_ids across page loads for the same video_id.
 	if _, err := s.BackfillChannelsFromCatalogue(); err != nil {
 		return err
@@ -441,8 +450,8 @@ func (s *Store) PutImpressions(list []bridge.Impression) (inserted int, err erro
 INSERT INTO impressions (
   page_load_id, observed_at, surface, context_video_id, context_query_hash,
   slot_index, video_id, channel_id, channel_unknown, title, duration_s, view_count, published_at, badges_json,
-  context_title, platform
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  context_title, platform, hashtags_json, sound_id, dwell_pct, engagement
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(page_load_id, surface, video_id) DO UPDATE SET
   title=excluded.title,
   channel_id=COALESCE(excluded.channel_id, impressions.channel_id),
@@ -454,7 +463,13 @@ ON CONFLICT(page_load_id, surface, video_id) DO UPDATE SET
   view_count=COALESCE(excluded.view_count, impressions.view_count),
   published_at=COALESCE(excluded.published_at, impressions.published_at),
   badges_json=excluded.badges_json,
-  context_title=COALESCE(excluded.context_title, impressions.context_title)
+  context_title=COALESCE(excluded.context_title, impressions.context_title),
+  hashtags_json=CASE
+    WHEN excluded.hashtags_json IS NOT NULL AND excluded.hashtags_json != '[]'
+      THEN excluded.hashtags_json ELSE impressions.hashtags_json END,
+  sound_id=COALESCE(excluded.sound_id, impressions.sound_id),
+  dwell_pct=COALESCE(excluded.dwell_pct, impressions.dwell_pct),
+  engagement=COALESCE(excluded.engagement, impressions.engagement)
   -- slot_index intentionally NOT updated: keep first-observed slot
 `)
 	if err != nil {
@@ -487,6 +502,10 @@ ON CONFLICT(channel_id) DO UPDATE SET name=excluded.name, updated_at=excluded.up
 			}
 		}
 		badges, _ := json.Marshal(imp.Badges)
+		if imp.Hashtags == nil {
+			imp.Hashtags = []string{}
+		}
+		hashtags, _ := json.Marshal(imp.Hashtags)
 		unk := 0
 		if imp.ChannelUnknown || imp.ChannelID == nil {
 			unk = 1
@@ -500,6 +519,7 @@ ON CONFLICT(channel_id) DO UPDATE SET name=excluded.name, updated_at=excluded.up
 			imp.SlotIndex, imp.VideoID, imp.ChannelID, unk, imp.Title,
 			imp.DurationS, imp.ViewCount, imp.PublishedAt, string(badges),
 			imp.ContextTitle, platformOf(imp.Platform),
+			string(hashtags), imp.SoundID, imp.DwellPct, imp.Engagement,
 		)
 		if err != nil {
 			return inserted, err

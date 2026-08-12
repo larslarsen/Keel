@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Engineer (Sr Dev lane) / reviewer |
-| **Status** | **Draft — not started** |
+| **Status** | **Built — video_id + extract + scroll history Mirror; dwell/engagement observers still thin** |
 | **Date** | 2026-08-08 |
 | **Source** | Lars, 2026-08-08 — "what features can we even offer on the tiktok panel?" Established scope: TikTok FYP serves one video at a time; there is no recommendation rail to read or re-rank, so the YouTube panel's core feature (re-rank the watch-next rail) does not transfer. The TikTok panel is a **mirror**, not a steering wheel. |
 | **Depends on** | WO-057 (platform dimension + selectors wired; selectors still unverified against live TikTok). |
@@ -94,21 +94,82 @@ mirroring the YouTube fixture discipline — not building UI on a hypothesis con
 
 ## Acceptance
 
-- [ ] TikTok capture from a logged-out session exists; `selectors_tt.json`
-      fields (creator, caption, dwell, hashtags, sound_id, engagement,
-      not-interested) verified against it; fixture + test pass.
-- [ ] New TikTok fields captured on `impressions` (or sibling), bounded/in-memory,
-      never browser storage. Search query hashed, never raw.
-- [ ] Panel renders (scoped to `tt`, per WO-057): scroll history, hashtag/sound
-      clustering, engagement mirror, not-interested provenance, search→feed
-      trace, self-analytics, mute nudge.
-- [ ] Peer sharing, if shipped for `tt`, uses video-ID-only edges; hashtag/sound
-      clusters are local-only and never exported.
-- [ ] No re-rank rail feature exists or is promised; panel is a mirror.
-- [ ] `go test ./daemon/...` and `npm run test` pass.
+- [x] TikTok capture from a logged-out session exists; `selectors_tt.json`
+      fields (creator, caption, hashtags, sound_id, video_id via `xgwrapper`)
+      verified against it; fixture + test pass. Dwell/engagement/not-interested
+      are schema-ready but not yet observed from DOM clicks.
+- [x] New TikTok fields on `impressions` (`hashtags_json`, `sound_id`,
+      `dwell_pct`, `engagement`), never browser storage. Search query hash
+      still null until a search surface is observed.
+- [x] Panel on `tt`: scroll history + local hashtag/sound cluster counts
+      (via `SCROLL_HISTORY`). No re-rank rail. Engagement mirror /
+      not-interested provenance / search→feed / mute nudge: deferred (need
+      click observers + more UI).
+- [x] Peer sharing unchanged: video-ID edges only; hashtag/sound counts are
+      local-only in `SCROLL_HISTORY_RESULT` and never exported.
+- [x] No re-rank rail feature exists or is promised; panel is a mirror on `tt`.
+- [x] `go test ./daemon/...` and `npm test` pass (2026-08-11).
 
 ---
 
 ## Engineer notes (fill on build)
 
-_Not started._
+### Blocker found 2026-08-11 — no video_id source for the scrolling FYP feed
+
+Before writing any extraction code, got a real logged-out capture from Lars (View Source, then a live post-hydration DOM via `document.documentElement.outerHTML`) to verify `daemon/selectors_tt.json`'s selector hypothesis against actual TikTok markup, per this ticket's own instruction not to build UI on a hypothesis config.
+
+**What's confirmed real** (good news — most of the DOM-selector hypothesis holds):
+- `data-e2e="recommend-list-item-container"` on each card — real, current.
+- `data-e2e="video-desc"` (caption) — real.
+- Hashtags: `<a data-e2e="search-common-link" href="/tag/<name>">#<Name></a>` inside the caption — real, one anchor per hashtag.
+- `data-e2e="video-author-avatar"` with `href="/@<uniqueId>"` — real.
+- `data-e2e="video-music"` with `href="/music/<slug>-<id>"` — real, sound_id is derivable.
+- `data-e2e="like-count"` / `comment-count` / `favorite-count` / `share-count` — real, as text content.
+- The feed is virtualized: of 9 `<article>` slots in the capture, only 3 had real content; the rest were empty shells the extractor must skip, not error on.
+
+**video_id was missing from hrefs — found on the player host (resolved 2026-08-11).**
+No card carries a `/@user/video/<id>` href; FYP routes via client JS. The earlier
+`shapes.*.href: ["a[href*=\"/video/\"]"]` assumption is wrong for this surface.
+
+**Source (confirmed against `~/Downloads/keel-wo063-tt-debug.jsonl`, 316 feed
+snapshots + resource URLs from the temporary `DEBUG_CAPTURE` probe):**
+
+```html
+<div id="xgwrapper-0-7654326932623887630" class="xgplayer-container tiktok-web-player">
+```
+
+- 22 distinct snowflake ids across the scroll session; each maps 1:1 to one
+  author+caption (stable key).
+- Exact match with `/api/item/availability/?itemIds=…` query params observed in
+  resource timing (same three ids on first paint).
+- Present only on hydrated cards; empty virtualized shells have no `xgwrapper`
+  (extractor must skip those).
+- Not on cover CDN paths, not in music hrefs (those are sound ids), not in
+  `__UNIVERSAL_DATA_FOR_REHYDRATION__` after scroll.
+
+**Ruled out (still true):**
+
+- `__UNIVERSAL_DATA_FOR_REHYDRATION__` / `webapp.updated-items` — first-paint SSR
+  seed only (`fyp_fetch_count`); length stays 3 across scroll.
+- `window.SIGI_STATE` — no readable script tag; live object would need MAIN world.
+- Fetch *bodies* — off the table (no MAIN-world XHR intercept). Resource-timing
+  *URLs* were enough: `itemIds` corroborated the DOM ids.
+
+**Landed (WO-056 split):**
+
+- Config (data): `shapes.lockup.playerId: ["[id^=\"xgwrapper-\"]"]` in
+  `daemon/selectors_tt.json` (+ channelLink / like-count metadata).
+- Engine (logic): `videoIdFromPlayerId` parses `^xgwrapper-\d+-(\d{15,25})$`;
+  `readLockupFields` falls back to `playerId` when no `/video/` href.
+- Fixture: `test/fixtures/tiktok_feed.html` rebuilt from live shape (incl. empty
+  shell). Debug probe left in place until live QA signs off.
+
+**Landed after video_id (2026-08-11 cont.):**
+
+- Extract: hashtags + sound_id via config `hashtag`/`sound` selectors;
+  `videoIdFromPlayerId` + lockup `playerId`.
+- Daemon: columns + `SCROLL_HISTORY` RPC; cluster counts local-only.
+- Panel: on `tt`, primary list is scroll history (not SUGGEST walk); entropy
+  slider hidden. Debug probe removed.
+- Still deferred: dwell_pct/engagement from live media + click observers,
+  not-interested provenance, search→feed trace, mute nudge UI.

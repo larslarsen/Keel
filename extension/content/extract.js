@@ -155,6 +155,50 @@ export function videoIdFromHref(href, platform = "yt") {
   return m ? m[1] : null;
 }
 
+/**
+ * TikTok FYP embeds the real snowflake id on the player host:
+ *   <div id="xgwrapper-0-7654326932623887630">
+ * Confirmed 2026-08-11 against live capture (WO-063): matches
+ * /api/item/availability/?itemIds=… and is stable per video across scroll.
+ * Shape is compiled; the host element is found via config `playerId`.
+ *
+ * @param {string | null | undefined} idAttr
+ * @param {string} [platform]
+ */
+export function videoIdFromPlayerId(idAttr, platform = "yt") {
+  if (!idAttr || platform !== "tt") return null;
+  const m = String(idAttr).match(/^xgwrapper-\d+-(\d{15,25})$/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Sound id from a TikTok /music/<slug>-<digits> href. Shape compiled.
+ * @param {string | null | undefined} href
+ */
+export function soundIdFromHref(href) {
+  if (!href) return null;
+  const m = String(href).match(/\/music\/[^/?#]*-(\d{10,25})(?:[/?#]|$)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Hashtag slug from /tag/<name>. Shape compiled.
+ * @param {string | null | undefined} href
+ */
+export function hashtagFromHref(href) {
+  if (!href) return null;
+  try {
+    const u = href.startsWith("http")
+      ? new URL(href)
+      : new URL(href, "https://www.tiktok.com");
+    const m = u.pathname.match(/^\/tag\/([^/]+)$/);
+    if (!m) return null;
+    return decodeURIComponent(m[1]).replace(/^#/, "").toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** @param {string | null | undefined} href */
 /**
  * The channel or author a link points at.
@@ -345,6 +389,8 @@ function readCompactFields(el, cfg = DEFAULT_SELECTORS) {
     view_count,
     published_at,
     badges: extractBadges(el, cfg),
+    hashtags: [],
+    sound_id: null,
   };
 }
 
@@ -367,11 +413,22 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
     // Prefer longer title-like text over bare thumbnails
     if (t && t.length > title.length && !/^[\d:]+$/.test(t)) title = t;
   }
+  // TikTok FYP has no /video/<id> href — id lives on the player host
+  // (config `playerId`). Shape of the id string is compiled; host is data.
+  if (!video_id && c.playerId) {
+    for (const n of pickAll(el, c.playerId)) {
+      const id = videoIdFromPlayerId(n.getAttribute("id") || n.id, cfg.platform);
+      if (id) {
+        video_id = id;
+        break;
+      }
+    }
+  }
   if (!video_id) return null;
 
   if (!title) {
     const h = pick(el, c.title);
-    title = (h?.getAttribute("title") || h?.textContent || "")
+    title = (h?.getAttribute("title") || h?.textContent || h?.getAttribute("alt") || "")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -379,13 +436,18 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
 
   let channel_id = null;
   let channel_name = null;
-  for (const a of pickAll(el, c.links)) {
+  const channelCandidates = c.channelLink
+    ? pickAll(el, c.channelLink)
+    : pickAll(el, c.links);
+  for (const a of channelCandidates) {
     const href = a.getAttribute("href") || "";
     if (href.includes("watch?v=")) continue;
     const id = channelIdFromHref(href, cfg.platform);
     if (id) {
       channel_id = id;
-      channel_name = (a.textContent || "").replace(/\s+/g, " ").trim() || null;
+      channel_name = (a.textContent || a.getAttribute("alt") || "")
+        .replace(/\s+/g, " ")
+        .trim() || null;
       break;
     }
   }
@@ -432,6 +494,25 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
     if (published_at == null) published_at = parseAge(t, cfg);
   }
 
+    let hashtags = [];
+  if (c.hashtag) {
+    const seen = new Set();
+    for (const a of pickAll(el, c.hashtag)) {
+      const tag = hashtagFromHref(a.getAttribute("href"));
+      if (tag && !seen.has(tag)) {
+        seen.add(tag);
+        hashtags.push(tag);
+      }
+    }
+  }
+  let sound_id = null;
+  if (c.sound) {
+    for (const a of pickAll(el, c.sound)) {
+      sound_id = soundIdFromHref(a.getAttribute("href"));
+      if (sound_id) break;
+    }
+  }
+
   return {
     video_id,
     channel_id: channel_id || null,
@@ -442,6 +523,8 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
     view_count,
     published_at,
     badges: extractBadges(el, cfg),
+    hashtags,
+    sound_id,
   };
 }
 
@@ -500,7 +583,7 @@ export function extractFromElement(el, ctx, fields = undefined, cfg = DEFAULT_SE
     context_video_id: ctx.context_video_id ?? null,
     context_title: ctx.context_title ?? null,
     platform: ctx.platform ?? "yt",
-    context_query_hash: null,
+    context_query_hash: ctx.context_query_hash ?? null,
     slot_index: ctx.slot_index,
     video_id: f.video_id,
     channel_id: f.channel_id ?? null,
@@ -511,6 +594,10 @@ export function extractFromElement(el, ctx, fields = undefined, cfg = DEFAULT_SE
     view_count: f.view_count ?? null,
     published_at: f.published_at ?? null,
     badges: f.badges || [],
+    hashtags: Array.isArray(f.hashtags) ? f.hashtags : [],
+    sound_id: f.sound_id ?? null,
+    dwell_pct: f.dwell_pct ?? null,
+    engagement: f.engagement ?? null,
   };
 }
 

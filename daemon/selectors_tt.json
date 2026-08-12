@@ -36,10 +36,23 @@
         "a[href*=\"/live\"]",
         "a[href^=\"/@\"]"
       ],
+      "playerId": [
+        "[id^=\"xgwrapper-\"]"
+      ],
       "title": [
         "[data-e2e=\"video-desc\"]",
         "h1",
         "img[alt]"
+      ],
+      "channelLink": [
+        "a[data-e2e=\"video-author-avatar\"]",
+        "a[href^=\"/@\"]"
+      ],
+      "hashtag": [
+        "a[data-e2e=\"search-common-link\"][href^=\"/tag/\"]"
+      ],
+      "sound": [
+        "a[data-e2e=\"video-music\"][href*=\"/music/\"]"
       ],
       "metadataRow": [
         "[class*=\"DivInfoContainer\"]",
@@ -58,6 +71,7 @@
       ],
       "metadata": [
         "[data-e2e=\"video-views\"]",
+        "[data-e2e=\"like-count\"]",
         "[class*=\"StrongVideoCount\"]",
         "strong[title]"
       ]

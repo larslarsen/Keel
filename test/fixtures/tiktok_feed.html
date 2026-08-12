@@ -1,47 +1,56 @@
 <!--
-  Hand-authored TikTok feed fixture (WO-057).
+  TikTok FYP fixture (WO-057 / WO-063).
 
-  IMPORTANT: this was written from the selector config, not captured from
-  tiktok.com. It proves the extraction engine drives correctly off a non-YouTube
-  config — the shapes, the slot indexing, the field readers. It does NOT prove
-  the selectors match real TikTok markup, because nothing here came from TikTok.
+  Structure verified 2026-08-11 against live logged-out capture
+  (Downloads/keel-wo063-tt-debug.jsonl). Simplified markup; ids and
+  data-e2e attributes match production.
 
-  Until someone captures a real logged-out page, treat the TikTok selectors as
-  unverified. The engine is tested; the config is a hypothesis.
+  video_id source: the player host id attribute
+    id="xgwrapper-0-<snowflake>"
+  — not a /@user/video/<id> href (FYP has none). Confirmed equal to
+  /api/item/availability/?itemIds=… for the same cards.
 -->
-<div data-e2e="recommend-list-item-container">
-  <a href="/@firstcreator/video/7300000000000000001">
-    <img alt="A clip about bread" />
-  </a>
-  <div class="DivInfoContainer">
-    <div data-e2e="video-desc">A clip about bread</div>
-    <a href="/@firstcreator">@firstcreator</a>
-    <strong data-e2e="video-views">12.4K</strong>
-  </div>
+<article data-scroll-index="0" data-e2e="recommend-list-item-container">
+  <section data-e2e="feed-video">
+    <div id="xgwrapper-0-7300000000000000001">
+      <video src="blob:x"></video>
+    </div>
+    <div data-e2e="video-desc">A clip about bread <a data-e2e="search-common-link" href="/tag/sourdough">#sourdough</a></div>
+    <img alt="A clip about bread" src="cover.jpg" />
+  </section>
+  <a data-e2e="video-author-avatar" href="/@firstcreator"><img alt="firstcreator" /></a>
+  <a data-e2e="video-music" href="/music/original-sound-7300000000000000099"></a>
+  <strong data-e2e="like-count">12.4K</strong>
   <div class="DivTimeTag">00:32</div>
-</div>
+</article>
 
-<div data-e2e="recommend-list-item-container">
-  <a href="/@secondcreator/video/7300000000000000002">
-    <img alt="Someone repairing a bicycle" />
-  </a>
-  <div class="DivInfoContainer">
+<article data-scroll-index="1" data-e2e="recommend-list-item-container">
+  <section data-e2e="feed-video">
+    <div id="xgwrapper-0-7300000000000000002">
+      <video src="blob:x"></video>
+    </div>
     <div data-e2e="video-desc">Someone repairing a bicycle</div>
-    <a href="/@secondcreator">@secondcreator</a>
-    <strong data-e2e="video-views">903</strong>
-  </div>
+    <img alt="Someone repairing a bicycle" src="cover.jpg" />
+  </section>
+  <a data-e2e="video-author-avatar" href="/@secondcreator"><img alt="secondcreator" /></a>
+  <a data-e2e="video-music" href="/music/original-sound-7300000000000000098"></a>
+  <strong data-e2e="like-count">903</strong>
   <div class="DivTimeTag">01:05</div>
-</div>
+</article>
 
-<!-- A live room: no duration, carries a live tag. -->
-<div data-e2e="recommend-list-item-container">
-  <a href="/@thirdcreator/video/7300000000000000003">
-    <img alt="Late night radio" />
-  </a>
-  <div class="DivInfoContainer">
+<!-- A live room: no duration, carries a live tag. Still has a player id. -->
+<article data-scroll-index="2" data-e2e="recommend-list-item-container">
+  <section data-e2e="feed-video">
+    <div id="xgwrapper-0-7300000000000000003">
+      <video src="blob:x"></video>
+    </div>
     <div data-e2e="video-desc">Late night radio</div>
-    <a href="/@thirdcreator">@thirdcreator</a>
-    <strong data-e2e="video-views">2.1K watching</strong>
-  </div>
+    <img alt="Late night radio" src="cover.jpg" />
+  </section>
+  <a data-e2e="video-author-avatar" href="/@thirdcreator"><img alt="thirdcreator" /></a>
+  <strong data-e2e="like-count">2.1K</strong>
   <div class="DivTag Badge">LIVE</div>
-</div>
+</article>
+
+<!-- Empty virtualized shell — extractor must skip, not error. -->
+<article data-scroll-index="3" data-e2e="recommend-list-item-container"></article>

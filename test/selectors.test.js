@@ -226,11 +226,9 @@ describe("vocabulary is data, patterns are not", () => {
 
 describe("a second platform runs on the same engine (WO-057)", () => {
   /**
-   * The fixture is hand-authored from the config, not captured from tiktok.com.
-   * So this proves the engine extracts correctly when driven by a non-YouTube
-   * config — shapes, slot indexing, field readers, badges. It does not prove
-   * the selectors match real TikTok markup. Until a real page is captured, the
-   * TikTok config is a hypothesis and the engine is the thing under test.
+   * Fixture rebuilt 2026-08-11 from live FYP capture (WO-063): xgwrapper player
+   * id, data-e2e fields, empty virtualized shell. Proves engine + shipped
+   * selectors_tt.json against real markup shape (ids fabricated for the test).
    */
   const tiktok = JSON.parse(
     readFileSync(join(fixtures, "..", "..", "daemon", "selectors_tt.json"), "utf8")
@@ -271,6 +269,12 @@ describe("a second platform runs on the same engine (WO-057)", () => {
       out.impressions[2].badges.includes("LIVE"),
       "the live room should be badged"
     );
+    assert.deepEqual(out.impressions[0].hashtags, ["sourdough"]);
+    assert.equal(out.impressions[0].sound_id, "7300000000000000099");
+    assert.equal(out.impressions[0].channel_id, "@firstcreator");
+    assert.equal(out.impressions[1].sound_id, "7300000000000000098");
+    // Empty virtualized shell must not produce a row.
+    assert.equal(out.impressions.length, 3);
   });
 
   it("the YouTube config finds nothing in a TikTok page", () => {

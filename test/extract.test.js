@@ -17,6 +17,7 @@ import {
   parseDuration,
   parseViewCount,
   videoIdFromHref,
+  videoIdFromPlayerId,
   surfaceFromUrl,
   extractBalancedObject,
   CARD_SEL,
@@ -82,6 +83,32 @@ describe("parse helpers", () => {
 
   it("videoIdFromHref", () => {
     assert.equal(videoIdFromHref("/watch?v=dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+    assert.equal(
+      videoIdFromHref("/@x/video/7300000000000000001", "tt"),
+      "7300000000000000001"
+    );
+  });
+
+  it("videoIdFromPlayerId (TikTok FYP xgwrapper host)", () => {
+    assert.equal(
+      videoIdFromPlayerId("xgwrapper-0-7654326932623887630", "tt"),
+      "7654326932623887630"
+    );
+    assert.equal(videoIdFromPlayerId("xgwrapper-0-7654326932623887630", "yt"), null);
+    assert.equal(videoIdFromPlayerId("one-column-item-1", "tt"), null);
+    assert.equal(videoIdFromPlayerId("xgwrapper-0-short", "tt"), null);
+  });
+
+  it("soundIdFromHref / hashtagFromHref", async () => {
+    const { soundIdFromHref, hashtagFromHref } = await import(
+      "../extension/content/extract.js"
+    );
+    assert.equal(
+      soundIdFromHref("/music/original-sound-7654326938776914701"),
+      "7654326938776914701"
+    );
+    assert.equal(hashtagFromHref("/tag/sourdough"), "sourdough");
+    assert.equal(hashtagFromHref("/tag/ForYouPage%E2%9D%A4"), "foryoupage❤");
   });
 
   it("surfaceFromUrl", () => {
@@ -218,7 +245,10 @@ describe("WATCH_NEXT fixtures (must find cards)", () => {
   it("slot_index preserves unfiltered position (gap on middle failure)", () => {
     const doc = loadHtml("watch_next_compact.html");
     const { impressions, failures } = extractFromContainer(doc, ctx());
-    assert.ok(failures >= 1);
+    // WO-004 §6.4: the fixture's one title-less card must count as exactly ONE
+    // failure. It used to be counted twice, because the card was parsed twice.
+    // A regression that re-introduces the double parse increments this to 2.
+    assert.equal(failures, 1, "one malformed card must count as one failure");
     assert.equal(impressions[0].video_id, "dQw4w9WgXcQ");
     assert.equal(impressions[0].slot_index, 0);
     // Middle card failed → third visual card is slot 2
