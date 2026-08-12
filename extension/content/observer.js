@@ -23,6 +23,7 @@ import {
 } from "../lib/selectors.js";
 import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
 import { startHide } from "./hide.js";
+import { errText } from "../lib/errors.js";
 
 const THROTTLE_MS = 750;
 const MAX_ARM_ATTEMPTS = 10;
@@ -73,7 +74,7 @@ function isContextInvalidated(err) {
   // sent before it wakes rejects with exactly that. Treating it as terminal
   // would shut down a perfectly healthy observer on a transient error, and it
   // would only ever be visible as recording quietly stopping.
-  return /context invalidated/i.test(String(err?.message || err));
+  return /context invalidated/i.test(errText(err));
 }
 
 /** Stop everything. Only a page reload brings this tab back. */
@@ -138,7 +139,7 @@ async function send(type, payload) {
       shutdown("extension was reloaded");
       return;
     }
-    console.warn(LOG, "sendMessage", err?.message || err);
+    console.warn(LOG, "sendMessage", errText(err));
   }
 }
 
@@ -568,7 +569,7 @@ async function start() {
   // Hide is independent of surface: CSS is scoped to watch #secondary +
   // home grid; off-surface pages are unaffected. Start before arming so it
   // applies without waiting for the first scan.
-  startHide().catch((e) => console.warn(LOG, "hide", e?.message || e));
+  startHide().catch((e) => console.warn(LOG, "hide", errText(e)));
   await loadSelectors();
 
   if (!(await consented())) {

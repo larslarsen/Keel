@@ -29,6 +29,7 @@ import { createProofStore } from "./page_proofs.js";
 import { createPrefs } from "./prefs.js";
 import { createPanelContext } from "./panel_context.js";
 import { createRpcRouter } from "./rpc.js";
+import { errText } from "../lib/errors.js";
 
 const LOG = "[Keel SW]";
 /** Standing self-heal alarm (WO-008): wakes an evicted SW, reconnects the
@@ -66,7 +67,7 @@ async function broadcastToSiteTabs(msg) {
   try {
     tabs = await browser.tabs.query({ url: SITE_URLS });
   } catch (err) {
-    log("broadcast tabs.query", err?.message || err);
+    log("broadcast tabs.query", errText(err));
     return;
   }
   for (const t of tabs) {
@@ -135,7 +136,7 @@ const router = createRpcRouter({
   openConsentPage: () => {
     browser.tabs
       ?.create?.({ url: browser.runtime.getURL("consent/index.html") })
-      .catch((err) => log("openConsentPage", err?.message || err));
+      .catch((err) => log("openConsentPage", errText(err)));
   },
   log,
 });
@@ -153,7 +154,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handle(message, sender)
     .then((r) => sendResponse({ ok: true, ...r }))
     .catch((err) =>
-      sendResponse({ ok: false, error: String(err?.message || err) })
+      sendResponse({ ok: false, error: errText(err) })
     );
   return true;
 });
@@ -205,7 +206,7 @@ if (browser.tabs?.onUpdated) {
     if (tab?.active === true && tab.windowId != null) {
       panel
         .evalActivePanelContext(t, tab.windowId)
-        .catch((err) => log("onUpdated gate", err?.message || err));
+        .catch((err) => log("onUpdated gate", errText(err)));
     } else {
       panel.syncPanelForTab(tabId, url).catch(() => {});
     }
@@ -227,7 +228,7 @@ if (browser.tabs?.onActivated) {
         return; // tab closed before we could read it; nothing to gate
       }
       await panel.evalActivePanelContext(tab, info.windowId);
-    })().catch((err) => log("onActivated", err?.message || err));
+    })().catch((err) => log("onActivated", errText(err)));
   });
 }
 if (browser.tabs?.onRemoved) {
@@ -288,11 +289,11 @@ if (browser.action?.onClicked) {
             .catch(() => {});
           return;
         } catch (err) {
-          log("sidePanel.open", err?.message || err);
+          log("sidePanel.open", errText(err));
         }
       }
       await panel.openFullpageTab();
-    })().catch((err) => log("action click", err?.message || err));
+    })().catch((err) => log("action click", errText(err)));
   });
 }
 
@@ -309,7 +310,7 @@ async function rearmYoutubeTabs() {
   try {
     tabs = await browser.tabs.query({ url: SITE_URLS });
   } catch (err) {
-    log("rearm scan", err?.message || err);
+    log("rearm scan", errText(err));
     return;
   }
   for (const t of tabs) {
@@ -319,7 +320,7 @@ async function rearmYoutubeTabs() {
         target: { tabId: t.id },
         files: ["content/bootstrap.js"],
       })
-      .catch((err) => log("rearm tab", t.id, err?.message || err));
+      .catch((err) => log("rearm tab", t.id, errText(err)));
   }
 }
 
@@ -339,11 +340,11 @@ async function onWatchdog() {
 if (browser.alarms?.create && browser.alarms?.onAlarm) {
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm?.name === WATCHDOG_ALARM) {
-      onWatchdog().catch((err) => log(err?.message || err));
+      onWatchdog().catch((err) => log(errText(err)));
     }
   });
   browser.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 0.5 }).catch((err) => {
-    log("watchdog alarm", err?.message || err);
+    log("watchdog alarm", errText(err));
   });
 }
 

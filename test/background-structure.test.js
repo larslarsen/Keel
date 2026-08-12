@@ -193,3 +193,44 @@ describe("extension module structure (WO-083)", () => {
 function stripComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
+
+// WO-091 live QA: every diagnostic the user could reach said "[object Object]".
+// The cause was an idiom, not one site — `err?.message || err` falls through to
+// the raw value for anything without a .message, and the two shapes that matter
+// (a protocol envelope, and an Error after structured cloning) both lack one.
+// Fixing the sites without banning the idiom would let it back in one commit
+// later, so the ban is enforced here.
+describe("no [object Object] hazards in the extension", () => {
+  const HAZARDS = [
+    { re: /\?\.message\s*\|\|\s*(err|e)\b/, why: "use errText(err) — this falls through to the raw object" },
+    { re: /String\((err|e)\)/, why: "use errText(err) — String() on an object yields [object Object]" },
+    { re: /\.message\s*\|\|\s*String\(/, why: "use errText(err)" },
+  ];
+
+  it("uses errText everywhere an error can reach a string", async () => {
+    const { readFileSync, readdirSync, statSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const root = new URL("../extension/", import.meta.url).pathname;
+    const files = [];
+    (function walk(dir) {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (name.endsWith(".js")) files.push(p);
+      }
+    })(root);
+
+    const found = [];
+    for (const f of files) {
+      if (f.endsWith("lib/errors.js")) continue; // documents the idiom it bans
+      const src = readFileSync(f, "utf8");
+      src.split("\n").forEach((line, i) => {
+        if (line.trimStart().startsWith("*") || line.trimStart().startsWith("//")) return;
+        for (const h of HAZARDS) {
+          if (h.re.test(line)) found.push(`${f.slice(root.length)}:${i + 1} — ${h.why}`);
+        }
+      });
+    }
+    assert.deepEqual(found, [], `\n${found.join("\n")}`);
+  });
+});

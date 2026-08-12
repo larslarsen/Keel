@@ -37,6 +37,7 @@
 import { validateImpressionList, CONSENT_REVISION } from "../lib/protocol.js";
 import { isChannelId, coerceHideMode, isHideMode } from "../lib/prefs.js";
 import { surfaceFromUrl } from "../content/extract.js";
+import { errText } from "../lib/errors.js";
 
 /** Disconnected-impression buffer cap (DESIGN_v2 §2.1: bounded, in-memory). */
 const BUFFER_MAX = 200;
@@ -234,7 +235,7 @@ export function createRpcRouter({
     try {
       openConsentPage?.();
     } catch (err) {
-      log("openConsentPage", err?.message || err);
+      log("openConsentPage", errText(err));
     }
   }
 

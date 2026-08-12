@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Promise-based WebExtension shim. Never use chrome.* outside this file. */
+import { errText } from "./errors.js";
 
 const raw =
   typeof globalThis.browser !== "undefined" && globalThis.browser?.runtime?.id
@@ -20,7 +21,7 @@ function p(fn, self) {
     return new Promise((resolve, reject) => {
       fn.call(self, ...args, (result) => {
         const err = raw.runtime?.lastError;
-        if (err) reject(new Error(err.message || String(err)));
+        if (err) reject(new Error(errText(err)));
         else resolve(result);
       });
     });

@@ -18,6 +18,7 @@ import {
   formatExplain,
   readableChannel,
 } from "./render.js";
+import { errText } from "../lib/errors.js";
 
 const STATS_MIN_INTERVAL_MS = 5000;
 /** Long-lived port so the SW knows the panel is open (WO-009 with-panel). */
@@ -161,7 +162,7 @@ function toggleExplain(li, videoId) {
       box.innerHTML = formatExplain(r.explain);
     })
     .catch((err) => {
-      box.innerHTML = `<p class="explain-body err">${escapeHtml(err.message || String(err))}</p>`;
+      box.innerHTML = `<p class="explain-body err">${escapeHtml(errText(err))}</p>`;
     });
 }
 
@@ -243,7 +244,7 @@ function makeSuggestionLi(s) {
         });
     call
       .then((r) => renderQueue(r.queue))
-      .catch((err) => console.warn("[Keel panel] queue", err?.message || err));
+      .catch((err) => console.warn("[Keel panel] queue", errText(err)));
   });
   actions.appendChild(q);
 
@@ -268,7 +269,7 @@ function makeSuggestionLi(s) {
         .then((r) => {
           renderBlocklist(r.blocklist);
         })
-        .catch((err) => console.warn("[Keel panel] block", err?.message || err));
+        .catch((err) => console.warn("[Keel panel] block", errText(err)));
     });
     actions.appendChild(btn);
   }
@@ -302,7 +303,7 @@ function renderBlocklist(list) {
         rpc("UNBLOCK_CHANNEL", { channel_id: id })
           .then((r) => renderBlocklist(r.blocklist))
           .catch((err) =>
-            console.warn("[Keel panel] unblock", err?.message || err)
+            console.warn("[Keel panel] unblock", errText(err))
           );
       });
       li.appendChild(span);
@@ -401,7 +402,7 @@ function makeQueueLi(it, index, total) {
   const move = (to) =>
     rpc("QUEUE_REORDER", { from: index, to })
       .then((r) => renderQueue(r.queue))
-      .catch((err) => console.warn("[Keel panel] reorder", err?.message || err));
+      .catch((err) => console.warn("[Keel panel] reorder", errText(err)));
 
   button("Move up", arrow("M12 19V5M5 12l7-7 7 7"), index === 0, () =>
     move(index - 1)
@@ -419,7 +420,7 @@ function makeQueueLi(it, index, total) {
     () =>
       rpc("QUEUE_REMOVE", { index })
         .then((r) => renderQueue(r.queue))
-        .catch((err) => console.warn("[Keel panel] unqueue", err?.message || err))
+        .catch((err) => console.warn("[Keel panel] unqueue", errText(err)))
   );
 
   const img = li.querySelector("img.thumb[data-vid]");
@@ -779,7 +780,7 @@ el.list.addEventListener("click", (e) => {
   if (!a) return;
   e.preventDefault();
   openVideoInActiveTab(a.href).catch((err) =>
-    console.warn("[Keel panel] open", err?.message || err)
+    console.warn("[Keel panel] open", errText(err))
   );
 });
 
@@ -827,7 +828,7 @@ async function doExport() {
       `Exported ${x.rows ?? "?"} row(s) (${formatBytes(x.bytes)}) to:\n${x.path || "?"}`
     );
   } catch (err) {
-    setDataStatus(err.message || String(err), true);
+    setDataStatus(errText(err), true);
   }
 }
 
@@ -849,7 +850,7 @@ async function doWipe() {
     refreshSuggestions({ force: true }).catch(() => {});
     setDataStatus(`Deleted ${deleted} row(s). Corpus is empty.`);
   } catch (err) {
-    setDataStatus(err.message || String(err), true);
+    setDataStatus(errText(err), true);
   }
 }
 
@@ -971,7 +972,7 @@ function connectPanelPort() {
         port.postMessage({ type: "PANEL_HANDSHAKE", payload: { windowId: null } });
       });
   } catch (err) {
-    console.warn("[Keel panel] port", err?.message || err);
+    console.warn("[Keel panel] port", errText(err));
     setTimeout(connectPanelPort, 1000);
   }
 }
@@ -1008,7 +1009,7 @@ if (el.hideRail) {
     hideMode = next;
     paintHideButton();
     rpc("SET_HIDE_MODE", { mode: next }).catch((err) => {
-      console.warn("[Keel panel] SET_HIDE_MODE", err?.message || err);
+      console.warn("[Keel panel] SET_HIDE_MODE", errText(err));
     });
   });
 }
@@ -1045,7 +1046,7 @@ if (el.blockAddBtn && el.blockInput) {
         el.blockInput.value = "";
         renderBlocklist(r.blocklist);
       })
-      .catch((err) => console.warn("[Keel panel] add block", err?.message || err));
+      .catch((err) => console.warn("[Keel panel] add block", errText(err)));
   });
 }
 

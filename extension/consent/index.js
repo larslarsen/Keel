@@ -20,6 +20,7 @@
  * screen would be theatre.
  */
 import { browser } from "../lib/browser.js";
+import { errText } from "../lib/errors.js";
 
 const el = {
   accept: document.getElementById("btn-accept"),
@@ -52,7 +53,7 @@ async function choose(value) {
         : "Nothing will be recorded and nothing will be downloaded. Everything else still works.";
   } catch (err) {
     setBusy(false);
-    const msg = String(err?.message || err);
+    const msg = errText(err);
     // The most likely failure by far is that the desktop app is not running or
     // is out of date, and neither is fixed by pressing the button again — so
     // say which one it is rather than reporting a generic save error.

@@ -332,30 +332,70 @@ describe("native bridge (WO-004 §6.1, §6.2, WO-008)", () => {
 // screen was "[object Object]". The extension error list on chrome://extensions
 // stringifies whatever it is handed, and INSTALL.md sends people there to
 // report problems, so the payload has to be text before it is logged.
-describe("describeError", () => {
-  let describeError;
+describe("errText", () => {
+  let errText;
   before(async () => {
-    ({ describeError } = await import("../extension/lib/native.js"));
+    ({ errText } = await import("../extension/lib/errors.js"));
   });
 
   it("renders code and message as one readable line", () => {
     assert.equal(
-      describeError({ code: "invalid_capability", message: "desktop app update required" }),
+      errText({ code: "invalid_capability", message: "desktop app update required" }),
       "invalid_capability: desktop app update required",
     );
   });
 
   it("falls back through message, code and JSON", () => {
-    assert.equal(describeError({ message: "no code here" }), "no code here");
-    assert.equal(describeError({ code: "bare_code" }), "bare_code");
-    assert.equal(describeError({ odd: 1 }), '{"odd":1}');
-    assert.equal(describeError(null), "(no payload)");
-    assert.equal(describeError("already text"), "already text");
+    assert.equal(errText({ message: "no code here" }), "no code here");
+    assert.equal(errText({ code: "bare_code" }), "bare_code");
+    assert.equal(errText({ odd: 1 }), '{"odd":1}');
+    assert.equal(errText(null), "(no detail)");
+    assert.equal(errText("already text"), "already text");
   });
 
   it("never emits [object Object]", () => {
     for (const v of [{ code: "x" }, { message: "y" }, { odd: 1 }, null, undefined, 7]) {
-      assert.ok(!describeError(v).includes("[object Object]"), `leaked for ${JSON.stringify(v)}`);
+      assert.ok(!errText(v).includes("[object Object]"), `leaked for ${JSON.stringify(v)}`);
+    }
+  });
+});
+
+// The two shapes that actually reach a log line when the daemon connection
+// fails, neither of which has a .message — the reason `err?.message || err`
+// printed "[object Object]" no matter how clear the daemon had been.
+describe("errText on the shapes that broke live QA", () => {
+  let errText;
+  before(async () => {
+    ({ errText } = await import("../extension/lib/errors.js"));
+  });
+
+  it("digs the reason out of a whole envelope", () => {
+    const env = {
+      v: 2,
+      id: "1",
+      type: "ERROR",
+      payload: { code: "invalid_capability", message: "desktop app update required" },
+    };
+    assert.equal(errText(env), "ERROR — invalid_capability: desktop app update required");
+  });
+
+  it("names an Error that did not survive structured cloning", () => {
+    // runtime.sendMessage clones; an Error arrives as {}.
+    assert.equal(errText(JSON.parse(JSON.stringify(new Error("gone")))), "(error lost in transit)");
+  });
+
+  it("never emits [object Object] for anything", () => {
+    const shapes = [
+      null, undefined, 0, 7, "", "text", {}, [], { a: 1 },
+      new Error("boom"), { code: "c" }, { message: "m" },
+      { v: 2, type: "ERROR", payload: {} },
+      { payload: { payload: { message: "deep" } } },
+    ];
+    for (const v of shapes) {
+      const out = errText(v);
+      assert.equal(typeof out, "string");
+      assert.ok(out.length > 0, `empty for ${JSON.stringify(v)}`);
+      assert.ok(!out.includes("[object Object]"), `leaked for ${JSON.stringify(v)}`);
     }
   });
 });

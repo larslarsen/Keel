@@ -24,6 +24,7 @@
  * make the gate fail differently when the desktop app is down.
  */
 import { surfaceFromUrl } from "../content/extract.js";
+import { errText } from "../lib/errors.js";
 
 /**
  * @param {{
@@ -146,7 +147,7 @@ export function createPanelContext({
     try {
       await sidePanel.setOptions({ tabId, enabled, path: "sidepanel/index.html" });
     } catch (err) {
-      log("syncPanelForTab", err?.message || err);
+      log("syncPanelForTab", errText(err));
     }
   }
 
@@ -201,7 +202,7 @@ export function createPanelContext({
           : await tabs.query({ active: true, lastFocusedWindow: true });
       return found?.[0] || null;
     } catch (err) {
-      log("activeTab", err?.message || err);
+      log("activeTab", errText(err));
       return null;
     }
   }
@@ -253,7 +254,7 @@ export function createPanelContext({
     try {
       await sidePanel.setOptions({ tabId, enabled: false });
     } catch (err) {
-      log("setOptions", err?.message || err);
+      log("setOptions", errText(err));
     }
   }
 
@@ -270,14 +271,14 @@ export function createPanelContext({
     try {
       all = await tabs.query({});
     } catch (err) {
-      log("syncAllTabs", err?.message || err);
+      log("syncAllTabs", errText(err));
       return;
     }
     for (const t of all) {
       if (t.id == null) continue;
       if (t.active === true && t.windowId != null) {
         await evalActivePanelContext(t, t.windowId).catch((err) =>
-          log("evalActivePanelContext", err?.message || err)
+          log("evalActivePanelContext", errText(err))
         );
       } else {
         syncPanelForTab(t.id, t.url).catch(() => {});

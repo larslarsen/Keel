@@ -19,6 +19,7 @@ import {
   thumbHtml,
   tile,
 } from "./render.js";
+import { errText } from "../lib/errors.js";
 
 const el = {
   banner: document.getElementById("daemon-banner"),
@@ -136,7 +137,7 @@ function armPanelOnVideoLinkClick(list) {
     if (!a) return;
     e.preventDefault();
     openPanelOnNewWatchTab(a.href).catch((err) =>
-      console.warn("[Keel] open panel", err?.message || err)
+      console.warn("[Keel] open panel", errText(err))
     );
   });
 }
@@ -285,7 +286,7 @@ async function loadLive() {
     renderLive(r.live);
   } catch (err) {
     el.liveList.replaceChildren();
-    el.liveMeta.textContent = String(err?.message || err);
+    el.liveMeta.textContent = errText(err);
   }
 }
 
@@ -924,7 +925,7 @@ function renderContributionRows(wrap, { level, maxImpl, interactive }) {
       try {
         await rpc("SET_CONTRIBUTION", { level: Number(el.value) });
       } catch (err) {
-        console.warn("[Keel] contribution", err?.message || err);
+        console.warn("[Keel] contribution", errText(err));
       }
       await refreshContribution();
     });
@@ -956,7 +957,7 @@ function wireDiskSlider() {
       await rpc("SET_DISK_BUDGET", { bytes: Number(slider.value) * MB });
       await refreshDisk();
     } catch (err) {
-      console.warn("[Keel] disk budget", err?.message || err);
+      console.warn("[Keel] disk budget", errText(err));
     }
   });
 }

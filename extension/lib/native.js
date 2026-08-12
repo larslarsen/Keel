@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Native-messaging port with alarm-based reconnect (survives SW eviction). */
 import { browser } from "./browser.js";
+import { errText } from "./errors.js";
 import {
   HOST_NAME,
   MAX_BROWSER_TO_HOST,
@@ -16,33 +17,6 @@ import {
 const LOG = "[Keel native]";
 const ALARM_NAME = "keel-native-reconnect";
 
-/**
- * Render an ERROR payload as text.
- *
- * The extension's error list on chrome://extensions — the one INSTALL.md tells
- * people to paste when they report a problem — stringifies whatever it is
- * handed, so logging the payload object arrives there as "[object Object]".
- * That is the least useful thing a diagnostic can say, and it wasted a live QA
- * session: the daemon had sent a perfectly clear reason and none of it survived
- * to the screen.
- *
- * @param {unknown} p
- * @returns {string}
- */
-export function describeError(p) {
-  if (p === null || p === undefined) return "(no payload)";
-  if (typeof p !== "object") return String(p);
-  const rec = /** @type {Record<string, unknown>} */ (p);
-  const code = typeof rec.code === "string" ? rec.code : "";
-  const message = typeof rec.message === "string" ? rec.message : "";
-  if (code && message) return `${code}: ${message}`;
-  if (code || message) return code || message;
-  try {
-    return JSON.stringify(p);
-  } catch {
-    return Object.prototype.toString.call(p);
-  }
-}
 /** Chrome alarms min practical delay ~30s; first retries use 0.5 min. */
 const RECONNECT_DELAY_MIN = 0.5;
 
@@ -71,7 +45,7 @@ export function createNativeBridge(hooks) {
     if (browser.alarms?.create) {
       browser.alarms
         .create(ALARM_NAME, { delayInMinutes: RECONNECT_DELAY_MIN })
-        .catch((err) => console.warn(LOG, "alarm", err?.message || err));
+        .catch((err) => console.warn(LOG, "alarm", errText(err)));
       return;
     }
     setTimeout(() => connect(), RECONNECT_DELAY_MIN * 60 * 1000);
@@ -97,7 +71,7 @@ export function createNativeBridge(hooks) {
       port.postMessage(env);
       return true;
     } catch (err) {
-      console.error(LOG, "post failed", err?.message || err);
+      console.error(LOG, "post failed", errText(err));
       return false;
     }
   }
@@ -157,7 +131,7 @@ export function createNativeBridge(hooks) {
     if (env.type === "HELLO_ACK") {
       applyHelloAck(env.payload);
     }
-    if (env.type === "ERROR") console.error(LOG, "ERROR", describeError(env.payload));
+    if (env.type === "ERROR") console.error(LOG, "ERROR", errText(env.payload));
     const w = pending.get(env.id);
     if (w) {
       pending.delete(env.id);
@@ -181,7 +155,7 @@ export function createNativeBridge(hooks) {
     try {
       p = browser.runtime.connectNative(HOST_NAME);
     } catch (err) {
-      console.warn(LOG, "connect throw", err?.message || err);
+      console.warn(LOG, "connect throw", errText(err));
       helloOk = false;
       capabilities = Object.create(null);
       hooks.onStatus(false, "not running");
