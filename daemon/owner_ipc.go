@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -25,9 +27,54 @@ type ownerHello struct {
 type ownerHelloAck struct {
 	OwnerIPC     int    `json:"owner_ipc"`
 	OwnerVersion string `json:"owner_version"`
-	OK           bool   `json:"ok"`
-	Code         string `json:"code,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	// OwnerBuild identifies the exact binary the owner is running. See
+	// buildIdentity: the version string cannot answer this, because releases
+	// deliberately reuse one version.
+	OwnerBuild string `json:"owner_build,omitempty"`
+	OK         bool   `json:"ok"`
+	Code       string `json:"code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// buildIdentity names the exact binary this process is running: its resolved
+// path and modification time.
+//
+// Deliberately not the version string. Releases reuse one version on purpose,
+// so version cannot distinguish a new build from an old one — and that is
+// exactly the question that matters here. The owner outlives the browser, so
+// after an upgrade the previous build can still be resident and answering while
+// the new one sits unused on disk. Path plus mtime changes on every build and
+// answers it directly.
+//
+// An empty result means "unknown": callers must not act on it.
+func buildIdentity() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	fi, err := os.Stat(exe)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s@%d", exe, fi.ModTime().UnixNano())
+}
+
+// ownerIsStale reports whether a resident owner is running a different binary
+// from this process, and should therefore be retired rather than talked to.
+//
+// An owner that reports no build at all predates this check, which makes it
+// older than us by construction — that is the upgrade this was written for.
+// If we cannot identify ourselves we never replace anything: an unknown state
+// is not grounds for killing a working owner.
+func ownerIsStale(ownerBuild string) bool {
+	self := buildIdentity()
+	if self == "" {
+		return false
+	}
+	return ownerBuild != self
 }
 
 func readIPCFrame(r io.Reader, max uint32) ([]byte, error) {
@@ -76,27 +123,27 @@ func acceptOwnerHandshake(conn net.Conn, secret string) (string, error) {
 	}
 	var hello ownerHello
 	if err := json.Unmarshal(raw, &hello); err != nil {
-		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version,
+		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version, OwnerBuild: buildIdentity(),
 			Code: "bad_handshake", Reason: "invalid owner handshake"})
 		return "", err
 	}
 	if subtle.ConstantTimeCompare([]byte(hello.Secret), []byte(secret)) != 1 {
-		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version,
+		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version, OwnerBuild: buildIdentity(),
 			Code: "auth_failed", Reason: "local owner authentication failed"})
 		return "", errors.New("owner authentication failed")
 	}
 	if hello.OwnerIPC != ownerIPCVersion {
-		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version,
+		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version, OwnerBuild: buildIdentity(),
 			Code: "incompatible_owner_ipc", Reason: "desktop app components must be updated together"})
 		return "", fmt.Errorf("owner IPC %d is incompatible with %d", hello.OwnerIPC, ownerIPCVersion)
 	}
 	if hello.Action != "session" && hello.Action != "shutdown" && hello.Action != "status" {
-		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version,
+		_ = writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion, OwnerVersion: version, OwnerBuild: buildIdentity(),
 			Code: "bad_action", Reason: "unknown owner action"})
 		return "", fmt.Errorf("unknown owner action %q", hello.Action)
 	}
 	if err := writeOwnerAck(conn, ownerHelloAck{OwnerIPC: ownerIPCVersion,
-		OwnerVersion: version, OK: true}); err != nil {
+		OwnerVersion: version, OwnerBuild: buildIdentity(), OK: true}); err != nil {
 		return "", err
 	}
 	_ = conn.SetDeadline(time.Time{})

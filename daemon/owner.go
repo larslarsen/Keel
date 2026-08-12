@@ -115,16 +115,68 @@ func copyOwnerToNative(in io.Reader, out io.Writer) error {
 	}
 }
 
+// redialOwner opens one more authenticated session, for the case where a stale
+// owner could not be retired and is still the only owner there is.
+func redialOwner(p ownerPaths, secret string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	conn, err := dialOwnerEndpoint(ctx, p)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := startOwnerHandshake(conn, secret, "session"); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// waitOwnerEndpointFree waits for a retiring owner to release its socket or
+// pipe, so the replacement can claim it. Bounded: if it will not go, the spawn
+// below fails on its own terms rather than hanging here.
+func waitOwnerEndpointFree(p ownerPaths) {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		conn, err := dialOwnerEndpoint(ctx, p)
+		cancel()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func connectOrSpawnOwner(p ownerPaths, secret string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	conn, err := dialOwnerEndpoint(ctx, p)
 	cancel()
 	if err == nil {
-		if _, err := startOwnerHandshake(conn, secret, "session"); err != nil {
+		ack, hsErr := startOwnerHandshake(conn, secret, "session")
+		if hsErr != nil {
 			_ = conn.Close()
-			return nil, err // never replace or kill an incompatible/unknown owner
+			return nil, hsErr // never replace or kill an incompatible/unknown owner
 		}
-		return conn, nil
+		if !ownerIsStale(ack.OwnerBuild) {
+			return conn, nil
+		}
+		// The resident owner is a different binary from this one: it has been
+		// running since before an upgrade. The owner outlives the browser by
+		// design, so without this it keeps answering forever and the update
+		// never takes effect — the extension negotiates against old code and is
+		// refused, while the new binary sits on disk unused.
+		//
+		// Checked once per proxy process, on the owner that was already there:
+		// the owner we spawn below is by definition ours, so this cannot loop.
+		_ = conn.Close()
+		if err := requestOwnerControl("shutdown"); err != nil {
+			// Could not retire it. Serving through the old owner beats not
+			// serving at all, so fall back to using it.
+			log.Printf("owner: could not retire the previous build: %v", err)
+			return redialOwner(p, secret)
+		}
+		waitOwnerEndpointFree(p)
 	}
 	if err := spawnOwner(p); err != nil {
 		return nil, err
