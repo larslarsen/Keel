@@ -1452,22 +1452,68 @@ func TestOpenCreatesTheDatabaseDirectory(t *testing.T) {
 	}
 }
 
-// TestOpenErrorNamesTheFile: "unable to open database file" with no path is
-// unactionable, and it is what a user sees in the panel.
-func TestOpenErrorNamesTheFile(t *testing.T) {
+// TestPreflightNamesTheRealObstacle: SQLite answers every path problem with
+// SQLITE_CANTOPEN, rendered by this driver as "unable to open database file:
+// out of memory (14)". That one message covers a missing folder, a denied ACL,
+// a read-only volume and a locked file, and names none of them. The preflight
+// asks the OS instead, so the log says which.
+func TestPreflightNamesTheRealObstacle(t *testing.T) {
 	root := t.TempDir()
-	// A regular file where the directory needs to be: MkdirAll cannot win.
 	blocker := filepath.Join(root, "blocked")
-	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+	if err := os.WriteFile(blocker, []byte("a file where a folder must be"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(blocker, "keel.sqlite")
-
-	_, err := Open(path)
+	err := preflightDatabasePath(filepath.Join(blocker, "keel.sqlite"))
 	if err == nil {
 		t.Fatal("want an error when the parent cannot be created")
 	}
 	if !strings.Contains(err.Error(), blocker) {
 		t.Errorf("error does not name the path: %v", err)
+	}
+	if strings.Contains(err.Error(), "out of memory") {
+		t.Errorf("error still reads as SQLite's CANTOPEN text: %v", err)
+	}
+}
+
+// TestExplicitPathIsNeverRelocated. The fallback exists so an unwritable config
+// directory cannot stop the daemon starting — but a caller who names a file
+// means that file. Silently opening a different one would split a corpus.
+func TestExplicitPathIsNeverRelocated(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocker, []byte("a file where a folder must be"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	explicit := filepath.Join(blocker, "keel.sqlite")
+	if got := dbCandidates(explicit); len(got) != 1 || got[0] != explicit {
+		t.Fatalf("dbCandidates(%q) = %v, want exactly that path", explicit, got)
+	}
+	if _, err := Open(explicit); err == nil {
+		t.Fatal("an unusable explicit path silently opened something else")
+	}
+}
+
+// TestDefaultLocationFallsBack: with no explicit path, an unusable preferred
+// location must not stop the daemon. A working corpus somewhere sensible beats
+// a browser panel saying the desktop app is not running.
+func TestDefaultLocationFallsBack(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocker, []byte("a file where a folder must be"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEEL_DATA_DIR", blocker)                     // preferred location: unusable
+	t.Setenv("LOCALAPPDATA", filepath.Join(root, "local")) // next candidate: fine
+
+	st, err := Open("")
+	if err != nil {
+		t.Fatalf("Open fell over instead of falling back: %v", err)
+	}
+	defer st.Close()
+	if !strings.HasPrefix(st.Path(), filepath.Join(root, "local")) {
+		t.Errorf("fell back to %s, want a path under the writable candidate", st.Path())
+	}
+	if _, err := st.Stats(); err != nil {
+		t.Errorf("the fallback database is not usable: %v", err)
 	}
 }

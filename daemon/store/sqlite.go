@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -29,6 +30,9 @@ const ExportSchemaVersion = 2
 // No time-based deletion — retention is a P1 user setting (default off).
 type Store struct {
 	db *sql.DB
+	// path is where the database actually is, which is not always where it was
+	// asked to go — see Open's fallback chain.
+	path string
 
 	// liveMu guards liveNow, the set of videos the swarm currently believes are
 	// live. It is pushed in from outside because the live index lives in the
@@ -130,46 +134,146 @@ WHERE observed_at >= ? AND badges_json LIKE '%LIVE%' AND platform = ?`, cutoff, 
 	return out, nil
 }
 
-// Open creates/opens the database at path (or default user config dir).
+// Open creates/opens the database, falling back to a usable location if the
+// preferred one cannot be opened.
+//
+// The preferred location is the OS config directory, and on a machine where
+// that is unwritable — a denied ACL, a redirected or roaming profile, a
+// read-only volume — SQLite answers with SQLITE_CANTOPEN and the daemon simply
+// dies at startup. The user sees a browser panel saying the desktop app is not
+// running, with nothing anywhere naming a path. That is not a state worth
+// preserving: a working corpus somewhere sensible beats no corpus at all, and
+// the chosen path is logged either way.
+//
+// Continuity beats preference: if any candidate already holds a database, that
+// one wins even if an earlier candidate is writable now. Otherwise the first
+// writable candidate is used. Only if every candidate fails does Open return an
+// error, and that error lists what was tried and why each one failed.
 func Open(path string) (*Store, error) {
-	if path == "" {
-		dir, err := defaultDir()
-		if err != nil {
-			return nil, err
-		}
-		path = filepath.Join(dir, "keel.sqlite")
+	candidates := dbCandidates(path)
+	if len(candidates) == 0 {
+		return nil, errors.New("no usable location for the database")
 	}
-	// SQLite does not create directories. It reports a missing parent as
-	// "unable to open database file" and says nothing about which file or why,
-	// which is indistinguishable from a permissions problem or a bad path.
-	//
-	// The default branch above used to be the only one that created the
-	// directory, so any explicit path — KEEL_DB, a packaging layout, a first
-	// run on Windows where %AppData%\keel does not exist yet — failed here with
-	// that message and no path in it. The owner then died during startup and
-	// the browser saw an unexplained EOF three layers up.
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("create database directory %s: %w", dir, err)
+
+	// An existing database keeps its contents reachable.
+	chosen := ""
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			if err := preflightDatabasePath(c); err == nil {
+				chosen = c
+				break
+			}
 		}
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	var problems []string
+	if chosen == "" {
+		for _, c := range candidates {
+			if err := preflightDatabasePath(c); err != nil {
+				problems = append(problems, err.Error())
+				continue
+			}
+			chosen = c
+			break
+		}
+	}
+	if chosen == "" {
+		return nil, fmt.Errorf("could not open a database in any location: %s",
+			strings.Join(problems, "; "))
+	}
+	if chosen != candidates[0] {
+		log.Printf("database: %s was not usable, using %s instead", candidates[0], chosen)
+	}
+
+	db, err := sql.Open("sqlite", chosen+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, fmt.Errorf("open %s: %w", chosen, err)
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, path: chosen}
 	// sql.Open is lazy: this is the first call that actually touches the file,
 	// so it is where a path problem surfaces. Name the file.
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, fmt.Errorf("open %s: %w", chosen, err)
 	}
 	// Best-effort: a repair failure must not stop the daemon starting.
 	if err := s.repairPublishedAt(); err != nil {
 		log.Printf("published_at repair skipped: %v", err)
 	}
 	return s, nil
+}
+
+// Path is where this store actually ended up, which is not always where it was
+// asked to go. The interface reports it so a fallback is visible rather than
+// mysterious.
+func (s *Store) Path() string { return s.path }
+
+// dbCandidates lists database locations in preference order.
+//
+// An explicit path (KEEL_DB, tests, packaging) is always first and is honoured
+// alone when it is usable. The rest exist so that one unwritable directory
+// cannot stop the daemon starting: LOCALAPPDATA is where the Windows installer
+// already writes and verifies the native-host manifests, so it is known-good on
+// exactly the machines where the config directory tends to fail.
+func dbCandidates(explicit string) []string {
+	// An explicitly named database is never relocated. KEEL_DB, a test, or a
+	// packaging layout names a specific file on purpose; quietly opening a
+	// different one would split a corpus in half or write into somebody else's.
+	// Falling back is only ever right for the location Keel chose itself.
+	if explicit != "" {
+		return []string{explicit}
+	}
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == p {
+				return
+			}
+		}
+		out = append(out, p)
+	}
+
+	add(explicit)
+	if dir, err := defaultDir(); err == nil {
+		add(filepath.Join(dir, "keel.sqlite"))
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); v != "" {
+		add(filepath.Join(v, "Keel", "keel.sqlite"))
+	}
+	if exe, err := os.Executable(); err == nil {
+		add(filepath.Join(filepath.Dir(exe), "keel-data", "keel.sqlite"))
+	}
+	add(filepath.Join(os.TempDir(), "keel", "keel.sqlite"))
+	return out
+}
+
+func preflightDatabasePath(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "" || dir == "." {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("cannot create the folder for the database at %s: %w", dir, err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("cannot open the database file %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("cannot close the database file %s: %w", path, err)
+	}
+	// WAL writes keel.sqlite-wal and keel.sqlite-shm beside the database.
+	probe := path + "-preflight"
+	pf, err := os.OpenFile(probe, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("the folder %s is not writable (WAL needs to create files beside the database): %w", dir, err)
+	}
+	_ = pf.Close()
+	_ = os.Remove(probe)
+	return nil
 }
 
 func defaultDir() (string, error) {
