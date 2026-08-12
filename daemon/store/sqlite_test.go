@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1421,5 +1422,52 @@ func TestAnalysisTopChannelsNameFallback(t *testing.T) {
 	// Label may be nil (page falls back to Key) but Key must still be the id.
 	if row.Key != ch {
 		t.Errorf("Key should be channel_id %q, got %q", ch, row.Key)
+	}
+}
+
+// TestOpenCreatesTheDatabaseDirectory is the WO-091 QA failure, at its root.
+//
+// SQLite does not create directories: it reports a missing parent as "unable to
+// open database file" and names neither the file nor the reason. Only the
+// default-path branch created the directory, so any explicit path — KEEL_DB, or
+// a first run on Windows where %AppData%\keel does not exist yet — died here.
+// The owner exited during startup, the proxy saw an unexplained EOF, and the
+// panel said "not running".
+func TestOpenCreatesTheDatabaseDirectory(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "does", "not", "exist", "keel.sqlite")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open with a missing parent directory: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database was not created at %s: %v", path, err)
+	}
+	// It must be a working database, not just a file.
+	if _, err := st.Stats(); err != nil {
+		t.Fatalf("Stats on the new database: %v", err)
+	}
+}
+
+// TestOpenErrorNamesTheFile: "unable to open database file" with no path is
+// unactionable, and it is what a user sees in the panel.
+func TestOpenErrorNamesTheFile(t *testing.T) {
+	root := t.TempDir()
+	// A regular file where the directory needs to be: MkdirAll cannot win.
+	blocker := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "keel.sqlite")
+
+	_, err := Open(path)
+	if err == nil {
+		t.Fatal("want an error when the parent cannot be created")
+	}
+	if !strings.Contains(err.Error(), blocker) {
+		t.Errorf("error does not name the path: %v", err)
 	}
 }

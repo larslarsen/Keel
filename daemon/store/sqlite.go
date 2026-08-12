@@ -137,20 +137,33 @@ func Open(path string) (*Store, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, err
-		}
 		path = filepath.Join(dir, "keel.sqlite")
+	}
+	// SQLite does not create directories. It reports a missing parent as
+	// "unable to open database file" and says nothing about which file or why,
+	// which is indistinguishable from a permissions problem or a bad path.
+	//
+	// The default branch above used to be the only one that created the
+	// directory, so any explicit path — KEEL_DB, a packaging layout, a first
+	// run on Windows where %AppData%\keel does not exist yet — failed here with
+	// that message and no path in it. The owner then died during startup and
+	// the browser saw an unexplained EOF three layers up.
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create database directory %s: %w", dir, err)
+		}
 	}
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
+	// sql.Open is lazy: this is the first call that actually touches the file,
+	// so it is where a path problem surfaces. Name the file.
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	// Best-effort: a repair failure must not stop the daemon starting.
 	if err := s.repairPublishedAt(); err != nil {
