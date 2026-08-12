@@ -7,6 +7,7 @@
  * to the daemon — this page holds no observation data of its own.
  */
 import { browser } from "../lib/browser.js";
+import { PEER_SEARCH_REV_RECIPROCAL } from "../lib/protocol.js";
 
 const el = {
   banner: document.getElementById("daemon-banner"),
@@ -15,6 +16,9 @@ const el = {
   meta: document.getElementById("search-meta"),
   results: document.getElementById("results"),
   searchNetwork: document.getElementById("search-network"),
+  searchNetworkNote: document.getElementById("search-network-note"),
+  searchNetworkReason: document.getElementById("search-network-reason"),
+  searchNetworkRoute: document.getElementById("search-network-route"),
   peerProgress: document.getElementById("peer-progress"),
   peerProgressCaption: document.getElementById("peer-progress-caption"),
   wordCorpus: document.getElementById("word-corpus"),
@@ -187,6 +191,19 @@ function selectTab(name) {
 for (const t of ["search", "suggest", "live", "analysis", "config"]) {
   document.getElementById(`tab-${t}`).addEventListener("click", () => selectTab(t));
 }
+
+// WO-085 requires a direct route, not just an explanation: the setting that
+// would enable this control lives in another tab, and telling someone to go
+// find it is how a disabled control becomes a dead end.
+el.searchNetworkRoute?.addEventListener("click", async () => {
+  selectTab("config");
+  // Awaited rather than fired alongside selectTab's own call: refreshContribution
+  // replaces the radios, so anything focused before it finishes is thrown away.
+  await refreshContribution().catch(() => {});
+  const levels = document.getElementById("contrib-levels");
+  levels?.scrollIntoView?.({ block: "center" });
+  levels?.querySelector('input[name="contrib"][value="2"]')?.focus?.();
+});
 
 /* ---------- live ---------- */
 
@@ -575,7 +592,20 @@ el.form.addEventListener("submit", async (e) => {
   if (!el.searchNetwork?.checked) return;
   try {
     const r = await rpc("PEER_SEARCH", { query, limit: 100 });
-    if (r.peer_search?.available) {
+    if (r.peer_search?.contribution_required) {
+      // The daemon is the authority, and it just told us the checkbox was
+      // wrong — a level change this page missed, or a modified/stale client.
+      // Correct the control from the answer rather than leave it inviting a
+      // request that will be refused again (WO-085).
+      const d = r.peer_search.contribution_required;
+      searchEntitlement = {
+        known: true,
+        allowed: false,
+        level: Number(d.effective_level) || 1,
+        minLevel: Number(d.required_level) || 2,
+      };
+      applyCapabilityUi();
+    } else if (r.peer_search?.available) {
       appendPeerHits(r.peer_search.hits);
       renderPeerProgress(r.peer_search.progress);
     }
@@ -642,32 +672,45 @@ const LEVELS = [
     name: "Strictly personal",
     body:
       "Your recordings and recommendation trail stay here — Keel never " +
-      "serves them or any cached block to another peer. You still get the " +
-      "whole product: peer search, suggestions, graph pre-walk. Two things " +
-      "leave: livestreams Keel sees are announced with no sender attached, " +
-      "and Keel exchanges a whole aggregate word-popularity pack with peers " +
+      "serves them or any cached graph/catalogue/search block to another " +
+      "peer. You still get the " +
+      "personal product: local search, suggestions and graph pre-walk. " +
+      "Searching other people's recommendations is the one thing held back, " +
+      "because those searches run on the machines that also answer them. " +
+      "Keel requests broad shared data, " +
+      "announces livestreams it sees without an application-level sender, " +
+      "and exchanges a whole aggregate word-popularity pack with peers " +
       "(no plaintext words, video ids, edges or query — see Privacy).",
   },
   {
     n: 2,
-    name: "Mirror",
+    name: "Broad sharing",
     body:
-      "Lends disk space to store and pass on data other people published — " +
-      "the recommendation graph and titles that let suggestions reach past " +
-      "what you have seen yourself. Nothing you recorded is published. " +
-      "Requests ask for a bucket of thousands of videos at once and filter " +
-      "on your machine, and your computer uses a different network identity " +
-      "each session, so a peer answering cannot tell which video you wanted " +
-      "or link your requests together. Set the disk limit below.",
+      "Unlocks searching other people's recommendations, because from here " +
+      "your machine also answers those searches. " +
+      "Your computer starts answering other peers, with two things at once: " +
+      "data other people published that it is passing on, and aggregated " +
+      "recommendation blocks built from what you were shown. So something " +
+      "derived from your own recording does leave — counts of which video " +
+      "appeared alongside which, by rough position and day. No timestamps, " +
+      "titles, searches, page visits or watch order. It is sent as whole " +
+      "buckets of thousands of videos, never one video on request. Each " +
+      "neighbourhood has an opaque claim key that is unlinkable to your other " +
+      "neighbourhoods; updates preserve that key so they replace rather than " +
+      "multiply the claim. Whoever you answer still sees your address, timing " +
+      "and the whole bucket you returned. Set the disk limit below.",
   },
   {
     n: 3,
     name: "Cohort aggregator",
     body:
-      "Would add counts of which videos were recommended after which, " +
-      "grouped by rough position and day, under threshold encryption: your " +
-      "report stays sealed unless enough other people report the same thing, " +
-      "so anything only you saw can never be read. Not built.",
+      "Would add a different kind of report — measurements under threshold " +
+      "encryption, sealed unless enough other people report the same thing, " +
+      "so anything only you saw can never be read. What it would earn is the " +
+      "comparison: how your feed differs from other people's, which needs a " +
+      "protected group to compare against and cannot exist without one. Not " +
+      "the level where sharing begins; broad sharing above already " +
+      "contributes blocks. Not built.",
   },
   {
     n: 4,
@@ -676,8 +719,11 @@ const LEVELS = [
       "Would publish your full recommendation trails, attributed to you. " +
       "YouTube already knows what it showed you — what changes is that " +
       "everyone else would too, and that YouTube would know you are the one " +
-      "publishing it. Researchers running similar projects on other platforms " +
-      "have been retaliated against. Cannot be withdrawn once copied. Not built.",
+      "publishing it. It unlocks nothing extra, deliberately — being public is " +
+      "the whole point of choosing it, and a perk here would attract people " +
+      "who had not thought about permanence. Researchers running similar " +
+      "projects on other platforms have been retaliated against. Cannot be " +
+      "withdrawn once copied. Not built.",
   },
 ];
 
@@ -797,6 +843,10 @@ async function refreshContribution() {
   const wrap = document.getElementById("contrib-levels");
   const note = document.getElementById("contrib-note");
   if (!wrap) return;
+  if (!hasCap("contribution_runtime")) {
+    applyCapabilityUi();
+    return;
+  }
   let level = 1;
   let maxImpl = 1;
   let stored = null;
@@ -808,19 +858,23 @@ async function refreshContribution() {
     // actually enforcing — not the stored choice (WO-077). Showing the stored
     // one while a different policy runs is precisely the misreport this is
     // about: the old build let the control read "Strictly Personal" while the
-    // node went on mirroring until the next restart.
+    // node went on serving until the next restart.
     level = r.daemon?.effective_level ?? r.daemon?.level ?? 1;
     stored = r.daemon?.stored_level ?? null;
     transition = r.daemon?.transition ?? "idle";
     detail = r.daemon?.detail ?? "";
     maxImpl = r.daemon?.max_implemented ?? 1;
+    // The search control follows the same effective level these radios do
+    // (WO-085), so it is refreshed from the same answer rather than from a
+    // second RPC that could disagree with this one.
+    setSearchEntitlement(r.daemon);
   } catch {
     return;
   }
   const disagree = stored != null && stored !== level;
   note.textContent =
     maxImpl < 2
-      ? "Keel does not yet mirror or publish anything for other people; the " +
+      ? "Keel does not yet serve or publish anything for other people; the " +
         "livestream notice and word-aggregate exchange described below " +
         "happen at every level, including this one. Higher levels are not " +
         "available yet."
@@ -834,20 +888,45 @@ async function refreshContribution() {
       (stored != null ? `, not the level ${stored} on record` : "") +
       (detail ? ` — ${detail}` : ".");
   }
+  renderContributionRows(wrap, { level, maxImpl, interactive: true });
+}
+
+/**
+ * Render the four Level 1–4 rows.
+ *
+ * Shared by refreshContribution (capability present, real daemon state) and
+ * applyCapabilityUi (capability absent). WO-088: a control whose bridge
+ * capability is unavailable stays visible and disabled with a reason — it
+ * must never disappear, and it must never be built from guessed state.
+ * `interactive: false` renders every row disabled, nothing checked, and
+ * attaches no change listener, so an incompatible daemon can neither have a
+ * level invented for it nor receive a SET_CONTRIBUTION it never negotiated.
+ */
+function renderContributionRows(wrap, { level, maxImpl, interactive }) {
   wrap.replaceChildren();
   for (const l of LEVELS) {
-    const avail = l.n <= maxImpl;
+    const avail = interactive && l.n <= maxImpl;
     const row = document.createElement("label");
     row.className = "contrib" + (avail ? "" : " contrib-off");
     row.innerHTML =
-      `<input type="radio" name="contrib" value="${l.n}"` +
-      `${l.n === level ? " checked" : ""}${avail ? "" : " disabled"}>` +
+      `<input type="radio" name="contrib" value="${l.n}">` +
       `<span><strong>${escapeHtml(l.name)}</strong>` +
       `<span class="meta">${escapeHtml(l.body)}` +
-      (avail ? "" : " <em>Not available yet.</em>") +
+      (avail
+        ? ""
+        : interactive
+          ? " <em>Not available yet.</em>"
+          : " <em>Unavailable until the desktop app is updated.</em>") +
       `</span></span>`;
+    // Set as properties, not HTML-string attributes: `checked`/`disabled` as
+    // markup only sets the initial reflected state, which is easy to get
+    // wrong across environments. The property assignment is unambiguous.
+    const input = row.querySelector("input");
+    input.disabled = !avail;
+    input.checked = interactive && l.n === level;
     wrap.appendChild(row);
   }
+  if (!interactive) return;
   wrap.querySelectorAll('input[name="contrib"]').forEach((el) => {
     el.addEventListener("change", async () => {
       try {
@@ -1011,11 +1090,153 @@ async function loadAnalysis() {
 
 /* ---------- data ---------- */
 
-function setDaemonUi(ok, detail = "") {
+/** @type {Record<string, number>} */
+let bridgeCaps = Object.create(null);
+
+function hasCap(name, minRev = 1) {
+  const n = bridgeCaps[name];
+  return Number.isFinite(n) && n >= minRev;
+}
+
+function setDaemonUi(ok, detail = "", meta = {}) {
+  if (ok && meta?.capabilities && typeof meta.capabilities === "object") {
+    bridgeCaps = { ...meta.capabilities };
+  } else if (!ok) {
+    bridgeCaps = Object.create(null);
+  }
+  applyCapabilityUi();
   el.banner.className = ok ? "banner ok" : "banner warn";
-  el.banner.textContent = ok
-    ? "Desktop app connected. Your recordings stay on this device."
-    : "Keel's desktop app isn't running." + (detail ? ` (${detail})` : "");
+  if (ok) {
+    el.banner.textContent =
+      "Desktop app connected. Your recordings stay on this device.";
+    return;
+  }
+  if (meta?.incompatible || /desktop app update required/i.test(String(detail || ""))) {
+    el.banner.textContent =
+      "Desktop app update required. Update the Keel desktop app to match this extension." +
+      (detail ? ` (${detail})` : "");
+    return;
+  }
+  el.banner.textContent =
+    "Keel's desktop app isn't running." + (detail ? ` (${detail})` : "");
+}
+
+/**
+ * Reciprocal distributed search (WO-085).
+ *
+ * `allowed` is what the daemon says its effective policy permits. `known` is
+ * whether we have been told yet — until GET_CONTRIBUTION or a
+ * CONTRIBUTION_STATUS broadcast arrives, the control is left as the negotiated
+ * capability alone decides it, because guessing "off" would flash a
+ * "you have not opted in" explanation at Level-2 users on every page load.
+ *
+ * @type {{ known: boolean, allowed: boolean, level: number, minLevel: number }}
+ */
+let searchEntitlement = { known: false, allowed: false, level: 1, minLevel: 2 };
+
+/**
+ * Ask the daemon what the search control should look like right now.
+ *
+ * The search view is the first thing this page shows and most users never open
+ * the config tab, so the entitlement cannot wait for refreshContribution to be
+ * called from there. Seeding the negotiated capability map first matters for
+ * the same reason: without it a freshly loaded page knows nothing about the
+ * peer_search revision and would render the control as though the daemon were
+ * pre-WO-085.
+ */
+async function syncSearchControl() {
+  try {
+    const st = await rpc("GET_STATUS");
+    if (st?.capabilities && typeof st.capabilities === "object") {
+      bridgeCaps = { ...st.capabilities };
+      applyCapabilityUi();
+    }
+  } catch {
+    return; // the banner already says the daemon is unreachable
+  }
+  await refreshSearchEntitlement();
+}
+
+/** Refresh only the level-derived half, after a status broadcast. */
+async function refreshSearchEntitlement() {
+  if (!hasCap("contribution_runtime")) return;
+  try {
+    const r = await rpc("GET_CONTRIBUTION");
+    setSearchEntitlement(r.daemon);
+  } catch {
+    /* the banner already says the daemon is unreachable */
+  }
+}
+
+/** Record what the daemon reported, from either the RPC or the broadcast. */
+function setSearchEntitlement(d) {
+  if (!d || typeof d !== "object") return;
+  if (typeof d.distributed_search !== "boolean") return;
+  searchEntitlement = {
+    known: true,
+    allowed: d.distributed_search,
+    level: Number(d.effective_level ?? d.level ?? 1) || 1,
+    minLevel: Number(d.distributed_search_min_level) || 2,
+  };
+  applyCapabilityUi();
+}
+
+function applyCapabilityUi() {
+  const net = el.searchNetwork;
+  if (net) {
+    // Two separate reasons the control can be unavailable, and they need two
+    // different sentences: the desktop app cannot do this (update it), or it
+    // can and this node has not opted in (change a setting). Collapsing them
+    // into one greyed-out box would leave the second group with no route.
+    const negotiated = Number(bridgeCaps["peer_search"]) || 0;
+    const reciprocal = negotiated >= PEER_SEARCH_REV_RECIPROCAL;
+    // An older daemon has no level rule, so presenting one would be a
+    // UI-only restriction of a daemon that would have answered.
+    const gated = reciprocal && searchEntitlement.known && !searchEntitlement.allowed;
+    const on = negotiated >= 1 && !gated;
+
+    net.disabled = !on;
+    if (!on) net.checked = false;
+    // Disabled with a reason, never hidden. A control that vanishes reads as
+    // "this feature was removed"; one that is greyed out with a tooltip reads
+    // as "your desktop app is behind", which is the actionable message and the
+    // whole point of negotiating rather than failing on an unknown RPC.
+    const row = net.closest("label");
+    let reason = "";
+    if (negotiated < 1) {
+      reason = "Peer search requires a desktop app that negotiates peer_search.";
+    } else if (gated) {
+      reason =
+        `Searching other people's recommendations needs Broad sharing ` +
+        `(level ${searchEntitlement.minLevel}). Those searches run on the ` +
+        `machines that also answer them, so the level that serves is the ` +
+        `level that can ask. Everything else here is unaffected: local ` +
+        `search, suggestions, graph pre-walk, Live and word statistics all ` +
+        `work at level ${searchEntitlement.level}.`;
+    }
+    if (row) row.title = reason;
+    if (el.searchNetworkNote && el.searchNetworkReason) {
+      el.searchNetworkReason.textContent = reason;
+      el.searchNetworkNote.hidden = !reason;
+    }
+    if (el.searchNetworkRoute) el.searchNetworkRoute.hidden = !gated;
+  }
+  const contrib = document.getElementById("contrib-levels");
+  const contribNote = document.getElementById("contrib-note");
+  const contribHead = contrib?.previousElementSibling;
+  if (contrib && !hasCap("contribution_runtime")) {
+    // Same rule as the search control above: disabled and visible, never
+    // hidden, and never showing a guessed level for a daemon that did not
+    // negotiate the state schema (WO-088).
+    renderContributionRows(contrib, { level: null, maxImpl: 0, interactive: false });
+    if (contribNote) {
+      contribNote.textContent =
+        "Current level unavailable until the desktop app is updated to " +
+        "support contribution_runtime. The levels below are shown for " +
+        "reference and cannot be changed here yet.";
+    }
+    if (contribHead && contribHead.tagName === "H2") contribHead.hidden = false;
+  }
 }
 
 async function refreshAggregate() {
@@ -1034,7 +1255,7 @@ async function refreshAggregate() {
 async function refreshStats() {
   try {
     const st = await rpc("GET_STATS");
-    setDaemonUi(Boolean(st.connected));
+    setDaemonUi(Boolean(st.connected), "", { capabilities: bridgeCaps });
     const s = st.stats;
     if (!s) return;
     renderSwarm(s.swarm);
@@ -1093,12 +1314,29 @@ el.wipeYes.addEventListener("click", async () => {
 
 browser.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "DAEMON_STATUS") {
-    setDaemonUi(Boolean(msg.payload?.connected), msg.payload?.detail || "");
+    setDaemonUi(
+      Boolean(msg.payload?.connected),
+      msg.payload?.detail || "",
+      msg.payload || {}
+    );
+    // A reconnect can be to a different daemon build, or to the same one after
+    // a level change this page never saw. Re-ask rather than keep the old
+    // answer (WO-085).
+    if (msg.payload?.connected) refreshSearchEntitlement().catch(() => {});
+  }
+  if (msg?.type === "CONTRIBUTION_STATUS") {
+    // Applied straight from the broadcast, not only after the refresh's
+    // round trip (WO-085/WO-079): a level change made in another browser
+    // profile has to reach an already-open search view, and the payload
+    // carries everything the control needs.
+    setSearchEntitlement(msg.payload);
+    refreshContribution().catch(() => {});
   }
 });
 
 selectTab("search");
 refreshStats().catch(() => {});
+syncSearchControl().catch(() => {});
 
 // The full page shows everything the side panel does, with more room, so a
 // panel open beside it is redundant. Ask for it to be hidden on this tab only.
