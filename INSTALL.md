@@ -28,6 +28,14 @@ If a release is available, download the desktop app instead of building it:
    - Mac (Intel) — `keel-host-darwin-amd64`
 2. Download `keel-extension.zip` from the same page and unzip it somewhere you
    will keep — that folder is the extension.
+
+   **Updating an existing folder:** when Windows asks what to do about files
+   that are already there, choose **Replace the files in the destination**. If
+   you choose *Skip*, the old files stay and you end up with half of one build
+   and half of another — the extension then fails with a message naming
+   `lib/protocol.js`. The safe alternative is to delete the folder first
+   (click it in File Explorer and press Delete, or run
+   `rd /s /q "%USERPROFILE%\Downloads\keel-extension"`) and extract fresh.
 3. Put the desktop app next to the unzipped folder and install it:
    - **Windows — just double-click `keel-host-windows-amd64.exe`.** No terminal.
      Running it with no arguments *is* the install. A window may flash and
