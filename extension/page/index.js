@@ -796,18 +796,39 @@ async function refreshContribution() {
   if (!wrap) return;
   let level = 1;
   let maxImpl = 1;
+  let stored = null;
+  let transition = "idle";
+  let detail = "";
   try {
     const r = await rpc("GET_CONTRIBUTION");
-    level = r.daemon?.level ?? 1;
+    // The checked radio follows the EFFECTIVE level — the policy the daemon is
+    // actually enforcing — not the stored choice (WO-077). Showing the stored
+    // one while a different policy runs is precisely the misreport this is
+    // about: the old build let the control read "Strictly Personal" while the
+    // node went on mirroring until the next restart.
+    level = r.daemon?.effective_level ?? r.daemon?.level ?? 1;
+    stored = r.daemon?.stored_level ?? null;
+    transition = r.daemon?.transition ?? "idle";
+    detail = r.daemon?.detail ?? "";
     maxImpl = r.daemon?.max_implemented ?? 1;
   } catch {
     return;
   }
+  const disagree = stored != null && stored !== level;
   note.textContent =
     maxImpl < 2
       ? "Keel sends nothing anywhere today. The levels below describe what " +
         "contributing would mean when it exists; only the first is available."
       : "Choose how much this node contributes.";
+  if (transition === "starting" || transition === "stopping") {
+    note.textContent = "Applying your choice to the network…";
+  } else if (disagree) {
+    // Never silently show the stored value as though it were in force.
+    note.textContent =
+      `Level ${level} is what this node is currently enforcing` +
+      (stored != null ? `, not the level ${stored} on record` : "") +
+      (detail ? ` — ${detail}` : ".");
+  }
   wrap.replaceChildren();
   for (const l of LEVELS) {
     const avail = l.n <= maxImpl;

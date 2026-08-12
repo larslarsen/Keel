@@ -206,7 +206,12 @@ func (n *Node) publishSketchLoop(ctx context.Context) {
 }
 
 func (n *Node) publishDueSketches(ctx context.Context) {
-	if n.sketch == nil {
+	// Used to publish whenever the subsystem existed, regardless of policy —
+	// so a node that served nothing still advertised three-gram sizes for
+	// blocks nobody could fetch from it (WO-077). Since that ticket Level 1
+	// does not join the topic at all; this also stops the next tick during a
+	// downgrade, before the node is torn down.
+	if n.sketch == nil || !n.mayGossipSearchTelemetry() {
 		return
 	}
 	due, err := n.st.DueTokenSketches(maxSketchGossipPerTick)

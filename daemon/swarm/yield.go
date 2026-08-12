@@ -139,14 +139,15 @@ func (n *Node) publishYieldLoop(ctx context.Context) {
 }
 
 func (n *Node) publishYield(ctx context.Context) {
-	if n.yield == nil || !n.cfg.Serve {
+	if n.yield == nil || !n.mayGossipSearchTelemetry() {
 		// Publishing what this node holds is the same disclosure class as
-		// serving a shard, so it follows Serve, not Fetch — a Level 1 node
-		// (no Serve) still receives everyone else's vectors, same asymmetry
-		// as the live index.
+		// serving a shard, so it follows the search-telemetry capability,
+		// not Fetch. Since WO-077 a Level-1 node does not join this topic at
+		// all, so this is now a gate check for the downgrade window rather
+		// than the level split it used to be.
 		return
 	}
-	vec, err := n.st.LocalYieldVector(!n.cfg.ServeOwnObservations)
+	vec, err := n.st.LocalYieldVector(n.cfg.Policy.MirrorOnly())
 	if err != nil {
 		n.logf("yield: %v", err)
 		return

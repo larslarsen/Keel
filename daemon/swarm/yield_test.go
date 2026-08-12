@@ -11,7 +11,13 @@ import (
 
 func yieldCfg(t *testing.T, serve bool) Config {
 	c := isolated(serve, t)
-	c.Fetch = true
+	c.Policy.Fetch = true
+	// Both ends of a propagation test must join the topic. Since WO-077 that
+	// is a Level-2 capability rather than something every node has: the
+	// three-gram topics exist to locate blocks a node serves, so a Level-1
+	// node does not join them at all. TestLevelOneJoinsNoSearchTopics
+	// (policy_test.go) is what pins that boundary.
+	c.Policy.JoinSearchTelemetry = true
 	return c
 }
 

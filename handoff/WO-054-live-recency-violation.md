@@ -123,11 +123,16 @@ needed for the label itself (Pair 2's local-merge still worth doing so the node'
 own view is correct).
 
 **Acceptance (Part 3).**
-- [ ] The live list's "seen live" time reflects `SeenAt` (observation time), so
+- [x] The live list's "seen live" time reflects `SeenAt` (observation time), so
       a stream last seen 5h ago displays "5h ago", not "just now".
-- [ ] Regression test: a record with `SeenAt = now - 5h` but `lastSeen = now`
+- [x] Regression test: a record with `SeenAt = now - 5h` but `lastSeen = now`
       (re-gossiped dead stream) renders "5h ago".
-- [ ] `go test ./daemon/...` and the extension test pass.
+- [x] `go test ./daemon/...` and the extension test pass.
+
+Landed 2026-08-11 in test/page-live-thumbnails.test.js ("labels the seen-live
+time from the observation, not gossip freshness"): stream with `s = now - 5h`
+and `last_seen = now` renders "5 hours ago", and a record with no `s` still
+falls back to `last_seen` ("just now").
 
 # Part 2 — displayed "last seen" is not refreshed by your own observation
 
@@ -186,15 +191,21 @@ node's own view of what it just saw is now correct — which `currentlyLive()`
 consistent with it.
 
 **Acceptance (Part 2).**
-- [ ] A node at any level that locally observes a LIVE badge refreshes that
+- [x] A node at any level that locally observes a LIVE badge refreshes that
       stream's `lastSeen` in its own index, so the panel shows "just now"
       (within 90s, per `fmtAgo`), even when `shouldPublish` would suppress
       gossip.
-- [ ] Regression test: seed index with `lastSeen = now - 1h`, call
+- [x] Regression test: seed index with `lastSeen = now - 1h`, call
       `PublishLive` with a fresh `SeenAt = now` for the same video, assert
       `LastSeen` advanced to ~now (not still 1h ago), but assert `topic.Publish`
       was NOT called (gossip still suppressed).
-- [ ] `go test ./daemon/...` passes.
+- [x] `go test ./daemon/...` passes.
+
+Landed 2026-08-11 as `TestRegressionPublishLiveRefreshesLocalWhenSuppressed`
+(daemon/swarm/regressions_test.go): seeds `SeenAt = now - 1h` with a warm
+`lastSeen`, calls `PublishLive` with `SeenAt = now`, asserts the entry's
+`SeenAt` advanced to ~now and that the suppression gate still held
+(`shouldPublish` false — the proxy for "topic.Publish was NOT called").
 
 
 ---

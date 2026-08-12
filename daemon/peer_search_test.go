@@ -57,9 +57,8 @@ func callPeerSearch(t *testing.T, st *store.Store, query string) bridge.PeerSear
 // no running swarm must answer "unavailable", never a bare empty result that
 // reads as "the network has nothing for this query."
 func TestPeerSearchUnavailableWhenSwarmNil(t *testing.T) {
-	old := swarmNode
-	swarmNode = nil
-	t.Cleanup(func() { swarmNode = old })
+	restore := adoptNodeForTest(nil)
+	t.Cleanup(restore)
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "peer-search-nil.sqlite"))
 	if err != nil {
@@ -126,16 +125,16 @@ func TestPeerSearchZeroPeersRespondsUnderClientCap(t *testing.T) {
 	defer st.Close()
 
 	n, err := swarm.Start(ctx, st, swarm.Config{
-		Fetch: true, Bootstrap: []peer.AddrInfo{}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
+		Policy:    swarm.PolicyForLevel(store.LevelPersonal),
+		Bootstrap: []peer.AddrInfo{}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer n.Close()
 
-	old := swarmNode
-	swarmNode = n
-	t.Cleanup(func() { swarmNode = old })
+	restore := adoptNodeForTest(n)
+	t.Cleanup(restore)
 
 	const clientCap = 8 * time.Second
 	start := time.Now()
@@ -181,7 +180,7 @@ func TestPeerSearchRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := swarm.Start(ctx, serverStore, swarm.Config{
-		Serve: true, ServeOwnObservations: true,
+		Policy:    swarm.PolicyForLevel(store.LevelCohort),
 		Bootstrap: []peer.AddrInfo{bootInfo}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
 	})
 	if err != nil {
@@ -195,16 +194,16 @@ func TestPeerSearchRoundTrip(t *testing.T) {
 	}
 	defer clientStore.Close()
 	client, err := swarm.Start(ctx, clientStore, swarm.Config{
-		Fetch: true, Bootstrap: []peer.AddrInfo{bootInfo}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
+		Policy:    swarm.PolicyForLevel(store.LevelPersonal),
+		Bootstrap: []peer.AddrInfo{bootInfo}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
-	old := swarmNode
-	swarmNode = client
-	t.Cleanup(func() { swarmNode = old })
+	restore := adoptNodeForTest(client)
+	t.Cleanup(restore)
 
 	if !waitUntil(30*time.Second, func() bool {
 		return server.Peers() > 0 && client.Peers() > 0

@@ -36,38 +36,32 @@ const announceInterval = 6 * time.Hour
 // must never delay anything the user is waiting for.
 const prewarmTimeout = 30 * time.Second
 
-// swarmNode is set once before the message loop starts and read by handlers.
-// A single daemon process has exactly one node, so a package-level value is
-// honest about the shape of the thing rather than threading it through every
-// signature.
+// A single owner process has exactly one node at a time, owned by the
+// supervisor in contribution_runtime.go. Callers ask for it per operation and
+// must not hold it across a contribution change — the node they have may be a
+// stopped one moments later.
 var (
-	swarmNode *swarm.Node
 	prewarmMu sync.Mutex
 	prewarmed = map[string]time.Time{}
 )
 
-// swarmConfigFor maps the stored contribution level onto what the node offers.
+func currentSwarmNode() *swarm.Node { return supervisor.currentNode() }
+
+// swarmConfigFor maps a contribution level onto what the node offers.
 //
-// Level 1 neither serves nor asks. That is a stronger promise than "we do not
-// upload anything": a block request tells the peer answering it which video was
-// asked about, so the only way nothing leaves is to never ask. Level 1 runs on
-// the seed pack plus its own recording, and neither involves a query.
-//
-// Level 2 opts into the query-based system. It mirrors — re-serving blocks other
-// people published, using the disk space the user allots — and fetches on demand
-// for anything the seed does not cover. The seed is what keeps that exposure to
-// the long tail rather than to everything watched.
-//
-// Level 3 and above additionally serve the user's own edges, which is the step
-// that publishes a funnel and is why it is a separate, explicit choice.
+// The capability table lives in swarm.PolicyForLevel (see swarm/policy.go);
+// what remains here is the transport-shaped part of the config. The mapping
+// used to say Level 1 neither serves nor asks — "the only way nothing leaves
+// is to never ask" — and WO-077 corrected it: withholding fetch also withheld
+// peer search, pre-walk and the shared product from every non-contributor,
+// which is a toll booth, not a privacy guarantee. Level 1 is a full consumer
+// that serves nothing.
 func swarmConfigFor(level int) swarm.Config {
 	return swarm.Config{
 		// Announced to peers so they can tell whether they are behind us or
 		// incompatible with us (WO-061).
-		AppVersion:           version,
-		Serve:                level >= store.LevelMirror,
-		Fetch:                level >= store.LevelMirror,
-		ServeOwnObservations: level >= store.LevelCohort,
+		AppVersion: version,
+		Policy:     swarm.PolicyForLevel(level),
 		// A stable network identity turns k-anonymous prefix requests back
 		// into a trajectory, so every level that is not deliberately
 		// attributable gets a fresh one each start. Level 4 is the exception
@@ -77,31 +71,28 @@ func swarmConfigFor(level int) swarm.Config {
 	}
 }
 
-// startSwarm brings the node up. A failure is logged and swallowed: the local
-// product works without the network, and refusing to start the daemon because
-// a router is unhelpful would be a poor trade.
+// startSwarm brings the first node up, at the level a fresh process may
+// construct. Failure is logged and swallowed: the local product works without
+// the network.
 func startSwarm(ctx context.Context, st *store.Store) {
-	cfg := swarmConfigFor(st.ContributionLevel())
-	n, err := swarm.Start(ctx, st, cfg)
-	if err != nil {
-		log.Printf("swarm unavailable, continuing locally: %v", err)
-		return
-	}
-	swarmNode = n
+	supervisor.start(ctx, st)
+}
 
-	if cfg.Serve {
-		go func() {
-			for {
-				if err := n.Announce(ctx); err != nil && ctx.Err() == nil {
-					log.Printf("swarm: announce: %v", err)
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(announceInterval):
-				}
-			}
-		}()
+// announceLoop re-publishes provider records for as long as this node lives.
+//
+// Announce itself re-checks the outbound gate, so a downgrade stops the next
+// tick from re-advertising a cache the user just withdrew even before this
+// loop's context is cancelled.
+func announceLoop(ctx context.Context, n *swarm.Node) {
+	for {
+		if err := n.Announce(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("swarm: announce: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(announceInterval):
+		}
 	}
 }
 
@@ -112,7 +103,8 @@ func startSwarm(ctx context.Context, st *store.Store) {
 // Level 1 node announces nothing, because a record discloses that its publisher
 // saw the stream.
 func announceLive(imps []bridge.Impression) {
-	if swarmNode == nil || swarmNode.Live() == nil {
+	n := currentSwarmNode()
+	if n == nil || n.Live() == nil {
 		return
 	}
 	for _, imp := range imps {
@@ -136,7 +128,7 @@ func announceLive(imps []bridge.Impression) {
 			rec.ChannelID = *imp.ChannelID
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		swarmNode.PublishLive(ctx, rec)
+		n.PublishLive(ctx, rec)
 		cancel()
 	}
 }
@@ -152,7 +144,8 @@ func announceLive(imps []bridge.Impression) {
 // of the seed: the head of the watch distribution generates no queries, so
 // there is nothing there for a peer to observe.
 func prewarm(st *store.Store, videoID string) {
-	if swarmNode == nil || videoID == "" || videoID == store.HomeFrom {
+	n := currentSwarmNode()
+	if n == nil || videoID == "" || videoID == store.HomeFrom {
 		return
 	}
 	if have, err := st.HaveBlock(videoID); err == nil && have {
@@ -179,12 +172,12 @@ func prewarm(st *store.Store, videoID string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), prewarmTimeout)
 		defer cancel()
-		n, err := swarmNode.Fetch(ctx, videoID)
+		fetched, err := n.Fetch(ctx, videoID)
 		if err != nil {
 			return // a miss is the normal case for the long tail
 		}
-		if n > 0 {
-			log.Printf("swarm: prewarmed %s with %d edges", videoID, n)
+		if fetched > 0 {
+			log.Printf("swarm: prewarmed %s with %d edges", videoID, fetched)
 		}
 	}()
 }
@@ -195,7 +188,8 @@ func prewarm(st *store.Store, videoID string) {
 // nothing is indistinguishable from one that is working, and the first thing
 // anyone will ask is whether they connected to anybody.
 func swarmStatus() map[string]any {
-	if swarmNode == nil {
+	n := currentSwarmNode()
+	if n == nil {
 		return map[string]any{"up": false}
 	}
 	out := map[string]any{
@@ -204,17 +198,17 @@ func swarmStatus() map[string]any {
 		// only — it is guaranteed non-zero once the node joins and it churns as
 		// the DHT pads and prunes connections, so presenting it as a count of
 		// people is actively misleading (WO-055).
-		"peers": swarmNode.Peers(),
+		"peers": n.Peers(),
 		// Peers that speak our protocol: actual other installs. This is the
 		// number a person should be shown.
-		"keel_peers": swarmNode.KeelPeers(),
-		"id":         swarmNode.ID().String(),
+		"keel_peers": n.KeelPeers(),
+		"id":         n.ID().String(),
 		// What the versions around us look like (WO-061). Reported even when
 		// everything agrees, because "no update needed" is itself the answer
 		// to the question a person is asking when they look at this.
-		"versions": swarmNode.Versions(version),
+		"versions": n.Versions(version),
 	}
-	if li := swarmNode.Live(); li != nil {
+	if li := n.Live(); li != nil {
 		out["live_indexed"] = li.Size()
 	}
 	return out

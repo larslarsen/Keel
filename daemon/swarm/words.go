@@ -34,16 +34,37 @@ type wordPeerPack struct {
 	pack  *store.WordTelemetry
 }
 
+// includeLocalCorpus is the mirrorOnly argument the word-telemetry pack is
+// always built with: false, meaning "do not exclude this node's own
+// observations". Named rather than written as a bare false so the two call
+// sites read as a decision instead of a copied flag (WO-077).
+const includeLocalCorpus = false
+
 // handleWordTelemetry serves this node's local pack. Request body is ignored
 // (one short line); reply is the JSON WordTelemetry wire form — registers
 // only, never word strings.
 func (n *Node) handleWordTelemetry(s network.Stream) {
 	defer s.Close()
+	// Its own capability, not block service: Level 1 answers this (WO-077).
+	if !n.mayExchangeWordTelemetry() {
+		return
+	}
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 	// Drain a short request line so clients can share requestOn's write shape.
 	_, _ = io.CopyN(io.Discard, s, 32)
 
-	pack, err := n.st.LocalWordTelemetry(!n.cfg.ServeOwnObservations)
+	// includeLocalCorpus, NOT the mirror-only selector (WO-077).
+	//
+	// This pack is a fixed-shape HLL/CMS aggregate — no plaintext words, ids,
+	// edges or query — so including locally observed titles is what makes the
+	// global word statistic actually cover this node's corpus. Passing
+	// mirror-only here (as this did when the flag was borrowed from block
+	// service) silently excluded every node from a statistic it was itself
+	// reading. ARCHITECTURE_CURRENT §3 requires the disclosure be stated in
+	// the consent copy rather than avoided by under-reporting; "no plaintext
+	// words" is not zero disclosure, since a guessed word can be tested
+	// against a CMS.
+	pack, err := n.st.LocalWordTelemetry(includeLocalCorpus)
 	if err != nil {
 		n.logf("word telemetry: %v", err)
 		return
@@ -96,12 +117,15 @@ type TokenCoverage struct {
 // (push-only WO-067 path — never a word-stat fetch).
 func (n *Node) FetchWordStats(ctx context.Context, query string) (WordStats, error) {
 	out := WordStats{Available: true, Words: []WordStat{}}
-	if !n.cfg.Fetch {
+	if !n.cfg.Policy.Fetch {
 		out.Available = false
 		return out, nil
 	}
 
-	local, err := n.st.LocalWordTelemetry(!n.cfg.ServeOwnObservations)
+	// Same reasoning as handleWordTelemetry: the local half of the union is
+	// this node's own corpus, so excluding it would make the displayed
+	// percentages describe everyone except the person reading them.
+	local, err := n.st.LocalWordTelemetry(includeLocalCorpus)
 	if err != nil {
 		return out, err
 	}

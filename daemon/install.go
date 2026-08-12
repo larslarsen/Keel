@@ -178,6 +178,17 @@ func runInstall(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if !*dry {
+		p, err := resolveOwnerPaths()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "owner paths:", err)
+			return 1
+		}
+		if _, err := ownerSecret(p); err != nil {
+			fmt.Fprintln(os.Stderr, "owner credential:", err)
+			return 1
+		}
+	}
 
 	var chromeIDs []string
 	for _, s := range strings.Split(*idCSV, ",") {
@@ -306,6 +317,11 @@ func runUninstall(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if !*dry {
+		// Best effort: an install can be partially removed or the owner can
+		// already be down. Never start an owner during uninstall.
+		_ = requestOwnerControl("shutdown")
+	}
 	ts, err := targets()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -335,6 +351,15 @@ func runUninstall(args []string) int {
 	if runtime.GOOS == "windows" {
 		fmt.Println("\nWindows: also delete the registry keys under")
 		fmt.Println(`  HKCU\Software\...\NativeMessagingHosts\` + hostName)
+	}
+	if !*dry {
+		if p, err := resolveOwnerPaths(); err == nil {
+			if err := removeOwnerCredentials(p); err != nil {
+				fmt.Fprintln(os.Stderr, "owner credential:", err)
+			} else {
+				fmt.Println("removed local owner credential")
+			}
+		}
 	}
 	return 0
 }

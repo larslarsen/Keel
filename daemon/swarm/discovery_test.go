@@ -53,7 +53,7 @@ func privateDHT(t *testing.T, ctx context.Context) host.Host {
 // failure shape the tests here exist to catch.
 func bootstrappedTo(boot peer.AddrInfo, serve bool, t *testing.T) Config {
 	cfg := isolated(serve, t)
-	cfg.Fetch = true
+	cfg.Policy.Fetch = true
 	cfg.Bootstrap = []peer.AddrInfo{boot}
 	return cfg
 }

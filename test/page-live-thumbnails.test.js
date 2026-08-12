@@ -93,4 +93,36 @@ describe("live page renders a thumbnail per stream row", () => {
     module.renderLive({ available: true, streams: [] });
     assert.equal(document.querySelectorAll("#live-list tr").length, 0);
   });
+
+  it("labels the seen-live time from the observation, not gossip freshness", () => {
+    const now = Date.now();
+    // WO-054 Part 3: peers re-announce a finished stream, keeping last_seen
+    // warm at "now" while s (SeenAt) still holds the true observation time.
+    // The label must read from s — "5 hours ago" — not from last_seen's
+    // "just now", which would claim a finished stream was live this minute.
+    const streams = [
+      {
+        v: "dQw4w9WgXcQ",
+        t: "Finished stream",
+        c: "RickAstleyVEVO",
+        p: "yt",
+        s: now - 5 * 3600_000,
+        last_seen: now,
+      },
+      // No observation time at all: the fallback is last_seen.
+      { v: "oHg5SJYRHA0", t: "Unobserved", c: "chan", p: "yt", last_seen: now },
+    ];
+    module.renderLive({ available: true, streams });
+
+    const rows = document.querySelectorAll("#live-list tr");
+    assert.equal(rows.length, 2, "one row per stream");
+    // The last cell in each row is the seen-live time (fmtAgo(s.s ?? s.last_seen)).
+    const seenCell = (i) => rows[i].querySelectorAll("td")[4];
+    assert.equal(
+      seenCell(0).textContent,
+      "5 hours ago",
+      "a re-gossiped finished stream must not read 'just now' (WO-054 Part 3)"
+    );
+    assert.equal(seenCell(1).textContent, "just now");
+  });
 });

@@ -89,6 +89,11 @@ type Impression struct {
 	ViewCount   *float64 `json:"view_count"`
 	PublishedAt *string  `json:"published_at"`
 	Badges      []string `json:"badges"`
+	// TikTok-only fields (WO-063 Mirror). Empty/nil on YouTube rows.
+	Hashtags   []string `json:"hashtags,omitempty"`
+	SoundID    *string  `json:"sound_id,omitempty"`
+	DwellPct   *float64 `json:"dwell_pct,omitempty"`
+	Engagement *string  `json:"engagement,omitempty"`
 }
 
 // ValidateImpression returns an error if required fields are missing.
@@ -161,7 +166,18 @@ type HelloAckPayload struct {
 type ErrorPayload struct {
 	Message string `json:"message"`
 	Code    string `json:"code,omitempty"`
+	// Detail carries structured state alongside a failure, for the cases
+	// where the error itself is not the whole answer. A failed contribution
+	// change (WO-077) is the motivating one: the interface must show what
+	// policy is actually running now, which a message string cannot express
+	// and which the user needs more urgently than the reason it failed.
+	Detail any `json:"detail,omitempty"`
 }
+
+// CodeNetworkBusy marks an RPC declined because the swarm is mid-replacement
+// (WO-077). Distinct from a network being down: the correct client behaviour
+// is to retry shortly, not to report the peer network as unavailable.
+const CodeNetworkBusy = "network_busy"
 
 // ExportResultPayload is EXPORT_RESULT body (WO-012).
 // Corpus is written to Path; bridge never carries the full dump.
@@ -226,6 +242,36 @@ type QueueItem struct {
 type QueueResultPayload struct {
 	Items []QueueItem `json:"items"`
 	Next  *QueueItem  `json:"next,omitempty"`
+}
+
+// ScrollHistoryPayload is SCROLL_HISTORY request (WO-063 TikTok Mirror).
+type ScrollHistoryPayload struct {
+	Platform string `json:"platform"`
+	Limit    int    `json:"limit"`
+}
+
+// ScrollHistoryItem is one consumed clip in scroll order.
+type ScrollHistoryItem struct {
+	VideoID     string   `json:"video_id"`
+	Title       string   `json:"title"`
+	ChannelID   *string  `json:"channel_id"`
+	ChannelName *string  `json:"channel_name"`
+	ObservedAt  int64    `json:"observed_at"`
+	SlotIndex   int      `json:"slot_index"`
+	Hashtags    []string `json:"hashtags"`
+	SoundID     *string  `json:"sound_id"`
+	DwellPct    *float64 `json:"dwell_pct"`
+	Engagement  *string  `json:"engagement"`
+	Platform    string   `json:"platform"`
+}
+
+// ScrollHistoryResultPayload is SCROLL_HISTORY_RESULT body.
+type ScrollHistoryResultPayload struct {
+	Items []ScrollHistoryItem `json:"items"`
+	// HashtagCounts: tag → how many history items carried it (local only).
+	HashtagCounts map[string]int64 `json:"hashtag_counts"`
+	// SoundCounts: sound_id → count (local only; never exported).
+	SoundCounts map[string]int64 `json:"sound_counts"`
 }
 
 // ExplainVideoPayload is EXPLAIN_VIDEO request (WO-018).

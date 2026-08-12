@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Keel desktop host: native-messaging stdio bridge → SQLite.
+// Keel desktop host: native-messaging proxy + single local daemon owner.
 package main
 
 import (
@@ -54,6 +54,8 @@ func main() {
 			os.Exit(runInstall(os.Args[2:]))
 		case "uninstall":
 			os.Exit(runUninstall(os.Args[2:]))
+		case "owner":
+			os.Exit(runOwnerCommand(os.Args[2:]))
 		case "keys":
 			os.Exit(runKeys(os.Args[2:]))
 		case "bundle":
@@ -71,40 +73,7 @@ func main() {
 		}
 	}
 
-	dbPath := os.Getenv("KEEL_DB")
-	st, err := store.Open(dbPath)
-	if err != nil {
-		log.Fatalf("store open: %v", err)
-	}
-	defer st.Close()
-
-	// The swarm runs for the lifetime of the connection. Cancelling on return
-	// stops the announce loop and any in-flight prewarm.
-	//
-	// **Started in the background, and that is not an optimisation.** Bringing
-	// up libp2p bootstraps against the public DHT, which can be slow, blocked by
-	// a firewall, or simply unreachable. Doing that before the message loop
-	// meant the daemon did not answer HELLO until the network cooperated — so a
-	// machine with no route to the DHT recorded nothing at all, silently, and
-	// the panel reported an empty page.
-	//
-	// Everything local works with no network whatsoever (§2). Startup must
-	// never wait on a peer.
-	swarmCtx, stopSwarm := context.WithCancel(context.Background())
-	defer stopSwarm()
-	go startSwarm(swarmCtx, st)
-	defer func() {
-		if swarmNode != nil {
-			_ = swarmNode.Close()
-		}
-	}()
-
-	// Wrapped rather than passed raw: WO-069 moves slow handlers (SUGGEST) onto
-	// their own goroutine so they no longer block the single bridge thread, which
-	// means more than one goroutine can now be mid-write to stdout at once. A
-	// length-prefixed frame torn by an interleaved write is a corrupted stream,
-	// not just a corrupted message — every writer needs the same lock.
-	run(os.Stdin, &syncWriter{w: os.Stdout}, st)
+	os.Exit(runProxy())
 }
 
 // syncWriter serializes writes from multiple goroutines onto one underlying
@@ -121,6 +90,10 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 }
 
 func run(in io.Reader, out io.Writer, st *store.Store) {
+	runContext(context.Background(), in, out, st)
+}
+
+func runContext(ctx context.Context, in io.Reader, out io.Writer, st *store.Store) {
 	for {
 		raw, err := bridge.ReadMessage(in)
 		if err != nil {
@@ -131,13 +104,17 @@ func run(in io.Reader, out io.Writer, st *store.Store) {
 			// Framing errors on stdin are usually fatal for the stream.
 			return
 		}
-		if err := handleRaw(raw, out, st); err != nil {
+		if err := handleRawContext(ctx, raw, out, st); err != nil {
 			log.Printf("handle: %v", err)
 		}
 	}
 }
 
 func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
+	return handleRawContext(context.Background(), raw, out, st)
+}
+
+func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.Store) error {
 	env, err := bridge.ParseEnvelope(raw)
 	if err != nil {
 		log.Printf("drop malformed envelope: %v", err)
@@ -182,11 +159,13 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 	case "SEARCH":
 		return handleSearch(env, out, st)
 	case "PEER_SEARCH":
-		return handlePeerSearch(env, out, st)
+		return handlePeerSearchContext(ctx, env, out, st)
 	case "WORD_STATS":
-		return handleWordStats(env, out, st)
+		return handleWordStatsContext(ctx, env, out, st)
 	case "SUGGEST":
 		return handleSuggest(env, out, st)
+	case "SCROLL_HISTORY":
+		return handleScrollHistory(env, out, st)
 	case "EXPORT_BUNDLE":
 		return handleExportBundle(env, out, st)
 	case "IMPORT_BUNDLE":
@@ -228,10 +207,7 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		}
 		return reply(out, env.ID, "THUMBNAIL_RESULT", map[string]any{"video_id": p.VideoID, "data_url": url})
 	case "GET_CONTRIBUTION":
-		return reply(out, env.ID, "CONTRIBUTION_RESULT", map[string]any{
-			"level":           st.ContributionLevel(),
-			"max_implemented": store.MaxImplementedLevel,
-		})
+		return reply(out, env.ID, "CONTRIBUTION_RESULT", contributionPayload(supervisor.state(st)))
 	case "SET_CONTRIBUTION":
 		var p struct {
 			Level int `json:"level"`
@@ -239,14 +215,17 @@ func handleRaw(raw []byte, out io.Writer, st *store.Store) error {
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: "level required", Code: "bad_payload"})
 		}
-		lv, err := st.SetContributionLevel(p.Level)
+		// Reconfigures the running swarm, not just SQLite (WO-077). Returns
+		// the state either way: after a failed transition the effective level
+		// is the thing the user most needs to see, so an error still carries
+		// what is actually running rather than only a message.
+		state, err := supervisor.apply(context.Background(), st, p.Level)
 		if err != nil {
-			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: err.Error(), Code: "bad_level"})
+			return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+				Message: err.Error(), Code: "contribution_failed", Detail: contributionPayload(state),
+			})
 		}
-		return reply(out, env.ID, "CONTRIBUTION_RESULT", map[string]any{
-			"level":           lv,
-			"max_implemented": store.MaxImplementedLevel,
-		})
+		return reply(out, env.ID, "CONTRIBUTION_RESULT", contributionPayload(state))
 	case "GET_DISK_BUDGET":
 		used, items, err := st.CacheUsage()
 		if err != nil {
@@ -375,7 +354,11 @@ func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
 	if len(env.Payload) > 0 {
 		_ = json.Unmarshal(env.Payload, &p)
 	}
-	if swarmNode == nil || swarmNode.Live() == nil {
+	if networkBusy() {
+		return replyNetworkBusy(out, env.ID)
+	}
+	n := currentSwarmNode()
+	if n == nil || n.Live() == nil {
 		// The feed is available at every level, so this means the swarm itself
 		// did not start — no network, not a permission decision.
 		return reply(out, env.ID, "LIVE_RESULT", map[string]any{
@@ -384,7 +367,7 @@ func handleLiveSearch(env *bridge.Envelope, out io.Writer) error {
 			"reason":    "not connected to the network yet",
 		})
 	}
-	li := swarmNode.Live()
+	li := n.Live()
 	hits := li.Search(p.Query, p.Limit)
 	return reply(out, env.ID, "LIVE_RESULT", map[string]any{
 		"query": p.Query, "streams": hits, "indexed": li.Size(), "available": true,
@@ -557,6 +540,8 @@ Usually launched by the browser; not run by hand.
   keel-host install   -extension-id <id>[,<id>]  register with detected browsers
                       [-firefox-id keel@local] [-all] [-dry-run]
   keel-host uninstall [-dry-run]                 remove host manifests
+  keel-host owner status                         show whether the local owner runs
+  keel-host owner stop                           stop the local owner cleanly
 
   keel-host bundle export [-out FILE]            write your aggregated corpus
   keel-host bundle import FILE|URL                 merge someone else's bundle
@@ -606,6 +591,10 @@ const peerSearchTimeout = 6 * time.Second
 // itself (swarm/shard.go) rather than only here, since any caller benefits
 // from not walking dead fetches when there is nothing to fetch from.
 func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	return handlePeerSearchContext(context.Background(), env, out, st)
+}
+
+func handlePeerSearchContext(requestCtx context.Context, env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	var p bridge.SearchPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
@@ -613,7 +602,11 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 			Code:    "bad_payload",
 		})
 	}
-	if swarmNode == nil {
+	if networkBusy() {
+		return replyNetworkBusy(out, env.ID)
+	}
+	n := currentSwarmNode()
+	if n == nil {
 		// Mirrors handleLiveSearch: no swarm running means unavailable, not
 		// an empty result — the interface must not read this as "the network
 		// has nothing for this query."
@@ -625,9 +618,9 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), peerSearchTimeout)
+		ctx, cancel := context.WithTimeout(requestCtx, peerSearchTimeout)
 		defer cancel()
-		ids, progress, err := swarmNode.PeerSearch(ctx, p.Query)
+		ids, progress, err := n.PeerSearch(ctx, p.Query)
 		if err != nil {
 			_ = replyErr(out, env.ID, err)
 			return
@@ -653,6 +646,8 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 
 	select {
 	case <-done:
+	case <-requestCtx.Done():
+		return requestCtx.Err()
 	case <-time.After(peerSearchTimeout + time.Second):
 		// peerSearchTimeout already bounds PeerSearch's own ctx, so this
 		// should only fire if something downstream of it (TitlesFor, a slow
@@ -673,6 +668,10 @@ func handlePeerSearch(env *bridge.Envelope, out io.Writer, st *store.Store) erro
 // char-token coverage for the query. Display-only; never triggers a shard
 // or word-bucket fetch. Direct peer pack merge when the swarm is up.
 func handleWordStats(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	return handleWordStatsContext(context.Background(), env, out, st)
+}
+
+func handleWordStatsContext(requestCtx context.Context, env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	var p bridge.WordStatsPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
@@ -680,7 +679,11 @@ func handleWordStats(env *bridge.Envelope, out io.Writer, st *store.Store) error
 			Code:    "bad_payload",
 		})
 	}
-	if swarmNode == nil {
+	if networkBusy() {
+		return replyNetworkBusy(out, env.ID)
+	}
+	n := currentSwarmNode()
+	if n == nil {
 		// Local-only fallback so the UI can still show what this device has
 		// observed without implying the swarm answered.
 		local, err := st.LocalWordTelemetry(false)
@@ -689,9 +692,9 @@ func handleWordStats(env *bridge.Envelope, out io.Writer, st *store.Store) error
 		}
 		return reply(out, env.ID, "WORD_STATS_RESULT", wordStatsFromLocal(p.Query, local, st, false))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), peerSearchTimeout)
+	ctx, cancel := context.WithTimeout(requestCtx, peerSearchTimeout)
 	defer cancel()
-	ws, err := swarmNode.FetchWordStats(ctx, p.Query)
+	ws, err := n.FetchWordStats(ctx, p.Query)
 	if err != nil {
 		return replyErr(out, env.ID, err)
 	}
@@ -783,8 +786,8 @@ func handleSuggest(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 		// Hand the store whatever the swarm currently believes is live, so the
 		// walk can rank running streams first. Local LIVE badges cover the
 		// no-peers case on their own; this adds streams other people are seeing.
-		if swarmNode != nil && swarmNode.Live() != nil {
-			entries := swarmNode.Live().Search("", 5000)
+		if n := currentSwarmNode(); n != nil && n.Live() != nil {
+			entries := n.Live().Search("", 5000)
 			// The index deliberately keeps records for hours, so a stream can
 			// still be found after it ends. Promoting one to the top of the
 			// panel is a stronger claim than listing it, so only recent
@@ -877,6 +880,21 @@ func handleImportBundle(env *bridge.Envelope, out io.Writer, st *store.Store) er
 		})
 	}
 	return reply(out, env.ID, "IMPORT_BUNDLE_RESULT", res)
+}
+
+// handleScrollHistory returns consumed clips for the TikTok Mirror (WO-063).
+func handleScrollHistory(env *bridge.Envelope, out io.Writer, st *store.Store) error {
+	var p bridge.ScrollHistoryPayload
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: "invalid SCROLL_HISTORY payload", Code: "bad_payload",
+		})
+	}
+	res, err := st.ScrollHistory(p.Platform, p.Limit)
+	if err != nil {
+		return replyErr(out, env.ID, err)
+	}
+	return reply(out, env.ID, "SCROLL_HISTORY_RESULT", res)
 }
 
 func handlePeers(env *bridge.Envelope, out io.Writer, st *store.Store) error {

@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ipfs/go-cid"
@@ -127,25 +128,16 @@ type Config struct {
 	// version zero — an unset field must never make everyone else look newer.
 	AppVersion string
 
-	// Serve advertises this node's blocks and answers requests. False at
-	// contribution Level 1, which offers nothing.
-	Serve bool
-	// Fetch allows on-demand block requests to peers.
+	// Policy is the capability set this node runs with (WO-077).
 	//
-	// False at Level 1, and that is the whole of Level 1's promise: a request
-	// discloses to the peer answering it which video was asked about, so a node
-	// that never asks discloses nothing. Level 1 runs on the seed pack and its
-	// own recording, both of which involve no query. Turning this on is part of
-	// what a user accepts when moving to Level 2.
-	Fetch bool
-	// ServeOwnObservations includes this node's own edges in served blocks.
+	// It replaced three booleans (Serve/Fetch/ServeOwnObservations) whose
+	// coarseness was itself the bug: "serve" gated topic subscription and
+	// topic origination together, and "fetch" was off at Level 1, withholding
+	// peer search and pre-walk from every non-contributor. See policy.go.
 	//
-	// False is Level 2 — mirror and re-serve what came from other people,
-	// donating storage and bandwidth while disclosing nothing personal. True
-	// is Level 3 and above, where the user has opted into publishing what
-	// they were recommended. Getting this wrong publishes a funnel, so the
-	// choice is made once here and enforced by which builder runs.
-	ServeOwnObservations bool
+	// The zero value is the strictest possible policy — no live, no fetch, no
+	// service — so a Config built without one cannot accidentally serve.
+	Policy Policy
 	// ListenAddrs overrides the default listen set. Empty means all
 	// interfaces on an OS-assigned port, over both TCP and QUIC.
 	ListenAddrs []string
@@ -192,6 +184,77 @@ type Node struct {
 	live   *LiveIndex
 	yield  *YieldIndex
 	sketch *SketchIndex
+
+	// outbound gates everything this node offers to peers, independently of
+	// cfg.Policy, and can be shut in one atomic store (WO-077).
+	//
+	// A downgrade cannot wait for the replacement node: stopping a host takes
+	// long enough for in-flight and newly-arriving requests to be answered
+	// under the *old* policy, and a block served after the user chose Level 1
+	// is exactly the failure this ticket exists to prevent. So the supervisor
+	// shuts this first, synchronously, and only then tears the node down —
+	// every serve path, provider loop and three-gram publisher reads it.
+	//
+	// Open at construction. There is no reopen: a node whose gate has been
+	// shut is being replaced, never revived.
+	outbound atomic.Bool
+}
+
+// closeOutbound shuts this node's outbound permission gate.
+//
+// Idempotent and safe from any goroutine. After it returns, no handler,
+// provider loop or gossip publisher on this node will offer anything further,
+// though the host itself is still up until Close.
+func (n *Node) closeOutbound() { n.outbound.Store(false) }
+
+// CloseOutbound is the exported form used by the daemon's runtime supervisor
+// before it detaches and stops a node.
+func (n *Node) CloseOutbound() { n.closeOutbound() }
+
+// mayServeBlocks reports whether a block/catalogue/shard request may be
+// answered right now: the policy allows it and the gate is still open.
+func (n *Node) mayServeBlocks() bool {
+	return n.cfg.Policy.ServeMirrors && n.outbound.Load()
+}
+
+// mayAnnounce reports whether provider records may be published right now.
+func (n *Node) mayAnnounce() bool {
+	return n.cfg.Policy.AnnounceProviders && n.outbound.Load()
+}
+
+// mayGossipSearchTelemetry reports whether the three-gram yield/sketch topics
+// may be originated on right now. Subscription is decided once at Start;
+// this gates publication, which continues on a timer.
+func (n *Node) mayGossipSearchTelemetry() bool {
+	return n.cfg.Policy.JoinSearchTelemetry && n.outbound.Load()
+}
+
+// mayExchangeWordTelemetry reports whether the WO-068 word pack may be served.
+// Deliberately not tied to block service — see Policy.ExchangeWordTelemetry.
+func (n *Node) mayExchangeWordTelemetry() bool {
+	return n.cfg.Policy.ExchangeWordTelemetry && n.outbound.Load()
+}
+
+// Policy exposes the capability set this node was constructed with, so the
+// daemon can report the effective policy rather than the stored setting.
+func (n *Node) Policy() Policy { return n.cfg.Policy }
+
+// Serving reports whether this node would answer a block, catalogue or shard
+// request right now — policy and gate together.
+//
+// Reported rather than inferred from the level: after a downgrade the gate is
+// shut while the node is still being torn down, and during that window "what
+// level is stored" and "is this thing still serving" have different answers.
+// The second is the one a status display should show.
+func (n *Node) Serving() bool { return n.mayServeBlocks() }
+
+// newNode builds a Node with its outbound gate open. Every construction goes
+// through here so a node can never exist with the gate in its zero value
+// (shut), which would silently disable service on a serving node.
+func newNode(h host.Host, kdht *dht.IpfsDHT, st Store, cfg Config) *Node {
+	n := &Node{host: h, dht: kdht, st: st, cfg: cfg, inflight: map[string]chan struct{}{}}
+	n.outbound.Store(true)
+	return n
 }
 
 // newPubSub constructs the one gossipsub instance every gossip topic in this
@@ -263,7 +326,7 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		libp2p.EnableHolePunching(),
 		libp2p.EnableNATService(),
 	}
-	if cfg.Serve {
+	if cfg.Policy.ServeMirrors {
 		// A reachable node helps others punch through; an unreachable one
 		// cannot, so only offer this when serving is on anyway.
 		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(nil))
@@ -299,24 +362,29 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 	bootCtx, cancelBoot := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelBoot()
 	if err := kdht.Bootstrap(bootCtx); err != nil {
-		n := &Node{host: h, dht: kdht, st: st, cfg: cfg, inflight: map[string]chan struct{}{}}
+		n := newNode(h, kdht, st, cfg)
 		n.logf("dht bootstrap failed, continuing without discovery: %v", err)
 	}
 
-	n := &Node{host: h, dht: kdht, st: st, cfg: cfg, inflight: map[string]chan struct{}{}}
+	n := newNode(h, kdht, st, cfg)
 
-	if cfg.Serve {
+	if cfg.Policy.ServeMirrors {
 		h.SetStreamHandler(BlockProtocol, n.handleBlockRequest)
 		h.SetStreamHandler(CatalogueProtocol, n.handleCatalogueRequest)
 		h.SetStreamHandler(ShardProtocol, n.handleShardRequest)
-		// Word telemetry is display-only but still served only when this
-		// node offers anything at all — Level 1 stays silent on every stream.
-		h.SetStreamHandler(WordTelemetryProtocol, n.handleWordTelemetry)
 		// Relay service is cheap and makes the network work for people whose
 		// routers do not cooperate. Only serving nodes run it.
 		if _, err := relay.New(h); err != nil {
 			n.logf("relay service unavailable: %v", err)
 		}
+	}
+	// Registered independently of block service (WO-077): the word pack is a
+	// fixed-shape display aggregate with no plaintext words, ids, edges or
+	// query, and Level 1 answers it — including its own corpus, so the global
+	// statistic actually covers this node. Tying it to ServeMirrors made a
+	// Level-1 node silently absent from a statistic it was itself reading.
+	if cfg.Policy.ExchangeWordTelemetry {
+		h.SetStreamHandler(WordTelemetryProtocol, n.handleWordTelemetry)
 	}
 
 	if ps, err := newPubSub(ctx, h); err != nil {
@@ -328,18 +396,27 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 		n.ps = ps
 	}
 
-	if err := n.startLive(ctx); err != nil {
-		// The live index is additive: without it the rest of the node works.
-		n.logf("live index unavailable: %v", err)
+	if cfg.Policy.Live {
+		if err := n.startLive(ctx); err != nil {
+			// The live index is additive: without it the rest works.
+			n.logf("live index unavailable: %v", err)
+		}
 	}
-	if err := n.startYield(ctx); err != nil {
-		n.logf("yield gossip unavailable: %v", err)
-	}
-	if err := n.startSketch(ctx); err != nil {
-		n.logf("sketch gossip unavailable: %v", err)
+	// Three-gram topics exist to locate and size blocks *this* node serves, so
+	// a node that serves none must not join them at all — not merely decline
+	// to publish (WO-077). Both used to start unconditionally, which put every
+	// Level-1 node on two topics it had nothing to say on and made its
+	// participation visible to the mesh.
+	if cfg.Policy.JoinSearchTelemetry {
+		if err := n.startYield(ctx); err != nil {
+			n.logf("yield gossip unavailable: %v", err)
+		}
+		if err := n.startSketch(ctx); err != nil {
+			n.logf("sketch gossip unavailable: %v", err)
+		}
 	}
 
-	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Serve)
+	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Policy.ServeMirrors)
 	for _, a := range h.Addrs() {
 		n.logf("  listening on %s/p2p/%s", a, h.ID())
 	}
@@ -428,6 +505,12 @@ func (n *Node) prefixBits() int {
 // decoy traffic.
 func (n *Node) handleBlockRequest(s network.Stream) {
 	defer s.Close()
+	// Re-checked per request, not just at handler registration: a downgrade
+	// shuts the gate before the host stops, and requests keep arriving in
+	// that window (WO-077).
+	if !n.mayServeBlocks() {
+		return
+	}
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
 	line, err := bufio.NewReader(io.LimitReader(s, 256)).ReadString('\n')
@@ -439,7 +522,7 @@ func (n *Node) handleBlockRequest(s network.Stream) {
 		return
 	}
 
-	blocks, err := n.st.BlocksInPrefix(prefix, n.st.Cohort(), !n.cfg.ServeOwnObservations, maxBlocksPerReply)
+	blocks, err := n.st.BlocksInPrefix(prefix, n.st.Cohort(), n.cfg.Policy.MirrorOnly(), maxBlocksPerReply)
 	if err != nil {
 		n.logf("prefix %s: %v", prefix, err)
 		return
@@ -467,6 +550,9 @@ func trimLine(s string) string {
 // is what its user watched.
 func (n *Node) handleCatalogueRequest(s network.Stream) {
 	defer s.Close()
+	if !n.mayServeBlocks() {
+		return
+	}
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
 	line, err := bufio.NewReader(io.LimitReader(s, 256)).ReadString('\n')
@@ -477,7 +563,7 @@ func (n *Node) handleCatalogueRequest(s network.Stream) {
 	if prefix == "" {
 		return
 	}
-	pack, err := n.st.BuildCataloguePack(prefix, !n.cfg.ServeOwnObservations, maxCatalogueRows)
+	pack, err := n.st.BuildCataloguePack(prefix, n.cfg.Policy.MirrorOnly(), maxCatalogueRows)
 	if err != nil {
 		n.logf("catalogue %s: %v", prefix, err)
 		return
@@ -496,7 +582,7 @@ func (n *Node) handleCatalogueRequest(s network.Stream) {
 // block was wanted and undo the graph fetch's anonymity — the reason this takes
 // the full reply rather than a video id.
 func (n *Node) syncCatalogue(ctx context.Context, blocks []store.Block) {
-	if !n.cfg.Fetch || len(blocks) == 0 {
+	if !n.cfg.Policy.Fetch || len(blocks) == 0 {
 		return
 	}
 	ids := []string{}
@@ -575,10 +661,13 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 // Called periodically; DHT provider records expire, so re-announcing is how a
 // node stays findable. Silent no-op when not serving.
 func (n *Node) Announce(ctx context.Context) error {
-	if !n.cfg.Serve {
+	// Gate-aware, not just policy-aware: this runs on a 6-hour timer, so a
+	// downgrade must be able to stop the next tick from re-advertising a
+	// cache the user just withdrew (WO-077).
+	if !n.mayAnnounce() {
 		return nil
 	}
-	keys, err := n.st.LocalPrefixes(n.prefixBits(), !n.cfg.ServeOwnObservations)
+	keys, err := n.st.LocalPrefixes(n.prefixBits(), n.cfg.Policy.MirrorOnly())
 	if err != nil {
 		return err
 	}
@@ -603,7 +692,7 @@ func (n *Node) Announce(ctx context.Context) error {
 	// Catalogue buckets are announced separately, because the two datasets are
 	// held independently — a node can hold titles for videos whose graph it has
 	// evicted, and vice versa.
-	catKeys, err := n.st.LocalCataloguePrefixes(n.prefixBits(), !n.cfg.ServeOwnObservations)
+	catKeys, err := n.st.LocalCataloguePrefixes(n.prefixBits(), n.cfg.Policy.MirrorOnly())
 	if err != nil {
 		return err
 	}
@@ -627,7 +716,7 @@ func (n *Node) Announce(ctx context.Context) error {
 	// index and its shard index are recomputed from the same source but are
 	// their own namespace (shardCID, shard.go), so a shard fetch and a
 	// catalogue fetch for the same node never correlate.
-	shardKeys, err := n.st.LocalShards(!n.cfg.ServeOwnObservations)
+	shardKeys, err := n.st.LocalShards(n.cfg.Policy.MirrorOnly())
 	if err != nil {
 		return err
 	}
@@ -658,7 +747,7 @@ func (n *Node) Announce(ctx context.Context) error {
 // video simply means nobody holding it is online, which is the normal case for
 // the long tail.
 func (n *Node) Fetch(ctx context.Context, key string) (int64, error) {
-	if !n.cfg.Fetch {
+	if !n.cfg.Policy.Fetch {
 		// Level 1 asks nobody anything. Not a failure — the seed pack is
 		// expected to answer the common case, and a miss simply means this
 		// node works from what it already has.
@@ -824,6 +913,13 @@ func (n *Node) AddrInfo() peer.AddrInfo {
 // go straight back to it instead of paying a DHT round trip, and a bootstrap
 // peer is reachable before any provider record exists.
 func (n *Node) FetchFrom(ctx context.Context, p peer.AddrInfo, key string) (int64, error) {
+	// Gated like the discovery path. A direct dial is still a request, and a
+	// request still tells the peer answering it which bucket was asked about
+	// — skipping discovery does not skip the disclosure, so it must not skip
+	// the capability check either (WO-077).
+	if !n.cfg.Policy.Fetch {
+		return 0, fmt.Errorf("fetching is not enabled at this contribution level")
+	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 

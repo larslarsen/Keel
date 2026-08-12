@@ -20,14 +20,19 @@ import (
 //
 // A serving node here behaves as Level 3 — it serves its own observations —
 // because that is what most of these tests are exercising. The Level 2 mirror
-// boundary gets its own test, which sets ServeOwnObservations back to false.
+// boundary gets its own test, which sets PublishOwn back to false.
 func isolated(serve bool, t *testing.T) Config {
+	p := PolicyForLevel(store.LevelCohort)
+	if !serve {
+		p = PolicyForLevel(store.LevelPersonal)
+		// Most non-serving nodes in these tests are pure clients that still
+		// fetch; Level 1 already grants that since WO-077.
+	}
 	return Config{
-		Serve:                serve,
-		ServeOwnObservations: serve,
-		Bootstrap:            []peer.AddrInfo{},
-		ListenAddrs:          []string{"/ip4/127.0.0.1/tcp/0"},
-		Log:                  func(f string, a ...any) { t.Logf(f, a...) },
+		Policy:      p,
+		Bootstrap:   []peer.AddrInfo{},
+		ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
+		Log:         func(f string, a ...any) { t.Logf(f, a...) },
 	}
 }
 
@@ -212,7 +217,7 @@ func TestMirrorNodeDoesNotServeOwnObservations(t *testing.T) {
 	seed(t, mirror, "privateseed", "privatevid2", 1)
 
 	cfg := isolated(true, t)
-	cfg.ServeOwnObservations = false // Level 2
+	cfg.Policy.PublishOwn = false // Level 2
 	mNode, err := Start(ctx, mirror, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +291,7 @@ func TestCatalogueFetchLabelsFetchedGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cNode.Close()
-	cNode.cfg.Fetch = true // the catalogue path is gated with block fetching
+	cNode.cfg.Policy.Fetch = true // the catalogue path is gated with block fetching
 
 	before, err := client.SearchVideos("Title targetaaaa1", 10)
 	if err != nil {
@@ -320,7 +325,7 @@ func TestMirrorNodeServesNoOwnCatalogue(t *testing.T) {
 	seed(t, mirror, "privateseed", "privatevid1", 0)
 
 	cfg := isolated(true, t)
-	cfg.ServeOwnObservations = false // Level 2
+	cfg.Policy.PublishOwn = false // Level 2
 	mNode, err := Start(ctx, mirror, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -373,7 +378,7 @@ func TestFallsBackToRememberedPeers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	client.cfg.Fetch = true
+	client.cfg.Policy.Fetch = true
 
 	// A first, direct exchange — the kind that happens before an attack.
 	if _, err := client.FetchFrom(ctx, server.AddrInfo(), "seedaaaaaaa"); err != nil {
@@ -398,7 +403,7 @@ func TestFallsBackToRememberedPeers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer victim.Close()
-	victim.cfg.Fetch = true
+	victim.cfg.Policy.Fetch = true
 
 	edges, err := victim.Fetch(ctx, "seedaaaaaaa")
 	if err != nil {

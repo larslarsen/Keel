@@ -13,7 +13,9 @@ import (
 
 func sketchCfg(t *testing.T, serve bool) Config {
 	c := isolated(serve, t)
-	c.Fetch = true
+	c.Policy.Fetch = true
+	// Level-2 capability since WO-077 — see yieldCfg for why both ends need it.
+	c.Policy.JoinSearchTelemetry = true
 	return c
 }
 

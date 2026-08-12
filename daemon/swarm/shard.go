@@ -47,6 +47,9 @@ func shardCID(shard int) (cid.Cid, error) {
 // distinguished from a forged one when two peers disagree about a video.
 func (n *Node) handleShardRequest(s network.Stream) {
 	defer s.Close()
+	if !n.mayServeBlocks() {
+		return
+	}
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
 	line, err := bufio.NewReader(io.LimitReader(s, 32)).ReadString('\n')
@@ -57,7 +60,7 @@ func (n *Node) handleShardRequest(s network.Stream) {
 	if !ok {
 		return
 	}
-	pack, err := n.st.BuildShardPack(shard, !n.cfg.ServeOwnObservations, 0)
+	pack, err := n.st.BuildShardPack(shard, n.cfg.Policy.MirrorOnly(), 0)
 	if err != nil {
 		n.logf("shard %d: %v", shard, err)
 		return
@@ -209,7 +212,7 @@ func resolveShardEntries(entries []store.ShardEntry, token string, signed bool,
 // worth recording.
 func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]string, error) {
 	out := map[string][]string{}
-	if !n.cfg.Fetch {
+	if !n.cfg.Policy.Fetch {
 		return out, nil
 	}
 	shard := store.ShardOf(token)

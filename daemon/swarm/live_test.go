@@ -41,7 +41,10 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func liveCfg(t *testing.T, serve bool) Config {
 	c := isolated(serve, t)
-	c.Fetch = true // subscribing is gated on Fetch; Level 1 holds no index
+	// Live is its own capability and is on at every level (WO-077), so there
+	// is nothing to force on here. It used to be reached via Fetch, which is
+	// why this helper existed at all.
+	c.Policy.Live = true
 	return c
 }
 

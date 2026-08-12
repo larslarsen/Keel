@@ -52,7 +52,19 @@ const (
 	// identifiable. Not implemented.
 	LevelTransparency = 4
 
+	// metaContributionKey holds stored_level: the user's persisted choice.
 	metaContributionKey = "contribution_level"
+	// metaStartupLevelKey holds startup_level: the highest policy a fresh
+	// process may construct (WO-077).
+	//
+	// It exists because an upgrade is two steps — persist the choice, then
+	// make it effective — and a crash between them must not be resolved by
+	// escalating. During an upgrade this stays at the last level that was
+	// actually running, so a restart reconstructs that, reports the mismatch,
+	// and waits for the user rather than silently completing a transition
+	// they never saw succeed. On downgrade both move together, in one
+	// transaction, before the higher-level node is torn down.
+	metaStartupLevelKey = "contribution_startup_level"
 )
 
 // MaxImplementedLevel is the highest level that actually does anything.
@@ -84,13 +96,8 @@ func (s *Store) ContributionLevel() int {
 // Rejects levels whose pipeline does not exist rather than storing an
 // aspiration — a stored 2 with no STAR client is a setting that lies.
 func (s *Store) SetContributionLevel(level int) (int, error) {
-	if level < LevelPersonal || level > LevelTransparency {
-		return 0, fmt.Errorf("contribution level must be 1, 2, 3 or 4")
-	}
-	if level > MaxImplementedLevel {
-		return 0, fmt.Errorf(
-			"level %d is not available yet: Keel cannot send anything, so selecting it would change nothing",
-			level)
+	if err := ValidateContributionLevel(level); err != nil {
+		return 0, err
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO meta(key, value) VALUES(?, ?)
@@ -99,4 +106,85 @@ func (s *Store) SetContributionLevel(level int) (int, error) {
 		return 0, err
 	}
 	return level, nil
+}
+
+// ValidateContributionLevel reports whether a level may be selected at all.
+func ValidateContributionLevel(level int) error {
+	if level < LevelPersonal || level > LevelTransparency {
+		return fmt.Errorf("contribution level must be 1, 2, 3 or 4")
+	}
+	if level > MaxImplementedLevel {
+		return fmt.Errorf(
+			"level %d is not available yet: Keel cannot send anything, so selecting it would change nothing",
+			level)
+	}
+	return nil
+}
+
+// StartupLevel returns the highest policy a fresh process may construct.
+//
+// Defaults to the stored level when absent, which is the migration path for a
+// database written before WO-077 split the two: a node that has only ever had
+// one value has, by definition, never been mid-transition.
+//
+// Clamped to the stored level on read. A startup level above the stored one
+// can only come from corruption or a partly-applied downgrade, and in both
+// cases the safe reading is the user's choice, not the leftover.
+func (s *Store) StartupLevel() int {
+	stored := s.ContributionLevel()
+	var v string
+	if err := s.db.QueryRow(
+		`SELECT value FROM meta WHERE key = ?`, metaStartupLevelKey).Scan(&v); err != nil {
+		return stored
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < LevelPersonal || n > LevelTransparency {
+		return LevelPersonal
+	}
+	if n > stored {
+		return stored
+	}
+	return n
+}
+
+// SetStartupLevel commits the highest reconstructable policy on its own.
+//
+// Used to raise the startup level *after* an upgrade is effective, which is
+// the commit point that makes the new policy survive a restart.
+func (s *Store) SetStartupLevel(level int) error {
+	if err := ValidateContributionLevel(level); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO meta(key, value) VALUES(?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		metaStartupLevelKey, strconv.Itoa(level))
+	return err
+}
+
+// SetContributionAndStartupLevel moves both values together, atomically.
+//
+// This is the downgrade path and it must be one transaction: a crash that
+// left stored=1 with startup=2 would reconstruct a Level-2 node for a user
+// who had chosen Level 1 — the exact failure the two-value scheme exists to
+// prevent. Going down, there is no window where the higher level is still
+// reconstructable.
+func (s *Store) SetContributionAndStartupLevel(level int) error {
+	if err := ValidateContributionLevel(level); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, key := range []string{metaContributionKey, metaStartupLevelKey} {
+		if _, err := tx.Exec(
+			`INSERT INTO meta(key, value) VALUES(?, ?)
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			key, strconv.Itoa(level)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
