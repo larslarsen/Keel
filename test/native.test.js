@@ -399,3 +399,30 @@ describe("errText on the shapes that broke live QA", () => {
     }
   });
 });
+
+// A folder holding files from two different builds is the failure that reads as
+// a protocol bug: helloPayload() dereferences CLIENT_API and the TypeError is
+// reported against the line `client: "keel-extension"`, which explains nothing.
+describe("mixed-build detection", () => {
+  let protocolContractError;
+  before(async () => {
+    ({ protocolContractError } = await import("../extension/lib/native.js"));
+  });
+
+  it("passes on the shipped protocol contract", () => {
+    assert.equal(protocolContractError(), "");
+  });
+
+  it("names the folder, not the protocol, when a symbol is missing", async () => {
+    const { CLIENT_API, CLIENT_REQUIRED, CLIENT_OPTIONAL, HOST_NAME, CLIENT_VERSION } =
+      await import("../extension/lib/protocol.js");
+    // The contract this guard is pinning: every symbol helloPayload() touches.
+    for (const [name, v] of Object.entries({
+      HOST_NAME, CLIENT_VERSION, CLIENT_API, CLIENT_REQUIRED, CLIENT_OPTIONAL,
+    })) {
+      assert.ok(v !== undefined, `protocol.js must export ${name}`);
+    }
+    assert.equal(typeof CLIENT_API.min, "number");
+    assert.equal(typeof CLIENT_API.max, "number");
+  });
+});

@@ -205,6 +205,17 @@ describe("no [object Object] hazards in the extension", () => {
     { re: /\?\.message\s*\|\|\s*(err|e)\b/, why: "use errText(err) — this falls through to the raw object" },
     { re: /String\((err|e)\)/, why: "use errText(err) — String() on an object yields [object Object]" },
     { re: /\.message\s*\|\|\s*String\(/, why: "use errText(err)" },
+    // The other half of the bug: not an idiom, just handing the object over.
+    // console and the extension error list stringify every argument.
+    {
+      re: /console\.(error|warn|log|info)\([^)]*,\s*(err|e|error|ex)\s*\)/,
+      why: "wrap it: console.error(LOG, errText(err)) — a bare object logs as [object Object]",
+    },
+    {
+      re: /\blog\(\s*"[^"]*"\s*,\s*(err|e|error|ex)\s*\)/,
+      why: "wrap it: log(\"label\", errText(err))",
+    },
+    { re: /\$\{\s*(err|e|error|ex)\s*\}/, why: "use ${errText(err)}" },
   ];
 
   it("uses errText everywhere an error can reach a string", async () => {
@@ -222,7 +233,9 @@ describe("no [object Object] hazards in the extension", () => {
 
     const found = [];
     for (const f of files) {
-      if (f.endsWith("lib/errors.js")) continue; // documents the idiom it bans
+      // errors.js documents the idiom it bans; bootstrap.js is a classic
+      // content script that cannot import it and formats inline instead.
+      if (f.endsWith("lib/errors.js") || f.endsWith("content/bootstrap.js")) continue;
       const src = readFileSync(f, "utf8");
       src.split("\n").forEach((line, i) => {
         if (line.trimStart().startsWith("*") || line.trimStart().startsWith("//")) return;

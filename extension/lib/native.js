@@ -17,6 +17,38 @@ import {
 const LOG = "[Keel native]";
 const ALARM_NAME = "keel-native-reconnect";
 
+/**
+ * Detect an extension folder holding files from two different builds.
+ *
+ * Extracting a new release over an existing folder leaves a mixture: this file
+ * can be new while protocol.js is old, and then CLIENT_API or CLIENT_REQUIRED
+ * is simply `undefined`. What that produces is a TypeError inside
+ * helloPayload(), reported against the line `client: "keel-extension"` — an
+ * object literal, which tells the reader nothing at all about the real cause
+ * and sends them looking at protocol negotiation instead of at their own
+ * folder.
+ *
+ * Checked up front so the report names the cause and the fix.
+ *
+ * @returns {string} empty when the contract is intact
+ */
+export function protocolContractError() {
+  const missing = [];
+  if (!HOST_NAME) missing.push("HOST_NAME");
+  if (!CLIENT_VERSION) missing.push("CLIENT_VERSION");
+  if (!CLIENT_API || typeof CLIENT_API.min !== "number" || typeof CLIENT_API.max !== "number") {
+    missing.push("CLIENT_API");
+  }
+  if (!CLIENT_REQUIRED || typeof CLIENT_REQUIRED !== "object") missing.push("CLIENT_REQUIRED");
+  if (!CLIENT_OPTIONAL || typeof CLIENT_OPTIONAL !== "object") missing.push("CLIENT_OPTIONAL");
+  if (!missing.length) return "";
+  return (
+    `lib/protocol.js is missing ${missing.join(", ")} — this extension folder ` +
+    "holds files from two different builds. Delete the folder and extract " +
+    "keel-extension.zip into an empty one, then reload the extension."
+  );
+}
+
 /** Chrome alarms min practical delay ~30s; first retries use 0.5 min. */
 const RECONNECT_DELAY_MIN = 0.5;
 
@@ -79,6 +111,8 @@ export function createNativeBridge(hooks) {
   function helloPayload() {
     return {
       client: "keel-extension",
+      // If you are reading this line in an error report, the throw is on the
+      // next few: see protocolContractError.
       client_version: CLIENT_VERSION,
       version: CLIENT_VERSION,
       api: { min: CLIENT_API.min, max: CLIENT_API.max },
@@ -124,7 +158,7 @@ export function createNativeBridge(hooks) {
   function onMessage(msg) {
     const v = validateEnvelope(msg);
     if (!v.ok) {
-      console.error(LOG, "drop bad envelope", v.error);
+      console.error(LOG, "drop bad envelope", errText(v.error));
       return;
     }
     const env = v.value;
@@ -142,6 +176,16 @@ export function createNativeBridge(hooks) {
   }
 
   function connect() {
+    // A mixed-build folder cannot be fixed by retrying, so say what is wrong
+    // and stop rather than reconnecting forever against a broken contract.
+    const contract = protocolContractError();
+    if (contract) {
+      console.error(LOG, contract);
+      helloOk = false;
+      capabilities = Object.create(null);
+      hooks.onStatus(false, contract, { code: "mixed_build", incompatible: true });
+      return;
+    }
     clearReconnectAlarm();
     if (port) {
       try {

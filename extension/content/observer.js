@@ -319,7 +319,7 @@ function schedule() {
     try {
       await observeDom();
     } catch (e) {
-      console.warn(LOG, e);
+      console.warn(LOG, errText(e));
     } finally {
       scanning = false;
       // If mutations arrived during the scan, schedule another pass
@@ -450,7 +450,7 @@ async function onNavigate({ force = false } = {}) {
 
 function listenSpa() {
   document.addEventListener("yt-navigate-finish", () => {
-    onNavigate().catch((e) => console.warn(LOG, e));
+    onNavigate().catch((e) => console.warn(LOG, errText(e)));
   });
   const wrap = (method) => {
     const orig = history[method];
@@ -602,4 +602,4 @@ async function start() {
   console.info(LOG, "observer armed");
 }
 
-start().catch((e) => console.error(LOG, e));
+start().catch((e) => console.error(LOG, errText(e)));
