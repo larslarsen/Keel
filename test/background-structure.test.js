@@ -234,3 +234,82 @@ describe("no [object Object] hazards in the extension", () => {
     assert.deepEqual(found, [], `\n${found.join("\n")}`);
   });
 });
+
+// A content script's imports are fetched by the *page*, not by the extension,
+// so every file in a content script's transitive closure has to be listed in
+// web_accessible_resources. Miss one and there is no error anywhere a user can
+// see: the import rejects, the content script dies, no PAGE_CONTEXT is ever
+// sent, and clicking the toolbar button does nothing at all.
+//
+// That is exactly what adding lib/errors.js to lib/browser.js did — browser.js
+// is in every content script's closure, so one unlisted file took out the whole
+// extension on every page, and nothing in this suite noticed: every other test
+// imports modules directly and never crosses the web-accessible boundary.
+//
+// The roots have to include the getURL() entry points as well as the declared
+// content_scripts. bootstrap.js loads the observer with
+// import(runtime.getURL("content/observer.js")) — a computed specifier that no
+// static import walk can follow, so seeding from content_scripts alone makes
+// this check pass while proving nothing.
+describe("content-script closure is web accessible", () => {
+  const MANIFESTS = ["manifest.chrome.json", "manifest.firefox.json"];
+
+  /** Extension-root-relative paths named in runtime.getURL("...") calls. */
+  function getURLTargets(relPath) {
+    const src = source.get(relPath) || "";
+    const out = [];
+    const re = /getURL\(\s*["']([^"']+)["']\s*\)/g;
+    let m;
+    while ((m = re.exec(src))) if (source.has(m[1])) out.push(m[1]);
+    return out;
+  }
+
+  function closure(roots) {
+    const seen = new Set();
+    const stack = [...roots];
+    while (stack.length) {
+      const f = stack.pop();
+      if (!f || seen.has(f)) continue;
+      seen.add(f);
+      for (const dep of importsOf(f)) stack.push(dep);
+      for (const dep of getURLTargets(f)) stack.push(dep);
+    }
+    return seen;
+  }
+
+  for (const name of MANIFESTS) {
+    it(`${name} lists every file a content script pulls in`, () => {
+      const manifest = JSON.parse(readFileSync(join(extRoot, name), "utf8"));
+      const entries = (manifest.content_scripts || []).flatMap((cs) => cs.js || []);
+      assert.ok(entries.length, "no content_scripts declared");
+
+      const listed = new Set(
+        (manifest.web_accessible_resources || []).flatMap((w) => w.resources || []),
+      );
+      // Seed from the declared entries AND from what is already published:
+      // those listed .js files are the dynamic entry points bootstrap reaches.
+      const roots = [...entries, ...[...listed].filter((f) => f.endsWith(".js"))];
+      // Only the injected entry script is exempt; the browser loads it directly.
+      const needed = [...closure(roots)].filter((f) => !entries.includes(f)).sort();
+      const missing = needed.filter((f) => !listed.has(f));
+      assert.deepEqual(
+        missing,
+        [],
+        `not in web_accessible_resources — the content script will fail to load:\n  ${missing.join("\n  ")}`,
+      );
+    });
+  }
+
+  it("actually fails when an imported file is unlisted", () => {
+    // A guard that cannot fail is worse than none: this one silently passed
+    // until the getURL roots were added.
+    const manifest = JSON.parse(readFileSync(join(extRoot, "manifest.chrome.json"), "utf8"));
+    const listed = new Set(
+      (manifest.web_accessible_resources || []).flatMap((w) => w.resources || []),
+    );
+    const roots = [...listed].filter((f) => f.endsWith(".js"));
+    const reached = closure(roots);
+    assert.ok(reached.has("lib/errors.js"), "closure does not reach lib/errors.js");
+    assert.ok(reached.has("lib/browser.js"), "closure does not reach lib/browser.js");
+  });
+});

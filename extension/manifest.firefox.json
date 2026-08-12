@@ -35,6 +35,7 @@
         "lib/selectors.js",
         "lib/prefs.js",
         "lib/browser.js",
+        "lib/errors.js",
         "lib/protocol.js"
       ],
       "matches": [
