@@ -426,3 +426,59 @@ describe("mixed-build detection", () => {
     assert.equal(typeof CLIENT_API.max, "number");
   });
 });
+
+// The proxy reports why it could not start — owner_paths, owner_secret,
+// owner_unavailable — as an ERROR envelope with id "0" and then exits. Nothing
+// is waiting on that id, so it was logged and dropped, and the disconnect a
+// millisecond later replaced the status with "not running". Hours of live QA
+// went into guessing at a cause the daemon had already stated.
+describe("a startup ERROR from the host reaches the panel", () => {
+  it("shows the host's reason instead of \"not running\"", async () => {
+    state = freshState();
+    installStub();
+    const seen = [];
+    const bridge = createNativeBridge({
+      onStatus: (ok, detail) => seen.push([ok, detail]),
+      onMessage: () => {},
+    });
+    bridge.connect();
+    const port = state.ports.at(-1);
+
+    port._onMessage({
+      v: 2,
+      id: "0",
+      type: "ERROR",
+      payload: { code: "owner_unavailable", message: "owner did not start within 5s" },
+    });
+    // The host exits immediately after saying that.
+    globalThis.browser.runtime.lastError = { message: "Native host has exited." };
+    port._onDisconnect();
+
+    const detail = seen.at(-1)[1];
+    assert.match(detail, /owner_unavailable/);
+    assert.match(detail, /owner did not start/);
+    assert.notEqual(detail, "not running");
+  });
+
+  it("does not hijack a reply to a real request", async () => {
+    state = freshState();
+    installStub();
+    const seen = [];
+    const bridge = createNativeBridge({
+      onStatus: (ok, detail) => seen.push([ok, detail]),
+      onMessage: () => {},
+    });
+    bridge.connect();
+    const port = state.ports.at(-1);
+    port._onMessage({
+      v: 2, id: "1", type: "HELLO_ACK",
+      payload: { compatible: true, capabilities: { core: 1 } },
+    });
+    const before = seen.length;
+    const p = bridge.request("STATS", {});
+    const id = port._sent.at(-1).id;
+    port._onMessage({ v: 2, id, type: "ERROR", payload: { code: "x", message: "per-request" } });
+    await p;
+    assert.equal(seen.length, before, "a request's own ERROR changed the connection status");
+  });
+});

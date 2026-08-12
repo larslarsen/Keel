@@ -63,6 +63,18 @@ export function createNativeBridge(hooks) {
   let capabilities = Object.create(null);
   /** @type {{ code?: string, reason?: string } | null} */
   let lastHelloFailure = null;
+  /**
+   * The last thing the host said before it went away.
+   *
+   * The proxy reports why it could not start — owner_paths, owner_secret,
+   * owner_unavailable — as an ERROR envelope with id "0", then exits. Nothing is
+   * waiting on that id, so it used to be logged and dropped, and the disconnect
+   * that followed a millisecond later replaced the status with "not running".
+   * The one message that explains the failure was discarded, every time, and
+   * the panel showed the least informative sentence available.
+   * @type {string}
+   */
+  let lastHostError = "";
   /** @type {Map<string, { resolve: Function, reject: Function, t: ReturnType<typeof setTimeout> }>} */
   const pending = new Map();
 
@@ -127,6 +139,7 @@ export function createNativeBridge(hooks) {
     if (compatible) {
       helloOk = true;
       lastHelloFailure = null;
+      lastHostError = "";
       capabilities = Object.create(null);
       const caps = p.capabilities && typeof p.capabilities === "object" ? p.capabilities : {};
       for (const [k, v] of Object.entries(caps)) {
@@ -165,7 +178,19 @@ export function createNativeBridge(hooks) {
     if (env.type === "HELLO_ACK") {
       applyHelloAck(env.payload);
     }
-    if (env.type === "ERROR") console.error(LOG, "ERROR", errText(env.payload));
+    if (env.type === "ERROR") {
+      const detail = errText(env.payload);
+      console.error(LOG, "ERROR", detail);
+      // An ERROR nobody asked for is the host explaining why it is about to
+      // exit. Show it: it is the only account of the failure that exists.
+      if (!pending.has(env.id)) {
+        lastHostError = detail;
+        helloOk = false;
+        hooks.onStatus(false, detail, {
+          code: (env.payload && env.payload.code) || "host_error",
+        });
+      }
+    }
     const w = pending.get(env.id);
     if (w) {
       pending.delete(env.id);
@@ -216,7 +241,9 @@ export function createNativeBridge(hooks) {
       port = null;
       helloOk = false;
       capabilities = Object.create(null);
-      hooks.onStatus(false, err?.message || "not running");
+      // A startup ERROR the host already sent outranks both of these: it says
+      // WHY it exited, where lastError only says that it did.
+      hooks.onStatus(false, lastHostError || err?.message || "not running");
       rejectPending("disconnected");
       scheduleReconnect();
     });
