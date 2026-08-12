@@ -78,16 +78,14 @@ func main() {
 // launches this binary with the caller's origin as argv[1], so generic flag
 // parsing would misread a normal native-messaging start.
 //
-// On Windows, no arguments at all means install (WO-091). That is the
-// double-click, and it is the only install route available to someone who
-// cannot open a terminal. A browser always passes its origin or manifest path,
-// so a native-messaging launch still has arguments and still becomes a proxy —
-// installing can never happen underneath a running browser.
+// No arguments means proxy mode on every platform, including Windows.
+//
+// WO-091 asked for a no-argument Windows invocation to install, so that the
+// install could be a double-click. That is reverted at the owner's direction:
+// installing is an explicit `install` subcommand and nothing else, so running
+// this binary can never silently rewrite registration.
 func dispatch(goos string, args []string) (cmd string, rest []string) {
 	if len(args) == 0 {
-		if goos == "windows" {
-			return "install", nil
-		}
 		return "", nil
 	}
 	switch name := strings.TrimLeft(args[0], "-"); name {
@@ -745,7 +743,6 @@ func usage() {
 	fmt.Print(`keel-host — Keel desktop host
 
 Usually launched by the browser; not run by hand.
-On Windows, running it with no arguments installs (that is the double-click).
 
   keel-host install   -extension-id <id>[,<id>]  register with detected browsers
                       [-firefox-id keel@local] [-all] [-dry-run]

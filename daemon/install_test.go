@@ -176,7 +176,9 @@ func TestDispatch(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"windows double-click installs", "windows", nil, "install"},
+		// Reverted at the owner's direction: no argument is proxy mode on every
+		// platform. Installing is only ever the explicit subcommand.
+		{"windows no argument proxies", "windows", nil, ""},
 		{"windows browser launch proxies", "windows",
 			[]string{"chrome-extension://" + DefaultExtensionID + "/"}, ""},
 		{"windows chrome parent-window handle proxies", "windows",

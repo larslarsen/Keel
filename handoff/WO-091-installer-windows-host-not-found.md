@@ -68,9 +68,10 @@ If it remains after registration is valid, file a separate runtime order.
 
 ### 2. Make Windows installation type-free
 
-- On Windows only, an invocation with no arguments must perform the equivalent
-  of installing for all supported browsers. This is the Explorer/double-click
-  path.
+- ~~On Windows only, an invocation with no arguments must perform the equivalent
+  of installing for all supported browsers.~~ **Withdrawn by the owner after
+  implementation.** Running the binary must never install as a side effect;
+  `keel-host.exe install -all` is the Windows route.
 - Preserve native-messaging launches: browsers pass their origin/extension
   argument, so an invocation with browser arguments must continue into
   `runProxy()` and must never reinstall.
@@ -140,9 +141,12 @@ If it remains after registration is valid, file a separate runtime order.
       output directory did not previously exist.
       `TestWindowsPlanRegistersEveryBrowserOnAFreshMachine`; Windows targets
       carry no `detect` directory at all, so there is nothing left to mis-detect.
-- [x] No-argument Windows dispatch selects install; a simulated browser launch
-      with an origin argument selects proxy mode. `TestDispatch`, including the
-      Chromium `--parent-window` and Firefox manifest-path launch forms.
+- [ ] **Withdrawn by the owner.** §2's type-free install is reverted: a
+      no-argument invocation is proxy mode on every platform, and installing is
+      only ever the explicit `install` subcommand, so running the binary can
+      never rewrite registration as a side effect. `TestDispatch` pins that,
+      including the Chromium `--parent-window` and Firefox manifest-path launch
+      forms. `install -all` is the supported Windows route.
 - [x] Registry add/query success, missing-key, wrong-value, and command-failure
       cases are tested through the injected runner; every invalid result makes
       installation fail. `TestRegistryInstallFailsClosed`, plus localized

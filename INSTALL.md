@@ -37,9 +37,9 @@ If a release is available, download the desktop app instead of building it:
    (click it in File Explorer and press Delete, or run
    `rd /s /q "%USERPROFILE%\Downloads\keel-extension"`) and extract fresh.
 3. Put the desktop app next to the unzipped folder and install it:
-   - **Windows — just double-click `keel-host-windows-amd64.exe`.** No terminal.
-     Running it with no arguments *is* the install. A window may flash and
-     close; that is expected, and the result is written to a file (below).
+   - **Windows** — open a Command Prompt in that folder and run
+     `keel-host-windows-amd64.exe install -all`. The result is also written to
+     `install-report.txt` beside the app.
    - **Mac** — open a terminal in that folder and run it with `install`
      (Step 3 below has the exact command).
 4. Load the extension folder as described in Step 4.
@@ -131,14 +131,14 @@ are seconds. When it finishes it prints nothing at all — that is success.
 
 ## Step 3 — Connect it to your browser
 
-**Windows:** double-click `keel-host.exe` in File Explorer, or from PowerShell:
+**Windows:**
 
 ```powershell
-.\keel-host.exe install
+.\keel-host.exe install -all
 ```
 
-Both do the same thing. On Windows the result is also written to
-`install-report.txt` beside the app, so you do not have to read the console.
+The result is also written to `install-report.txt` beside the app, so you do
+not have to read the console.
 
 **macOS / Linux:**
 
@@ -234,8 +234,7 @@ Your recordings are kept — updating never touches them.
 ## If something goes wrong
 
 **The panel says the desktop app is not connected.**
-Run the install command from Step 3 again (on Windows, double-click the app),
-then reload the extension from the extensions page. The browser only looks for
+Run the install command from Step 3 again, then reload the extension from the extensions page. The browser only looks for
 the desktop app when the extension loads.
 
 On Windows, open `install-report.txt` beside the app first. If it ends in
