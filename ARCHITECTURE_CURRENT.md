@@ -319,23 +319,36 @@ that initiated the change.
 
 ## 7. Extension module boundaries
 
-Plain ES modules only. The target is for the service worker to be the
-composition root and own no feature logic beyond wiring browser events to
-modules. WO-080 has extracted the pure tab-proof store; the rest of this table
-is the unimplemented WO-083 boundary.
+Plain ES modules only. The service worker is the composition root and owns no
+feature logic beyond wiring browser events to modules. Implemented by WO-083
+(WO-080 having supplied the pure tab-proof store first, so the correct state was
+extracted rather than the global defect).
 
-Target boundaries:
+Boundaries:
 
 | Module | Owns |
 |---|---|
 | `lib/native.js` | Native bridge connection, HELLO negotiation, pending requests and reconnect. |
 | `background/page_proofs.js` | Pure tab-keyed proof store and bounded lifecycle operations. No browser APIs. |
-| `background/panel_context.js` | Active-tab/window lookup, panel enable/close policy and context broadcasts. |
+| `background/panel_context.js` | Active-tab/window lookup, panel enable/close policy, panel-port bookkeeping and context broadcasts. |
 | `background/prefs.js` | Browser-storage adapter for hide and observation-consent preferences only. |
-| `background/rpc.js` | Validated extension-message dispatch and daemon capability gates. |
+| `background/rpc.js` | Validated extension-message dispatch, daemon capability gates and the bounded disconnected-impression buffer. |
 | `background/sw.js` | Instantiate modules; register listeners; connect dependencies. |
+| `lib/render.js` | Escaping and formatting identical across both surfaces. |
 | `sidepanel/render.js`, `page/render.js` | Escaped DOM rendering helpers without transport state. |
 | Existing surface controllers | User interactions and calls into rendering/RPC helpers. |
+
+Each module is a factory taking explicit dependencies and receives a *slice* of
+the browser API, not the whole adapter. That is what makes §2.1 checkable rather
+than merely asserted: only `background/prefs.js` is handed storage, so no other
+part of the control plane can put observation data there even by mistake.
+`test/background-structure.test.js` enforces the slice rule, the absence of
+import cycles, the absence of a command switch in `sw.js`, and — extension-wide,
+beyond the control plane — that nothing writes any storage key but the two known
+preferences. Two surfaces outside the control plane still read storage directly
+and deliberately: `content/hide.js` (hide mode, before first paint) and
+`sidepanel/index.js` (consent, for its banner). Both read a user preference,
+never an observation; see WO-083's recorded boundary adjustments.
 
 No framework, dependency, bundler, TypeScript or generated code is introduced.
 WO-080's tab-proof model lands before the split so the global is not merely
@@ -367,8 +380,12 @@ negotiates `1` is pre-WO-085 and leaves the control enabled, while the daemon
 enforces regardless of the negotiated revision. Serving limits
 (`daemon/swarm/limits.go`) bound concurrency, per-peer request rate and served
 bytes on every serve path at every level, independently of contribution.
-The remaining architecture-review implementation gaps are the service worker's
-unsplit control plane (WO-083) and one WO-081 UI defect (WO-088).
+WO-088 made capability-gated controls stay visible and disabled rather than
+vanishing. WO-083 split the service worker's control plane into the module
+boundaries §7 now describes, with the structural rules enforced by test rather
+than by convention. Every architecture-review implementation gap identified in
+the 2026-08-11/12 passes is now closed; what remains is live QA (below) and
+WO-082's final consistency audit.
 
 Senior-development order:
 
@@ -382,11 +399,15 @@ Senior-development order:
 5. ~~WO-080 — make proofs tab-scoped.~~ Implemented; multi-tab live QA remains.
 6. ~~WO-085 — enforce reciprocal Level-2 distributed peer search.~~ Implemented,
    including the per-node serving limits, which are independent of level.
-7. WO-088 — keep unavailable capability controls visible and disabled.
-8. WO-083 — split the extension control plane after state ownership is correct.
-9. WO-082 — complete this final consistency audit after WO-085/088/083; the
-   2026-08-12 pass reconciled implemented WO-080/081/084 state and user-facing
-   Level-2 disclosure but deliberately left the two real gaps open.
+7. ~~WO-088 — keep unavailable capability controls visible and disabled.~~
+   Implemented.
+8. ~~WO-083 — split the extension control plane after state ownership is
+   correct.~~ Implemented; `sw.js` is 373 lines of wiring with no command
+   switch, and `test/background-structure.test.js` keeps it that way.
+9. WO-082 — complete this final consistency audit now that WO-085/088/083 have
+   landed. The 2026-08-12 pass reconciled implemented WO-080/081/084 state and
+   user-facing Level-2 disclosure while the code gaps were still open; those
+   gaps are closed, so the audit can now be closed against the real tree.
 
 Do not publish or recruit external testers from a build whose displayed
 contribution level differs from its effective graph-sharing policy.

@@ -4,15 +4,22 @@ Updated 2026-08-12.
 
 ## Current stabilization queue
 
-The normative architecture is `ARCHITECTURE_CURRENT.md`. WO-077–081, WO-084 and
-WO-085 are implemented; WO-080 still needs multi-tab live QA, WO-079 still needs
-Windows live QA, WO-084 still needs its two-machine inspection, and WO-085's
-serving limits still want a two-machine load check against a real uplink. The
-remaining implementation order is WO-088 (keep unavailable capability controls
-visible and disabled), then WO-083 (extension module split), then completion of
-WO-082's final audit.
-The 2026-08-12 WO-082 pass reconciled the already-shipped architecture but did
-not pretend the remaining code orders had landed.
+The normative architecture is `ARCHITECTURE_CURRENT.md`. Every code order from
+the architecture review has landed: WO-077–081, WO-083, WO-084, WO-085 and
+WO-088. What remains is **live QA and one audit**, not implementation:
+
+- WO-079 — Windows live QA.
+- WO-080 — multi-tab live QA.
+- WO-084 — two-machine network inspection.
+- WO-085 — two-machine serving-limit load check against a real uplink;
+  the automated proof is loopback only.
+- WO-082 — the final consistency audit, which can now close against the real
+  tree rather than around open gaps. The 2026-08-12 pass reconciled the
+  already-shipped architecture but deliberately did not pretend the then-open
+  code orders had landed.
+
+Nothing here should be read as "ready to publish": the live QA above is the
+gate, and the release rule below it still stands.
 
 These are corrections to privacy, process ownership and release boundaries.
 They take precedence over the older “Near queue” preserved below as phase

@@ -8,9 +8,10 @@ Browser extension + local Go daemon. Gives people control over the video recomme
 
 ## Read before coding
 
-1. `handoff/WO-088-capability-controls-stay-visible.md` — **current implementation work order. Start here.**
-   `handoff/README.md` indexes every order and its status. WO-085 (reciprocal
-   distributed peer search + per-node serving limits) closed 2026-08-12.
+1. `handoff/README.md` — **the work-order index and every order's status. Start here.**
+   No implementation order is open: WO-083, WO-085 and WO-088 all closed
+   2026-08-12. What remains is live QA (Windows, multi-tab, two-machine) and
+   WO-082's final consistency audit — see `ROADMAP.md`.
 2. `ARCHITECTURE_CURRENT.md` — normative current architecture and implementation order.
 3. `ROADMAP.md` — product stages and current stabilization queue.
 4. `BUILD_P0.md` — P0 spec; §9 is the closed acceptance record.

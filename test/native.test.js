@@ -261,4 +261,64 @@ describe("native bridge (WO-004 §6.1, §6.2, WO-008)", () => {
     assert.equal(bridge.hasCapability("peer_search"), false);
     assert.equal(bridge.hasCapability("contribution_runtime"), false);
   });
+
+  /**
+   * WO-083 acceptance: several requests may be in flight at once, and each
+   * must resolve with its OWN reply.
+   *
+   * The pending map is keyed by correlation id precisely so replies can arrive
+   * out of order — the daemon answers PEER_SEARCH and SUGGEST on their own
+   * goroutines, so it does. A bridge that resolved by arrival order would
+   * hand the panel another RPC's payload, which is silent and wrong rather
+   * than a visible failure.
+   */
+  it("correlates concurrent requests by id, including out-of-order replies", async () => {
+    state = freshState();
+    const bridge = createNativeBridge({ onStatus() {}, onMessage() {} });
+    bridge.connect();
+    const port = state.ports[0];
+    port._onMessage(envelope("HELLO_ACK", { ok: true, compatible: true, api: 1 }));
+
+    const first = bridge.request("SUGGEST", { limit: 1 });
+    const second = bridge.request("SEARCH", { query: "a" });
+    const third = bridge.request("STATS", {});
+
+    const sent = port._sent.filter((m) => m.type !== "HELLO");
+    assert.equal(sent.length, 3, "each request must go out on its own envelope");
+    const ids = new Set(sent.map((m) => m.id));
+    assert.equal(ids.size, 3, "correlation ids must be unique per request");
+
+    // Answer last-to-first: arrival order carries no meaning.
+    port._onMessage({ ...envelope("STATS_RESULT", { n: 3 }, sent[2].id) });
+    port._onMessage({ ...envelope("SEARCH_RESULT", { n: 2 }, sent[1].id) });
+    port._onMessage({ ...envelope("SUGGEST_RESULT", { n: 1 }, sent[0].id) });
+
+    assert.equal((await first).payload.n, 1);
+    assert.equal((await second).payload.n, 2);
+    assert.equal((await third).payload.n, 3);
+  });
+
+  /**
+   * A disconnect must reject every request still waiting, not leave the caller
+   * hanging until its own timeout. The panel's surfaces await these directly.
+   */
+  it("rejects every in-flight request when the port disconnects", async () => {
+    state = freshState();
+    const bridge = createNativeBridge({ onStatus() {}, onMessage() {} });
+    bridge.connect();
+    const port = state.ports[0];
+    port._onMessage(envelope("HELLO_ACK", { ok: true, compatible: true, api: 1 }));
+
+    const pending = [
+      bridge.request("SUGGEST", {}),
+      bridge.request("SEARCH", { query: "a" }),
+    ];
+    port._onDisconnect();
+
+    for (const p of pending) {
+      await assert.rejects(() => p, /disconnected/);
+    }
+    // And a request made while down fails fast rather than queueing forever.
+    await assert.rejects(() => bridge.request("STATS", {}), /not connected/);
+  });
 });

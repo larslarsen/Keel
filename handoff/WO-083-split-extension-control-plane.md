@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Architecture decided — ready after WO-085/088 (Claude Opus); WO-080 prerequisite done** |
+| **Status** | **Done 2026-08-12** — see the implementation record below |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 
@@ -65,19 +65,114 @@ that owner without a real browser or native host.
 
 ## Acceptance
 
-- [ ] `sw.js` contains composition/wiring rather than a monolithic command
+- [x] `sw.js` contains composition/wiring rather than a monolithic command
       switch and mixed state ownership.
-- [ ] The existing test suite still passes, with unit tests for the extracted
+      1147 → 373 lines, with no `case` label and no feature state left in it.
+      `test/background-structure.test.js` asserts both mechanically, so the
+      switch cannot drift back in.
+- [x] The existing test suite still passes, with unit tests for the extracted
       state and dispatcher boundaries.
-- [ ] Dependency tests prove no cycle and no module except `prefs.js` imports or
+      161/161 (was 130). `test/background-modules.test.js` adds 20, each
+      constructing its subject from plain objects — no `globalThis.browser`, no
+      imported service worker, no native host.
+- [x] Dependency tests prove no cycle and no module except `prefs.js` imports or
       receives browser storage; observation/proof fixtures never reach storage.
-- [ ] Native tests cover concurrent requests, disconnect rejection, alarm-based
+      `test/background-structure.test.js`: a DFS over every `import` in
+      `extension/` for cycles; the storage-owner assertion, including that
+      `sw.js`'s single mention is the injection line itself; and a scan proving
+      the *whole* extension writes only the two known preference keys. Verified
+      falsifiable — adding a `browser.storage` reference to `rpc.js` turns the
+      ownership assertion red, and removing it turns it green again.
+- [x] Native tests cover concurrent requests, disconnect rejection, alarm-based
       reconnect and incompatible HELLO without importing a surface controller.
-- [ ] Manifest permissions, isolated-world extraction and native bridge framing
+      The last three already existed; concurrent correlation did not, and is
+      now `correlates concurrent requests by id, including out-of-order
+      replies` plus `rejects every in-flight request when the port disconnects`.
+      `test/native.test.js` imports only `lib/native.js` and `lib/protocol.js`.
+- [x] Manifest permissions, isolated-world extraction and native bridge framing
       are unchanged.
+      Untouched by this work order: both manifests, all of `content/`,
+      `lib/native.js`, `lib/browser.js` and `lib/protocol.js`. The only
+      production files modified are the three being split.
 
-## Challenge
+## Boundary adjustments
 
-If an extraction would create circular dependencies or duplicate browser
-compatibility logic, record the boundary adjustment in this ticket rather than
-keeping an implicit global.
+The challenge asks for these to be recorded rather than worked around.
+
+1. **`background/prefs.js` is an adapter over the existing pure
+   `lib/prefs.js`,** not a replacement. Validation and the legacy-mode coercion
+   stay pure and shared with the content script; the new module owns only the
+   async storage access, the missing-API paths and the migration write. Without
+   this split, `content/hide.js` would have had to import a module that holds
+   browser state.
+
+2. **A third render module, `lib/render.js`.** The ticket named
+   `sidepanel/render.js` and `page/render.js`. `escapeHtml` and `fmtDuration`
+   turned out to be character-identical in both surfaces, and `liveUrl` /
+   `watchUrl` were the same function under two names, so copying them into two
+   new files would have re-created the duplication the split exists to remove.
+   The identical helpers are shared; each surface's `render.js` holds what is
+   genuinely its own.
+
+3. **`fmtCount` was *not* shared,** despite looking like a fourth candidate.
+   The two implementations differ: the panel blanks a zero view count, the full
+   page renders "0 views". Both readings are defensible and unifying them would
+   silently change one surface, which this ticket forbids. Each keeps its own,
+   with the divergence documented in both files.
+
+4. **The storage-ownership rule is enforced over the background control plane,**
+   not the whole extension. `content/hide.js` reads the hide mode before first
+   paint — routing it through the service worker would put a message round trip
+   in front of a paint decision, which is the flicker WO-009 removed — and
+   `sidepanel/index.js` reads the consent key for its nag banner. Both read a
+   preference the user set, never an observation, and moving either would be a
+   behaviour change. What *is* enforced extension-wide is the stronger property
+   underneath: nothing anywhere writes anything to storage but those two keys.
+
+5. **`openFullpageTab` lives in `panel_context.js`.** It is not panel state, but
+   it is the other half of one decision — the toolbar button opens whichever of
+   the two surfaces the current tab can have — and splitting them across modules
+   would let them disagree about when a click does nothing.
+
+## Defects and oddities found while splitting
+
+- **No test loaded `sidepanel/index.js`.** 1,200 lines of a user-facing surface
+  were verified only by reading. That is a bad position from which to move
+  functions out of a file, since the failure mode is a `ReferenceError` at first
+  use. `test/sidepanel-smoke.test.js` now evaluates the real module against the
+  real markup and exercises the moved helpers, including that a hostile title is
+  escaped rather than rendered.
+- **`writeHideMode`'s validation is unreachable.** `isHideMode(coerceHideMode(v))`
+  is true for every input, because coercion already answers a valid mode — so an
+  unrecognised value is stored as the default rather than refused. Pre-existing,
+  left as it is because this is a behaviour-preserving split, and pinned by a
+  test that says so rather than left to look intentional.
+- **Error-message fallbacks were not uniform** (`"export failed"` lowercase,
+  bare `"THUMBNAIL"` for the relay group). The shared `relay` helper takes the
+  fallback per call so every one of them is preserved exactly; a refactor is the
+  wrong place to change a string a user might see.
+
+## Implementation record — 2026-08-12
+
+| Module | Lines | Owns |
+|---|---:|---|
+| `background/sw.js` | 373 (was 1147) | Construction, adapter injection, listener registration |
+| `background/rpc.js` | 617 | Dispatch, validation, capability gates, the bounded impression buffer |
+| `background/panel_context.js` | 336 | Panel gate, port bookkeeping, active-tab lookup, context broadcasts |
+| `background/prefs.js` | 98 | The control plane's only storage access |
+| `background/page_proofs.js` | 129 | Unchanged (WO-080) |
+| `lib/render.js` | 52 | Escaping and formatting shared by both surfaces |
+| `page/render.js` | 113 | The full page's pure helpers |
+| `sidepanel/render.js` | 120 | The panel's pure helpers |
+
+Each module is a factory taking explicit dependencies, and receives a *slice* of
+the browser API rather than the whole adapter — which is what makes the storage
+rule checkable rather than merely stated. The bridge is read through
+`getBridge()` rather than captured, because the binding is replaced by
+reconnection in production and by the test seam in the suite; a captured
+reference would keep answering from a dead port.
+
+No framework, bundler, TypeScript, runtime dependency or build step was added.
+`sw.js` keeps its existing exports (`handle`, `flushBuffer`, `pageProofs`,
+`__test_setBridge`) so every pre-existing test drives it unchanged — the
+strongest available evidence that the split preserved behaviour.

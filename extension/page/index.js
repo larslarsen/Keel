@@ -8,6 +8,17 @@
  */
 import { browser } from "../lib/browser.js";
 import { PEER_SEARCH_REV_RECIPROCAL } from "../lib/protocol.js";
+import { escapeHtml, fmtDuration } from "../lib/render.js";
+import {
+  analysisTable,
+  fmtAgo,
+  fmtCount,
+  liveFor,
+  liveUrl,
+  platformLabel,
+  thumbHtml,
+  tile,
+} from "./render.js";
 
 const el = {
   banner: document.getElementById("daemon-banner"),
@@ -83,39 +94,6 @@ async function fillThumb(img, videoID) {
   }
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function fmtCount(n) {
-  if (typeof n !== "number") return "";
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
-  return String(n);
-}
-
-function fmtDuration(s) {
-  if (typeof s !== "number" || s <= 0) return "";
-  const m = Math.floor(s / 60);
-  const sec = String(Math.floor(s % 60)).padStart(2, "0");
-  if (m >= 60) return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${sec}`;
-  return `${m}:${sec}`;
-}
-
-
-/** Derived thumbnail URL — no API call. See WO-039. */
-function thumbHtml(videoID) {
-  return (
-    `<img class="thumb" loading="lazy" decoding="async" referrerpolicy="no-referrer"` +
-    ` alt="" width="120" height="68"` +
-    ` data-vid="${encodeURIComponent(videoID)}">`
-  );
-}
 
 /* ---------- WO-040: surface the panel when a video link opens ---------- */
 
@@ -207,25 +185,6 @@ el.searchNetworkRoute?.addEventListener("click", async () => {
 
 /* ---------- live ---------- */
 
-/**
- * The live feed (DESIGN_v2 §7.5).
- *
- * Filtering happens in the daemon's memory, over an index it already holds in
- * full — so typing here sends no query anywhere. That is why this box filters as
- * you type rather than waiting for a submit: there is no request to be careful
- * about.
- */
-function fmtAgo(ms) {
-  if (!ms) return "";
-  const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (secs < 90) return "just now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
-  return `${Math.floor(hrs / 24)} day${hrs < 48 ? "" : "s"} ago`;
-}
-
 export function renderLive(res) {
   el.liveList.replaceChildren();
   const table = document.getElementById("live-table");
@@ -274,39 +233,6 @@ export function renderLive(res) {
 }
 
 /** Human name for a platform code. */
-function platformLabel(p) {
-  return p === "tt" ? "TikTok" : "YouTube";
-}
-
-/** Where a live stream lives, per platform. */
-function liveUrl(id, platform) {
-  const v = encodeURIComponent(id);
-  if (platform === "tt") return `https://www.tiktok.com/video/${v}`;
-  return `https://www.youtube.com/watch?v=${v}`;
-}
-
-/**
- * How long it has been running — the fact a viewer can act on.
- *
- * "Seen just now" is true of a stream that started this morning, because
- * whoever is watching keeps reporting it. The span between first and last
- * sighting is what distinguishes a fresh stream from an all-day one.
- */
-function liveFor(s) {
-  // Duration the stream has been live: from when it started (StartedAt if the
-  // peer reported it, else our first sighting) to NOW. Measuring to last_seen
-  // instead collapses to ~0 for a stream we saw only once (first_seen ==
-  // last_seen), which reads as "just started" next to a "seen 3h ago" column.
-  const began = s.b || s.first_seen || Date.now();
-  const mins = Math.max(0, Math.round((Date.now() - began) / 60000));
-  if (mins >= 60) {
-    const hrs = Math.floor(mins / 60);
-    return `${hrs}+ hour${hrs === 1 ? "" : "s"}`;
-  }
-  if (mins >= 5) return `${mins}+ min`;
-  return "just started";
-}
-
 async function loadLive() {
   try {
     const r = await rpc("LIVE_SEARCH", {
@@ -1033,25 +959,6 @@ el.importBtn.addEventListener("click", async () => {
 });
 
 /* ---------- analysis ---------- */
-
-function tile(value, label) {
-  return `<div><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`;
-}
-
-function analysisTable(title, rows, note) {
-  if (!rows?.length) return "";
-  let h = `<h2>${escapeHtml(title)}</h2>`;
-  if (note) h += `<p class="meta">${escapeHtml(note)}</p>`;
-  h += `<ol class="an-list">`;
-  for (const r of rows) {
-    h +=
-      `<li><span class="an-label">${escapeHtml(r.label || r.key)}</span>` +
-      `<span class="an-count">${r.count}×` +
-      (r.extra ? ` · ${escapeHtml(r.extra)}` : "") +
-      `</span></li>`;
-  }
-  return h + `</ol>`;
-}
 
 async function loadAnalysis() {
   const body = document.getElementById("analysis-body");

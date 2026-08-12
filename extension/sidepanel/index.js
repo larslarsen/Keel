@@ -10,6 +10,14 @@ import {
   isHideMode,
   normalizeBlocklist,
 } from "../lib/prefs.js";
+import { escapeHtml, fmtDuration, watchUrl } from "../lib/render.js";
+import {
+  fmt,
+  fmtCount,
+  formatBytes,
+  formatExplain,
+  readableChannel,
+} from "./render.js";
 
 const STATS_MIN_INTERVAL_MS = 5000;
 /** Long-lived port so the SW knows the panel is open (WO-009 with-panel). */
@@ -92,15 +100,6 @@ async function rpc(type, payload) {
   return r;
 }
 
-function fmt(ms) {
-  if (ms == null) return "—";
-  try {
-    return new Date(ms).toLocaleString();
-  } catch {
-    return String(ms);
-  }
-}
-
 function setDaemonUi(connected, detail = "", meta = {}) {
   if (connected) {
     el.banner.className = "banner ok";
@@ -147,75 +146,6 @@ async function fillThumb(img, videoID) {
   }
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function fmtWhen(ms) {
-  if (ms == null) return "—";
-  try {
-    return new Date(ms).toLocaleDateString();
-  } catch {
-    return String(ms);
-  }
-}
-
-/** Observational copy only — never "because you watched" (WO-018). */
-function formatExplain(ex) {
-  if (!ex || !ex.total_impressions) {
-    return `<p class="explain-body">Not in the local corpus yet (seen only on this page, or not stored).</p>`;
-  }
-  const total = ex.total_impressions;
-  const once = total === 1;
-  let html = `<p class="explain-body"><strong>Seen ${total} time${once ? "" : "s"}</strong>`;
-  if (ex.first_observed_at != null) {
-    html += ` · first ${fmtWhen(ex.first_observed_at)}`;
-  }
-  if (ex.last_observed_at != null && ex.last_observed_at !== ex.first_observed_at) {
-    html += ` · last ${fmtWhen(ex.last_observed_at)}`;
-  }
-  html += `.</p>`;
-
-  const ctxs = ex.contexts || [];
-  if (ctxs.length) {
-    html += `<p class="explain-label">Appeared after (watch-page rail):</p><ul class="explain-ctx">`;
-    for (const c of ctxs) {
-      const label = c.title
-        ? escapeHtml(c.title)
-        : `<span class="unknown">${escapeHtml(c.context_video_id)}</span>`;
-      const med =
-        typeof c.median_slot_index === "number"
-          ? c.median_slot_index
-          : "?";
-      html += `<li>${label} · ${c.count}× · median slot ${med}</li>`;
-    }
-    html += `</ul>`;
-  } else if (ex.home_impressions > 0 && total === ex.home_impressions) {
-    html += `<p class="explain-body">Only observed on the home feed (no watch-page context).</p>`;
-  } else if (!ctxs.length) {
-    html += `<p class="explain-body">No watch-page co-occurrence in the corpus yet.</p>`;
-  }
-
-  if (ex.home_impressions > 0 && total !== ex.home_impressions) {
-    html += `<p class="explain-body">Also on home feed: ${ex.home_impressions}×.</p>`;
-  }
-
-  const hist = ex.slot_histogram || [];
-  if (hist.length) {
-    const bits = hist
-      .slice(0, 8)
-      .map((b) => `slot ${b.slot}: ${b.count}`)
-      .join(" · ");
-    html += `<p class="explain-meta">Slots: ${bits}</p>`;
-  }
-  html += `<p class="explain-meta">Co-occurrence only — not YouTube’s stated reason.</p>`;
-  return html;
-}
-
 function toggleExplain(li, videoId) {
   const existing = li.querySelector(".explain");
   if (existing) {
@@ -236,32 +166,6 @@ function toggleExplain(li, videoId) {
 }
 
 /** Compact count: 1.2K, 3.4M. */
-function fmtCount(n) {
-  if (typeof n !== "number" || n <= 0) return "";
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
-  return String(n);
-}
-
-/** m:ss / h:mm:ss. */
-function fmtDuration(sec) {
-  if (typeof sec !== "number" || sec <= 0) return "";
-  const m = Math.floor(sec / 60);
-  const s = String(Math.floor(sec % 60)).padStart(2, "0");
-  if (m >= 60) return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
-  return `${m}:${s}`;
-}
-
-/**
- * A channel is worth showing only if a human can read it. `@handle` is a name;
- * `UC…` is a database key and belongs in the block button's dataset, not on
- * screen (WO-041).
- */
-function readableChannel(id) {
-  return typeof id === "string" && id.startsWith("@") ? id : "";
-}
-
 /**
  * One row of our own ranking (WO-046): the daemon's graph walk, not YouTube's
  * rail. Suggestions carry a channel key but no display name yet, so the label
@@ -601,15 +505,6 @@ function currentSeed() {
   return "";
 }
 
-/** Where a video lives, per platform. */
-function watchUrl(videoID, platform) {
-  const id = encodeURIComponent(videoID);
-  // TikTok needs an author handle for a canonical clip URL and the panel does
-  // not have one, so the id is handed to TikTok's own resolver.
-  if (platform === "tt") return `https://www.tiktok.com/video/${id}`;
-  return `https://www.youtube.com/watch?v=${id}`;
-}
-
 function renderSuggestions(res, seed) {
   const list = (res && res.suggestions) || [];
   if (!list.length) {
@@ -934,13 +829,6 @@ async function doExport() {
   } catch (err) {
     setDataStatus(err.message || String(err), true);
   }
-}
-
-function formatBytes(n) {
-  if (typeof n !== "number" || !Number.isFinite(n)) return "? bytes";
-  if (n < 1024) return `${n} bytes`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function doWipe() {
