@@ -20,7 +20,7 @@ import (
 	"github.com/keel-app/keel/daemon/store"
 )
 
-const version = "0.1.1"
+const version = "0.1.2"
 
 // builtAt is when this binary was written, read from the executable itself.
 //

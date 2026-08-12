@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -88,8 +89,9 @@ func validateOwnerSecretPermissions(path string, _ fs.FileInfo) error {
 		return err
 	}
 	if ace == nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE ||
-		ace.Mask&windows.GENERIC_ALL != windows.GENERIC_ALL {
-		return errors.New("owner secret has an unexpected access rule")
+		!grantsFullControl(uint32(ace.Mask)) {
+		return fmt.Errorf("owner secret has an unexpected access rule; "+
+			"delete %s and run the installer again to recreate it", path)
 	}
 	current, err := currentUserSID()
 	if err != nil {
