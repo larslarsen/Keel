@@ -50,9 +50,9 @@ Windows registers through the registry rather than a directory, so the installer
 manifests and then executes the `reg add` calls itself — nothing is printed for the user to run.
 Specifically (WO-091):
 
-- **Installing is always the explicit `keel-host.exe install` subcommand.** A no-argument
-  invocation is proxy mode, on Windows as everywhere else: running the binary never rewrites
-  registration as a side effect.
+- **Double-clicking `keel-host.exe` with no arguments installs.** A native-messaging launch always
+  carries the caller's origin (Chromium) or manifest path (Firefox) in `argv`, so an invocation
+  with arguments still becomes a proxy and never reinstalls underneath a running browser.
 - **Two manifests, one per schema**, because a Chromium manifest has `allowed_origins` and a
   Firefox manifest has `allowed_extensions`:
   - `%LOCALAPPDATA%\Keel\chromium\com.keel.host.json` — Chrome, Chromium, Brave, Edge
