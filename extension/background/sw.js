@@ -363,7 +363,15 @@ if (browser.runtime.onInstalled?.addListener) {
   });
 }
 
-bridge.connect();
+// Wrapped: this is the last statement of the service worker's top-level
+// evaluation, and an uncaught throw here would abort the worker's installation
+// and take every listener above it with it — the toolbar button included. A
+// broken daemon link must never cost the user their browser UI.
+try {
+  bridge.connect();
+} catch (err) {
+  log("bridge connect", errText(err));
+}
 panel.syncAllTabs().catch(() => {});
 console.info(LOG, "ready");
 

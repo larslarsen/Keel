@@ -200,7 +200,38 @@ export function createNativeBridge(hooks) {
     hooks.onMessage(env);
   }
 
+  /**
+   * connect() runs at the service worker's TOP LEVEL (sw.js calls it during
+   * module evaluation). An uncaught throw there aborts the worker's
+   * installation, and every listener registered above it dies with it —
+   * including the toolbar button, which then does nothing at all on any page.
+   *
+   * So nothing in here may throw into module scope, and no hook may be invoked
+   * synchronously: a status callback that fails must not be able to take the
+   * extension down with it. The daemon link is allowed to be broken; the
+   * browser UI is not allowed to break with it.
+   */
   function connect() {
+    try {
+      connectInner();
+    } catch (err) {
+      console.error(LOG, "connect failed", errText(err));
+      report(false, "not running", { code: "connect_failed" });
+    }
+  }
+
+  /** Deliver a status update without letting it reach module scope. */
+  function report(ok, detail, meta) {
+    queueMicrotask(() => {
+      try {
+        hooks.onStatus(ok, detail, meta);
+      } catch (err) {
+        console.error(LOG, "onStatus threw", errText(err));
+      }
+    });
+  }
+
+  function connectInner() {
     // A mixed-build folder cannot be fixed by retrying, so say what is wrong
     // and stop rather than reconnecting forever against a broken contract.
     const contract = protocolContractError();
@@ -208,7 +239,7 @@ export function createNativeBridge(hooks) {
       console.error(LOG, contract);
       helloOk = false;
       capabilities = Object.create(null);
-      hooks.onStatus(false, contract, { code: "mixed_build", incompatible: true });
+      report(false, contract, { code: "mixed_build", incompatible: true });
       return;
     }
     clearReconnectAlarm();
@@ -227,7 +258,9 @@ export function createNativeBridge(hooks) {
       console.warn(LOG, "connect throw", errText(err));
       helloOk = false;
       capabilities = Object.create(null);
-      hooks.onStatus(false, "not running");
+      // Deferred, like the contract branch above: this path is reachable
+      // synchronously from the service worker's top-level connect().
+      report(false, errText(err) || "not running", { code: "connect_failed" });
       scheduleReconnect();
       return;
     }

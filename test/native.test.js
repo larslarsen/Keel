@@ -528,3 +528,53 @@ describe("runtime.lastError is read live", () => {
     assert.match(seen.at(-1)[1], /native messaging host not found/);
   });
 });
+
+// sw.js calls bridge.connect() at the service worker's TOP LEVEL. In MV3 an
+// uncaught throw during module evaluation aborts the worker's installation and
+// every listener registered above it dies with it — including action.onClicked,
+// so the toolbar button stops doing anything on any page. A broken daemon link
+// must never cost the user their browser UI.
+describe("connect() cannot take down the service worker", () => {
+  it("does not throw when the status hook throws", () => {
+    state = freshState();
+    installStub();
+    const bridge = createNativeBridge({
+      onStatus: () => {
+        throw new Error("router exploded");
+      },
+      onMessage: () => {},
+    });
+    assert.doesNotThrow(() => bridge.connect());
+  });
+
+  it("does not throw when connectNative itself throws", () => {
+    state = freshState();
+    installStub();
+    STUB.runtime.connectNative = () => {
+      throw new Error("Specified native messaging host not found.");
+    };
+    const bridge = createNativeBridge({ onStatus: () => {}, onMessage: () => {} });
+    assert.doesNotThrow(() => bridge.connect());
+    installStub(); // restore the real stub for later tests
+  });
+
+  it("never calls onStatus synchronously from connect()", () => {
+    state = freshState();
+    installStub();
+    let syncCalls = 0;
+    let done = false;
+    const bridge = createNativeBridge({
+      onStatus: () => {
+        if (!done) syncCalls++;
+      },
+      onMessage: () => {},
+    });
+    STUB.runtime.connectNative = () => {
+      throw new Error("boom");
+    };
+    bridge.connect();
+    done = true;
+    assert.equal(syncCalls, 0, "a status hook ran inside module-scope connect()");
+    installStub();
+  });
+});
