@@ -1,5 +1,12 @@
 # WO-051 — Contribution level control
 
+> **Current-contract note (2026-08-11):** WO-078 supersedes the "Nothing." row
+> below. Level 1 remains a full block consumer — it fetches whole graph/
+> catalogue/search buckets and pre-walks the graph — and originates live
+> notices plus WO-068's whole word-level HLL/CMS aggregate. It serves no
+> blocks and joins no three-gram yield/token-sketch topic. See
+> `ARCHITECTURE_CURRENT.md` §3.
+
 | | |
 |---|---|
 | **Addressee** | Anyone |

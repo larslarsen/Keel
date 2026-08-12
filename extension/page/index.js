@@ -641,9 +641,12 @@ const LEVELS = [
     n: 1,
     name: "Strictly personal",
     body:
-      "Your recordings stay here. You get the whole product — search, " +
-      "suggestions, blocking, analysis. Keel still announces livestreams it " +
-      "sees, with no sender attached, so the Live tab works for everyone.",
+      "Your recordings and recommendation trail stay here — Keel never " +
+      "serves them or any cached block to another peer. You still get the " +
+      "whole product: peer search, suggestions, graph pre-walk. Two things " +
+      "leave: livestreams Keel sees are announced with no sender attached, " +
+      "and Keel exchanges a whole aggregate word-popularity pack with peers " +
+      "(no plaintext words, video ids, edges or query — see Privacy).",
   },
   {
     n: 2,
@@ -817,8 +820,10 @@ async function refreshContribution() {
   const disagree = stored != null && stored !== level;
   note.textContent =
     maxImpl < 2
-      ? "Keel sends nothing anywhere today. The levels below describe what " +
-        "contributing would mean when it exists; only the first is available."
+      ? "Keel does not yet mirror or publish anything for other people; the " +
+        "livestream notice and word-aggregate exchange described below " +
+        "happen at every level, including this one. Higher levels are not " +
+        "available yet."
       : "Choose how much this node contributes.";
   if (transition === "starting" || transition === "stopping") {
     note.textContent = "Applying your choice to the network…";

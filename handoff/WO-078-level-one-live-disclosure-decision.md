@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Sonnet/Opus) |
-| **Status** | **Architecture decided — ready for Sr Dev (Claude Sonnet/Opus)** |
+| **Status** | **Done 2026-08-11** — see "What was closed" at the end. |
 | **Date** | 2026-08-11 |
 | **Source** | Architecture review, 2026-08-11 |
 
@@ -77,20 +77,65 @@ context.
 
 ## Acceptance
 
-- [ ] One unambiguous Level-1 contract exists in all standing and user-facing
+- [x] One unambiguous Level-1 contract exists in all standing and user-facing
       documents.
-- [ ] A Level-1 test proves graph/catalogue/search consumption, pre-walk and
+- [x] A Level-1 test proves graph/catalogue/search consumption, pre-walk and
       live receive/relay/origination all work, and the policy does not gate the
       deferred seed-consumer seam.
-- [ ] The same test proves every graph/catalogue/search block-serve and provider
+- [x] The same test proves every graph/catalogue/search block-serve and provider
       path remains disabled, including for data cached by Level 1.
-- [ ] The Level-1 node does not join, relay or originate the three-gram yield/
+- [x] The Level-1 node does not join, relay or originate the three-gram yield/
       token-sketch topics; peer fetch/search still completes without them.
-- [ ] A Level-1 word-telemetry test proves the whole HLL/CMS pack is exchanged
+- [x] A Level-1 word-telemetry test proves the whole HLL/CMS pack is exchanged
       while no plaintext word, id, edge or query appears on the wire.
-- [ ] No live payload contains context video, slot, query or stable author.
+- [x] No live payload contains context video, slot, query or stable author.
 
 ## Challenge
 
 If the live payload needs another field, justify why the feed cannot work
 without it and update the privacy copy before code ships.
+
+## What was closed (2026-08-11)
+
+The runtime policy this ticket needed (`daemon/swarm/policy.go`, the
+supervisor in `daemon/contribution_runtime.go`) already existed from WO-077's
+implementation — `ARCHITECTURE_CURRENT.md` §3 was written as the single
+normative statement of it during that same pass. What remained here was
+closing the standing-document contradiction the ticket named and proving the
+one acceptance item nothing yet pinned:
+
+- **`PRIVACY.md`** still said, in its own "Contributing" section, *"Nothing you
+  record leaves your device, and Keel asks the network for nothing"* for Level
+  1 — directly contradicting the shipped policy (Level 1 fetches whole prefix
+  buckets) and the rest of this page's own "Network activity" section, which
+  correctly named the live notice. Rewrote the short version, "Network
+  activity" and "Contributing" sections to name all three Level-1 outbound
+  behaviors together (peer requests for shared data, live notices, the
+  word-popularity aggregate) every time Level 1 is described, per the
+  decision's "every short-form claim must name..." requirement. No more
+  "asks the network for nothing" or "nothing... at the default setting"
+  claims remain on the page.
+- **`extension/page/index.js`** — the Level-1 consent-slider copy named only
+  the live notice, not the word-telemetry pack; fixed. A dead-but-wrong
+  fallback string ("Keel sends nothing anywhere today") in `refreshContribution`
+  was also corrected — it would have been false the moment it became reachable.
+- **`handoff/WO-051-contribution-levels.md`** — the original ticket's own
+  table still asserted "Nothing." for Level 1 as fact, not framed as
+  superseded history. Gave it the same current-contract pointer note WO-052
+  already carries.
+- **`DESIGN_v2.md`, `AGENTS.md`, `ROADMAP.md`, `DESIGN_INCENTIVES.md`,
+  `DESIGN_BOOTSTRAP.md`, `daemon/README.md`, `ARCHITECTURE_CURRENT.md`** were
+  already consistent with this decision as of this session's prior (uncommitted)
+  documentation pass — verified by reading each, not just trusting the diff.
+- **New test:** `TestLiveRecordWireShapeCarriesNoFunnelState`
+  (`daemon/swarm/live_test.go`) marshals a `LiveRecord` — the actual argument
+  to `topic.Publish` in `Publish` — and asserts by allow-list that the wire
+  JSON contains only `v/t/c/s/p/b`, failing loudly if a future field adds
+  context video, query, slot or a stable author without an explicit
+  privacy-copy update. The existing `policy_test.go`/`contribution_runtime_test.go`
+  suite from WO-077 already covered the block-serve, three-gram-topic and
+  word-telemetry acceptance items; verified by reading them rather than
+  re-deriving.
+
+Full suite green: `go test ./...` and `npm test` (99/99), both before and
+after these edits.

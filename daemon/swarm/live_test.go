@@ -3,6 +3,7 @@ package swarm
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -173,6 +174,51 @@ func TestLevelOneParticipatesFully(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if got := publisher.Live().Search("level one leak", 10); len(got) == 0 {
 		t.Error("a Level 1 node's report did not reach the network")
+	}
+}
+
+// TestLiveRecordWireShapeCarriesNoFunnelState pins WO-078's outbound contract
+// at the type that actually goes on the wire: Publish does json.Marshal(r)
+// on a LiveRecord (live.go), so this is what every peer, including a passive
+// observer, receives. Reports are authorless (TestLevelOneParticipatesFully)
+// but "no author" is not by itself proof of nothing else disclosed — this
+// asserts the payload also carries none of the four fields the decision
+// singles out: the context video/query someone was on, their slot in a rail,
+// or a stable per-install author. A future field added to LiveRecord for some
+// unrelated reason must fail this test and force an explicit privacy-copy
+// update rather than silently widening the disclosure.
+func TestLiveRecordWireShapeCarriesNoFunnelState(t *testing.T) {
+	raw, err := json.Marshal(LiveRecord{
+		VideoID:   "dQw4w9WgXcQ",
+		Title:     "Open feed",
+		ChannelID: "UCxxxxxx",
+		SeenAt:    1700000000000,
+		Platform:  "yt",
+		StartedAt: 1699999000000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onWire map[string]any
+	if err := json.Unmarshal(raw, &onWire); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"context_video_id", "context_video", "context_query_hash", "query",
+		"slot_index", "slot", "author", "sender", "node_id", "peer_id",
+	} {
+		if _, present := onWire[forbidden]; present {
+			t.Errorf("live wire payload carries %q; WO-078 forbids context video, slot, query and stable author on the live payload", forbidden)
+		}
+	}
+	// And pin the shape is exactly the disclosed fields, not merely "missing
+	// the forbidden ones" — an allow-list is what stops the next field added
+	// to LiveRecord from shipping without a matching privacy-copy update.
+	allowed := map[string]bool{"v": true, "t": true, "c": true, "s": true, "p": true, "b": true}
+	for k := range onWire {
+		if !allowed[k] {
+			t.Errorf("live wire payload carries undocumented field %q; update PRIVACY.md/ARCHITECTURE_CURRENT.md §3 alongside LiveRecord", k)
+		}
 	}
 }
 

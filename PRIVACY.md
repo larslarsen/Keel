@@ -17,14 +17,18 @@ behave. The source is public and each one can be checked.
 **Your recording stays on your device.** There is no account, no server
 receiving your data, and no analytics. The record of what you were shown, which
 videos you opened, and which TikTok clips the feed presented is never sent as a
-raw history at any setting.
+raw history, published, or served to another peer at any setting.
 
-**One thing does leave, at every setting: when Keel sees a livestream it tells
-other Keel users that the stream exists.** That notice is a video id and title
-with no sender field. After it is relayed the payload does not identify who saw
-it, but a directly connected peer may infer an origin from network topology and
-timing. It is what puts anything in the Live tab. Everything else on this page
-describes data that stays put.
+**Three things do leave, at every setting, including the default: requests for
+shared data, livestream notices, and a word-popularity aggregate.** Keel asks
+peers for the graph/catalogue/search data suggestions are built from, in
+batches of thousands so which one you wanted is not visible. When it sees a
+livestream it tells other Keel users the stream exists — a video id and title
+with no sender field; a directly connected peer may still infer an origin from
+network topology and timing after it is relayed. And it exchanges a whole,
+fixed-shape word-popularity pack with peers — no plaintext words, ids, edges or
+query, but not a zero-disclosure aggregate either. These three are detailed
+below. Everything else on this page describes data that stays put.
 
 ---
 
@@ -105,13 +109,17 @@ can show you the videos it has recorded. Each is fetched once and stored
 locally. No observation data is sent — these are ordinary image loads for videos
 YouTube already showed you.
 
-**The peer network.** Keel joins a peer-to-peer network. What it does there
-depends on your setting, and one part happens at every setting including the
-default.
+**The peer network.** Keel joins a peer-to-peer network at every setting,
+including the default. It is not silent there — it just does not serve or
+publish anything of yours.
 
-**At the default setting, Keel asks the network for nothing.** Asking a peer for
-a particular video would tell that peer which video you asked about, so it does
-not ask.
+**At every setting, Keel fetches shared graph, catalogue and search data from
+peers.** This is what makes suggestions and peer search work without a server:
+your computer asks for a bucket of thousands of videos at once — never one
+video by itself — and filters the answer locally, so a peer answering cannot
+tell which one you actually wanted. Requesting a bucket still tells that peer
+you asked, and roughly which coarse slice of the catalogue you're interested
+in; see below for exactly what that discloses.
 
 **At every setting, Keel announces livestreams it sees.** When a stream appears
 in your recommendations, Keel tells other Keel users that the stream exists — a
@@ -122,6 +130,20 @@ directly connected peer still sees ordinary peer-to-peer connection metadata
 and may infer an origin from topology and timing. This is what fills the Live
 tab, for you and for everyone.
 
+**At every setting, Keel exchanges a whole word-popularity aggregate.** Every
+node fetches and answers the same fixed-shape statistics pack — how common each
+word is across everyone's recordings, including your own local corpus. It
+carries no plaintext word, video id, edge or search query, but it is built so
+that a guess at a specific word ("was 'giveaway' common?") can still be checked
+against it. That is an aggregate disclosure, not zero disclosure, and it is why
+this page does not describe the default setting as network-silent.
+
+**None of the above serves, stores or passes on anything for other people.**
+Keel does not answer another peer's request for graph, catalogue or search data
+— including data it has itself fetched and cached — and does not tell the
+network it holds anything, at the default setting. That starts at Level 2,
+below.
+
 Keel does not use the YouTube API, and never contacts any Keel-operated server,
 because none exists. Peer discovery uses the public IPFS network, which nobody
 in this project runs or controls.
@@ -129,16 +151,16 @@ in this project runs or controls.
 ### What other people on the network can see
 
 This is the honest cost of a peer-to-peer design and we would rather state it
-plainly than bury it.
+plainly than bury it. It applies at every setting, including the default —
+Level 1 asks the network for shared data as described above, it just never
+answers a request itself.
 
-At the default setting the block-request paragraph below does not yet apply, but
-the livestream metadata exposure above does.
-
-Above the default, when Keel asks the network about a video, the peers it asks
-can see **your IP address and which video you asked about** — though it asks in
-batches of thousands, so which one of them you wanted is not visible. This is
-the same kind of exposure any peer-to-peer system has, and it is the one place
-where using Keel is visible to strangers rather than only to YouTube.
+When Keel asks the network for shared data, the peers it asks can see **your IP
+address and which batch of thousands of videos you asked about** — though it
+asks in those large batches specifically so which one of them you wanted is not
+visible. This is the same kind of exposure any peer-to-peer system has, and it
+is the one place, beyond the livestream notice and word aggregate above, where
+using Keel is visible to strangers rather than only to YouTube.
 
 What they cannot see: your history, anything you have recorded, what you
 actually watched, or any link between separate requests and a person. Keel's
@@ -153,17 +175,20 @@ and Keel keeps working on your own data alone.
 Contributing is **off by default** and every level above the default is a
 deliberate choice you make.
 
-**Level 1 — personal (the default).** Nothing you record leaves your device, and
-Keel asks the network for nothing. It works from what it has recorded here. The
-one exception is the livestream notice described above, which carries nothing
-in its payload about you but retains the network-metadata residual stated above,
-and happens at every setting.
+**Level 1 — personal (the default).** Nothing you record or watch is published,
+served to another peer, or told to anyone — that is what "personal" means here,
+not "silent." Level 1 is a full participant on the network described above: it
+fetches shared graph/catalogue/search data so suggestions and peer search work,
+announces livestreams it sees, and exchanges the word-popularity aggregate.
+What it never does is answer another peer's request for data, announce itself
+as holding anything, or publish what you recorded.
 
-**Level 2 — mirror.** Your computer stores and passes on data *other people*
-published, using the disk space you allot, and asks peers for recommendation
-data in batches. Nothing you observed is published, and the list of data your
-computer offers contains only what it is hosting for others — never what you
-watched. The trade you are accepting is the request exposure described above.
+**Level 2 — mirror.** Everything at Level 1, plus your computer starts
+**answering** other peers' requests — storing and passing on data *other
+people* published, using the disk space you allot. Nothing you observed is
+published, and the list of data your computer offers contains only what it is
+hosting for others — never what you watched. The trade you are accepting is the
+same request exposure described above, now from the answering side too.
 
 **Levels 3 and 4** would publish aggregate or attributed records of what you
 were recommended. **These are not built and nothing is sent at these settings
