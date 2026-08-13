@@ -50,45 +50,17 @@ const shardSchemaVersion = 1
 // punctuation, extra whitespace) to single-space separators, which keeps the
 // vocabulary the size WO-059 measured rather than multiplying it for no
 // privacy gain.
-// tokenize splits text into fixed, non-overlapping k-grams.
-//
-// Each word is cut at the same offsets every time — characters 0..k-1, then
-// k..2k-1, and so on, padding the last piece with spaces. That is what makes a
-// word's tokens identical wherever the word appears, which is the whole basis
-// of matching here: a query word and a document word chunk the same way, so
-// their token sets are equal.
-//
-// It was a sliding window, which produces overlapping k-grams. That finds
-// substrings across alignment — "clip" inside "eclipse" — at the cost of one
-// word producing len(word)-k+1 tokens instead of ceil(len(word)/k), and of the
-// same word yielding tokens that depend on where it sits rather than on the
-// word alone. Search here is word-based, so the extra tokens bought a property
-// nothing used.
-//
-// Per word, not across the whole string: chunking a joined string would make a
-// word's tokens depend on the words before it, and the same word would tokenize
-// differently in different queries. That is precisely the determinism this must
-// not lose.
 func tokenize(text string, k int) []string {
 	if k <= 0 {
 		return nil
 	}
-	var out []string
-	for _, w := range splitWords(text) {
-		// The word's own characters, cut from the front: 0..k-1, k..2k-1, and so
-		// on. No leading space — cutting per word already prevents one word's
-		// letters from joining the next, and a leading space would only produce
-		// a token that is mostly padding.
-		for i := 0; i < len(w); i += k {
-			end := i + k
-			if end > len(w) {
-				// The tail is padded, not dropped: the final letters of a word
-				// still have to contribute a token or they cannot be searched.
-				out = append(out, w[i:]+strings.Repeat(" ", end-len(w)))
-				continue
-			}
-			out = append(out, w[i:end])
-		}
+	norm := normalize(text)
+	if len(norm) < k {
+		return nil
+	}
+	out := make([]string, 0, len(norm)-k+1)
+	for i := 0; i+k <= len(norm); i++ {
+		out = append(out, norm[i:i+k])
 	}
 	return out
 }
