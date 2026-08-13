@@ -15,6 +15,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -213,13 +214,33 @@ func firstLine(b []byte) string {
 // So the installer repairs it every time: icacls /reset restores the inherited
 // ACLs from the parent, which is what an ordinary per-user directory should
 // have had all along. It is idempotent and harmless on a healthy machine.
+// Best effort by contract: see the call site. A machine where neither attempt
+// works may still have a perfectly readable directory, and refusing to register
+// there would turn a maybe into a certainly-broken install.
 func repairManifestAccess(run cmdRunner, dir string) error {
 	if dir == "" {
 		return nil
 	}
 	out, err := run("icacls", dir, "/reset", "/t", "/q")
-	if err != nil {
-		return fmt.Errorf("could not restore read access on %s: %v: %s", dir, err, firstLine(out))
+	if err == nil {
+		return nil
 	}
-	return nil
+	first := fmt.Errorf("%v: %s", err, firstLine(out))
+
+	// /reset rewrites the ACL wholesale and needs WRITE_DAC on every child. A
+	// narrower grant to the current user often succeeds where that does not, and
+	// read access for this user is the only thing actually required.
+	user := os.Getenv("USERNAME")
+	if domain := os.Getenv("USERDOMAIN"); domain != "" && user != "" {
+		user = domain + "\\" + user
+	}
+	if user != "" {
+		if out2, err2 := run("icacls", dir, "/grant", user+":(OI)(CI)F", "/t", "/q"); err2 == nil {
+			return nil
+		} else {
+			return fmt.Errorf("could not restore access on %s (reset: %v; grant: %v: %s)",
+				dir, first, err2, firstLine(out2))
+		}
+	}
+	return fmt.Errorf("could not restore access on %s: %v", dir, first)
 }

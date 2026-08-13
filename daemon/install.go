@@ -479,13 +479,19 @@ func runInstall(args []string) int {
 		// just written. An earlier Keel build applied a protected DACL to this
 		// directory and locked browsers out of their own manifest, and no
 		// amount of correct registration fixes a directory they cannot read.
+		//
+		// Best effort, deliberately: a directory whose permissions cannot be
+		// rewritten may still be perfectly readable, and refusing to register
+		// there converts a maybe-working install into a certainly-broken one.
+		// The first version of this failed the install on a denied icacls,
+		// which is the same mistake as making a diagnostic fatal.
 		if base, err := windowsInstallBase(os.Getenv); err == nil {
 			if err := repairManifestAccess(execRunner, base); err != nil {
-				rep.line("access   %-9s FAILED   %v", "manifests", err)
-				fmt.Fprintln(os.Stderr, "manifest access:", err)
-				failed = true
+				rep.line("access   %-9s WARNING  %v", "manifests", err)
+				rep.line("               registration continues; the folder may already be readable")
+				fmt.Fprintln(os.Stderr, "note: could not adjust permissions on", base, "—", err)
 			} else {
-				rep.line("access   %-9s OK       inherited permissions restored on %s", "manifests", base)
+				rep.line("access   %-9s OK       permissions restored on %s", "manifests", base)
 			}
 		}
 		results := installWindowsRegistry(execRunner, plan.chromium, plan.firefox)

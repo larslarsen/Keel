@@ -251,48 +251,82 @@ func TestUninstallReportsAKeyItCannotRemove(t *testing.T) {
 // anything that strips inherited permissions from that directory uninstalls
 // native messaging without touching the registry — and reports exactly what a
 // missing key reports. An earlier Keel build did this to its own manifest
-// directory, so the installer repairs it on every run.
+// directory, so the installer tries to repair it on every run.
 func TestRepairManifestAccess(t *testing.T) {
 	const dir = `C:\Users\qa\AppData\Local\Keel`
 
-	var calls []string
-	run := func(name string, args ...string) ([]byte, error) {
-		calls = append(calls, name+" "+strings.Join(args, " "))
-		return []byte("Successfully processed 3 files."), nil
-	}
-	if err := repairManifestAccess(run, dir); err != nil {
-		t.Fatalf("repair: %v", err)
-	}
-	if len(calls) != 1 {
-		t.Fatalf("want one command, got %v", calls)
-	}
-	for _, want := range []string{"icacls", dir, "/reset", "/t"} {
-		if !strings.Contains(calls[0], want) {
-			t.Errorf("command %q is missing %q", calls[0], want)
+	t.Run("resets inherited permissions", func(t *testing.T) {
+		var calls []string
+		run := func(name string, args ...string) ([]byte, error) {
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			return []byte("Successfully processed 3 files."), nil
 		}
-	}
+		if err := repairManifestAccess(run, dir); err != nil {
+			t.Fatalf("repair: %v", err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("want one command, got %v", calls)
+		}
+		for _, want := range []string{"icacls", dir, "/reset", "/t"} {
+			if !strings.Contains(calls[0], want) {
+				t.Errorf("command %q is missing %q", calls[0], want)
+			}
+		}
+	})
 
-	// A failure must be reported, not swallowed: leaving the directory locked
-	// while claiming the install succeeded is the whole defect.
-	failing := func(string, ...string) ([]byte, error) {
-		return []byte("Access is denied."), errors.New("exit status 1")
-	}
-	err := repairManifestAccess(failing, dir)
-	if err == nil {
-		t.Fatal("a failed repair was reported as success")
-	}
-	if !strings.Contains(err.Error(), dir) {
-		t.Errorf("error does not name the directory: %v", err)
-	}
+	// /reset rewrites the ACL wholesale and needs WRITE_DAC on every child. A
+	// narrower grant to the current user often succeeds where that does not, and
+	// read access for this user is all that is actually required.
+	t.Run("falls back to a narrower grant", func(t *testing.T) {
+		t.Setenv("USERNAME", "qa")
+		t.Setenv("USERDOMAIN", "PC")
+		var calls []string
+		run := func(name string, args ...string) ([]byte, error) {
+			calls = append(calls, strings.Join(args, " "))
+			if len(args) > 1 && args[1] == "/reset" {
+				return []byte("Access is denied."), errors.New("exit status 5")
+			}
+			return []byte("Successfully processed 3 files."), nil
+		}
+		if err := repairManifestAccess(run, dir); err != nil {
+			t.Fatalf("the grant fallback did not run or did not succeed: %v", err)
+		}
+		if len(calls) != 2 {
+			t.Fatalf("want reset then grant, got %v", calls)
+		}
+		if !strings.Contains(calls[1], "/grant") || !strings.Contains(calls[1], `PC\qa`) {
+			t.Errorf("second attempt is not a grant to the current user: %q", calls[1])
+		}
+	})
 
-	// No directory, nothing to do — must not invent a command.
-	calls = nil
-	if err := repairManifestAccess(run, ""); err != nil {
-		t.Errorf("empty dir: %v", err)
-	}
-	if len(calls) != 0 {
-		t.Errorf("ran %v for an empty directory", calls)
-	}
+	t.Run("reports both failures without inventing success", func(t *testing.T) {
+		t.Setenv("USERNAME", "qa")
+		t.Setenv("USERDOMAIN", "")
+		failing := func(string, ...string) ([]byte, error) {
+			return []byte("Access is denied."), errors.New("exit status 5")
+		}
+		err := repairManifestAccess(failing, dir)
+		if err == nil {
+			t.Fatal("a failed repair was reported as success")
+		}
+		if !strings.Contains(err.Error(), dir) {
+			t.Errorf("error does not name the directory: %v", err)
+		}
+	})
+
+	t.Run("invents no command for an empty path", func(t *testing.T) {
+		var calls []string
+		run := func(name string, args ...string) ([]byte, error) {
+			calls = append(calls, name)
+			return nil, nil
+		}
+		if err := repairManifestAccess(run, ""); err != nil {
+			t.Errorf("empty dir: %v", err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("ran %v for an empty directory", calls)
+		}
+	})
 }
 
 // TestEveryChannelRootIsRegistered.
