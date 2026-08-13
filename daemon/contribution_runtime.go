@@ -400,6 +400,9 @@ func (s *swarmSupervisor) launch(
 	}
 	if cfg.Policy.AnnounceProviders {
 		go announceLoop(nodeCtx, n)
+		// Same gate: a node that may not advertise itself does not go looking
+		// for others either (WO-094).
+		go rendezvousLoop(nodeCtx, n)
 	}
 	return n, cancel, nil
 }

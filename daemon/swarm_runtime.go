@@ -42,6 +42,14 @@ const announceRetryMin = 60 * time.Second
 // announce. Provide cannot succeed before this happens.
 const routingTableWait = 90 * time.Second
 
+// How often to look for other Keel nodes, and how many to dial per round.
+// Slow and small: this is unprompted network activity, so it stays modest.
+const (
+	rendezvousInterval      = 15 * time.Minute
+	rendezvousRetry         = 2 * time.Minute
+	rendezvousPeersPerRound = 8
+)
+
 // prewarmTimeout bounds a background fetch. It runs ahead of the user, so it
 // must never delay anything the user is waiting for.
 const prewarmTimeout = 30 * time.Second
@@ -93,6 +101,38 @@ func startSwarm(ctx context.Context, st *store.Store) {
 // Announce itself re-checks the outbound gate, so a downgrade stops the next
 // tick from re-advertising a cache the user just withdrew even before this
 // loop's context is cancelled.
+// rendezvousLoop looks for other Keel nodes.
+//
+// The node's only unprompted outbound lookup. Everything else reaches out
+// because the user did something — watched a video, ran a search — and that is
+// why two healthy nodes could never meet: neither had a reason to look for the
+// other. Bounded and slow: finding peers is not urgent, and each round dials
+// only a handful.
+func rendezvousLoop(ctx context.Context, n *swarm.Node) {
+	// A short first pass so a fresh node has company quickly, then settle.
+	wait := 30 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		found, err := n.FindPeers(ctx, rendezvousPeersPerRound)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("swarm: rendezvous: %v", err)
+		}
+		if found > 0 {
+			log.Printf("swarm: rendezvous connected to %d Keel node(s)", found)
+		}
+		// Back off once we have company; keep looking hard while alone.
+		if n.KeelPeers() > 0 {
+			wait = rendezvousInterval
+		} else {
+			wait = rendezvousRetry
+		}
+	}
+}
+
 func announceLoop(ctx context.Context, n *swarm.Node) {
 	// Wait for the DHT to be routable before the first attempt.
 	//

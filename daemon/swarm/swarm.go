@@ -882,6 +882,15 @@ func (n *Node) Announce(ctx context.Context) error {
 	//
 	// So: a small first batch, then a line, then the rest. Reachability arrives
 	// in seconds instead of at the end of the round.
+	// The rendezvous key goes out first and on its own: it is how another node
+	// finds this one at all, and it must not wait behind thousands of content
+	// records. Without it, two nodes with different corpora never meet (WO-094).
+	if err := n.announceRendezvous(ctx); err != nil {
+		n.logf("rendezvous announce failed, this node will be hard to find: %v", err)
+	} else {
+		n.logf("rendezvous published; other Keel nodes can find this one")
+	}
+
 	if len(keys) > announceFirstBatch {
 		got, err := provideAll(ctx, n, keys[:announceFirstBatch], prefixCID)
 		if err != nil && got == 0 {
