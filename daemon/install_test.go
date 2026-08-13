@@ -299,7 +299,7 @@ func TestPrepareExtensionFolder(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(ext, "manifest.chrome.json"), []byte(template), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			msg, err := prepareExtensionFolder(filepath.Join(exeDir, "keel-host.exe"))
+			_, msg, err := prepareExtensionFolder(filepath.Join(exeDir, "keel-host.exe"))
 			if err != nil {
 				t.Fatalf("prepareExtensionFolder: %v", err)
 			}
@@ -325,7 +325,7 @@ func TestPrepareExtensionFolder(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(ext, "manifest.json"), []byte(template), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		msg, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe"))
+		_, msg, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe"))
 		if err != nil {
 			t.Fatalf("a packaged extension must not be an error: %v", err)
 		}
@@ -338,8 +338,95 @@ func TestPrepareExtensionFolder(t *testing.T) {
 	// manifest is what sent this investigation after the wrong bug.
 	t.Run("standalone binary is not an install failure", func(t *testing.T) {
 		root := t.TempDir()
-		if _, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe")); !errors.Is(err, errNoExtensionFolder) {
+		if _, _, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe")); !errors.Is(err, errNoExtensionFolder) {
 			t.Fatalf("err = %v, want errNoExtensionFolder", err)
 		}
 	})
+}
+
+// TestClearMarkOfTheWeb is the difference between a downloaded release and a
+// locally built one.
+//
+// Windows records a file's origin in a Zone.Identifier alternate data stream.
+// A marked executable is restricted, and a browser launching one as a
+// native-messaging host gets nothing — the same "Specified native messaging
+// host not found" a missing registry key produces. Cloning and building carries
+// no mark, which is why that works instantly while an identical downloaded
+// binary never does. Every file extracted from a marked .zip inherits the mark,
+// so a downloaded extension folder fails to load for the same reason.
+//
+// The stream cannot be created on a non-NTFS filesystem, so the test writes a
+// file whose name is literally the ADS path — which is what os.Remove is asked
+// to delete either way.
+func TestClearMarkOfTheWeb(t *testing.T) {
+	dir := t.TempDir()
+
+	// No mark is the normal case and must not be an error.
+	plain := filepath.Join(dir, "keel-host.exe")
+	if err := os.WriteFile(plain, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearMarkOfTheWeb(plain); err != nil {
+		t.Errorf("an unmarked file reported an error: %v", err)
+	}
+	if _, err := os.Stat(plain); err != nil {
+		t.Errorf("the file itself was removed: %v", err)
+	}
+
+	// A mark present is removed, and only the stream is removed.
+	marked := filepath.Join(dir, "downloaded.exe")
+	if err := os.WriteFile(marked, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stream := marked + ":Zone.Identifier"
+	if err := os.WriteFile(stream, []byte("[ZoneTransfer]\r\nZoneId=3\r\n"), 0o644); err != nil {
+		t.Skipf("cannot create an alternate-data-stream stand-in here: %v", err)
+	}
+	if err := clearMarkOfTheWeb(marked); err != nil {
+		t.Fatalf("clearing the mark: %v", err)
+	}
+	if _, err := os.Stat(stream); err == nil {
+		t.Error("the mark is still there")
+	}
+	if _, err := os.Stat(marked); err != nil {
+		t.Errorf("clearing the mark deleted the file: %v", err)
+	}
+}
+
+// TestClearMarkOfTheWebTree: an extension folder is many files, and one marked
+// file is enough to stop the browser loading it.
+func TestClearMarkOfTheWebTree(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "lib")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := []string{
+		filepath.Join(dir, "manifest.json"),
+		filepath.Join(dir, "background.js"),
+		filepath.Join(sub, "protocol.js"),
+	}
+	for _, f := range files {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f+":Zone.Identifier", []byte("[ZoneTransfer]"), 0o644); err != nil {
+			t.Skipf("cannot create an alternate-data-stream stand-in here: %v", err)
+		}
+	}
+	n, err := clearMarkOfTheWebTree(dir)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if n < len(files) {
+		t.Errorf("cleared %d marks, want at least %d", n, len(files))
+	}
+	for _, f := range files {
+		if _, err := os.Stat(f + ":Zone.Identifier"); err == nil {
+			t.Errorf("%s is still marked", f)
+		}
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s was deleted: %v", f, err)
+		}
+	}
 }

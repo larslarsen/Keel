@@ -50,9 +50,20 @@ the app. Open it in Notepad: the last line says `RESULT: SUCCESS` or
 file paths and browser settings keys only — nothing you have watched or
 searched — so it is safe to attach to an issue.
 
-**Your computer will warn you about these files.** They are not code-signed —
-a certificate costs money this project has not spent, and saying so is better
-than letting you meet the warning unwarned.
+**Your computer will warn you about these files, and it also marks them.**
+They are not code-signed — a certificate costs money this project has not
+spent, and saying so is better than letting you meet the warning unwarned.
+
+Windows records that a file came from the internet in a hidden "Zone.Identifier"
+mark. A marked program is restricted, and a browser starting Keel's desktop app
+in the background gets nothing at all — it reports the app as missing, exactly
+as if nothing were installed. This is why building from source works instantly
+while the identical downloaded file appears not to work.
+
+**`keel-host.exe install` clears the mark from itself and from the extension
+folder,** so running the installer once is enough. If you want to do it by hand
+first: right-click the `.exe` and the `.zip` → *Properties* → tick **Unblock** →
+OK, and extract the zip *after* unblocking it.
 
 - **Windows:** SmartScreen says "Windows protected your PC". Click *More info*,
   then *Run anyway*.

@@ -185,9 +185,9 @@ var errNoExtensionFolder = errors.New("extension folder not found")
 // Both the executable's own directory and its parent are probed, under both
 // names the release layouts use: the repository has daemon/keel-host beside
 // ../extension, and the release zip extracts to keel-extension beside the .exe.
-func prepareExtensionFolder(exe string) (string, error) {
-	dir := filepath.Dir(exe)
-	for _, base := range []string{dir, filepath.Dir(dir)} {
+func prepareExtensionFolder(exe string) (dir, msg string, err error) {
+	exeDir := filepath.Dir(exe)
+	for _, base := range []string{exeDir, filepath.Dir(exeDir)} {
 		for _, name := range []string{"extension", "keel-extension"} {
 			cand := filepath.Join(base, name)
 			if fi, err := os.Stat(cand); err != nil || !fi.IsDir() {
@@ -197,19 +197,65 @@ func prepareExtensionFolder(exe string) (string, error) {
 			// A packaged extension already carries its manifest. Rewriting it
 			// from a template that is not shipped would be the only failure.
 			if _, err := os.Stat(dst); err == nil {
-				return "already prepared: " + dst, nil
+				return cand, "already prepared: " + dst, nil
 			}
 			data, err := os.ReadFile(filepath.Join(cand, "manifest.chrome.json"))
 			if err != nil {
 				continue
 			}
 			if err := os.WriteFile(dst, data, 0o644); err != nil {
-				return "", fmt.Errorf("write %s: %w", dst, err)
+				return "", "", fmt.Errorf("write %s: %w", dst, err)
 			}
-			return "prepared " + dst, nil
+			return cand, "prepared " + dst, nil
 		}
 	}
-	return "", errNoExtensionFolder
+	return "", "", errNoExtensionFolder
+}
+
+// clearMarkOfTheWeb removes the "downloaded from the internet" mark from a file.
+//
+// Windows records the origin of a downloaded file in a Zone.Identifier
+// alternate data stream. A marked executable is restricted, and a browser
+// launching one as a native-messaging host gets nothing — the same
+// "Specified native messaging host not found" that a missing registry key
+// produces. A file built locally carries no mark, which is why building from
+// source works instantly while an identical downloaded binary never does.
+// Every file extracted from a marked .zip inherits the mark too, so a
+// downloaded extension folder can fail to load for the same reason.
+//
+// The mark cannot be cleared by the browser and it is not visible anywhere the
+// user would think to look. Since the installer is already running as a program
+// the user launched deliberately, it clears the mark from itself and from the
+// extension it prepares. Deleting the stream is exactly what the Properties
+// dialog's "Unblock" checkbox does.
+//
+// A missing stream is success: most files never have one.
+func clearMarkOfTheWeb(path string) error {
+	err := os.Remove(path + ":Zone.Identifier")
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	// Some filesystems reject the ADS syntax outright rather than reporting the
+	// stream as absent. That is not a failure either: there is no mark to clear.
+	if errors.Is(err, fs.ErrInvalid) {
+		return nil
+	}
+	return err
+}
+
+// clearMarkOfTheWebTree clears the mark from every file in a directory.
+func clearMarkOfTheWebTree(dir string) (int, error) {
+	cleared := 0
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil // unreadable entries are not worth failing an install over
+		}
+		if e := clearMarkOfTheWeb(p); e == nil {
+			cleared++
+		}
+		return nil
+	})
+	return cleared, err
 }
 
 // installEntry is one browser's share of an install: which file, which schema,
@@ -513,8 +559,18 @@ func runInstall(args []string) int {
 	}
 
 	if !*dry {
+		// Clear the download mark from this executable before the browser ever
+		// tries to launch it. This is the difference between a downloaded
+		// release and a locally built one, and it presents as the host simply
+		// not being found.
+		if err := clearMarkOfTheWeb(exe); err != nil {
+			rep.line("unblock  %-9s WARNING  %v", "host", err)
+		} else {
+			rep.line("unblock  %-9s OK       %s", "host", exe)
+		}
+
 		rep.line("")
-		switch msg, err := prepareExtensionFolder(exe); {
+		switch extDir, msg, err := prepareExtensionFolder(exe); {
 		case errors.Is(err, errNoExtensionFolder):
 			// A standalone host binary is a supported layout. Saying the host
 			// manifest is missing here is what sent WO-091 chasing the wrong bug.
@@ -527,6 +583,15 @@ func runInstall(args []string) int {
 		default:
 			rep.line("extension      %s", msg)
 			fmt.Println(msg)
+			// Files extracted from a downloaded .zip inherit its mark, which can
+			// stop the browser loading the extension at all.
+			if extDir != "" {
+				if n, err := clearMarkOfTheWebTree(extDir); err != nil {
+					rep.line("unblock  %-9s WARNING  %v", "extension", err)
+				} else {
+					rep.line("unblock  %-9s OK       %d file(s) in %s", "extension", n, extDir)
+				}
+			}
 		}
 	}
 
