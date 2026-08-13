@@ -855,27 +855,28 @@ func (n *Node) Announce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	announced, graphErr := provideAll(ctx, n, keys, prefixCID)
-
-	// Catalogue buckets are announced separately, because the two datasets are
-	// held independently — a node can hold titles for videos whose graph it has
-	// evicted, and vice versa.
 	catKeys, err := n.st.LocalCataloguePrefixes(n.prefixBits(), n.cfg.Policy.CatalogueSources())
 	if err != nil {
 		return err
 	}
-	catAnnounced, catErr := provideAll(ctx, n, catKeys, prefixCID)
-
-	// Shards are announced separately again, same reasoning: a node's title
-	// index and its shard index are recomputed from the same source but are
-	// their own namespace (shardCID, shard.go), so a shard fetch and a
-	// catalogue fetch for the same node never correlate.
 	shardKeys, err := n.st.LocalShards(n.cfg.Policy.CatalogueSources())
 	if err != nil {
 		return err
 	}
-	shardAnnounced, shardErr := provideAll(ctx, n, shardKeys, shardCID)
 
+	// Logged BEFORE the work, not only after. A node with a real corpus has
+	// thousands of keys and a round takes many minutes; with only an
+	// end-of-round line, that is indistinguishable from a loop that never ran —
+	// which is exactly how it was misread during live QA.
+	n.logf("announcing %d graph, %d catalogue, %d shard keys",
+		len(keys), len(catKeys), len(shardKeys))
+
+	announced, graphErr := provideAll(ctx, n, keys, prefixCID)
+	catAnnounced, catErr := provideAll(ctx, n, catKeys, prefixCID)
+	shardAnnounced, shardErr := provideAll(ctx, n, shardKeys, shardCID)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	firstErr := graphErr
 	if firstErr == nil {
 		firstErr = catErr
