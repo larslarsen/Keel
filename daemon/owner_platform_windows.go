@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -124,16 +125,93 @@ type pipeAddr string
 func (a pipeAddr) Network() string { return "named-pipe" }
 func (a pipeAddr) String() string  { return string(a) }
 
+// pipeConn is a net.Conn over a SYNCHRONOUS named-pipe handle.
+//
+// It used to be os.NewFile(handle) wrapped in a struct, and that is what broke
+// the daemon on Windows. os.NewFile hands the handle to the Go runtime's I/O
+// completion port, which requires the handle to have been opened for
+// overlapped I/O. These pipes are created with PIPE_WAIT and no
+// FILE_FLAG_OVERLAPPED — deliberately, because Accept blocks in
+// ConnectNamedPipe — so the association is wrong and the first read fails with
+// "The handle is invalid".
+//
+// The visible effect was the owner accepting a connection, immediately logging
+// "owner client rejected: read ...: The handle is invalid", and closing. The
+// proxy then reported "the pipe is being closed", the browser reported the
+// desktop app as not running, and nothing anywhere named a pipe. It looked
+// exactly like a permissions problem, a missing registry key, and a database
+// that would not open, in turn.
+//
+// Reading and writing the handle directly keeps the pipe synchronous from end
+// to end, which is what it was created as.
 type pipeConn struct {
-	*os.File
+	h    windows.Handle
 	addr pipeAddr
+
+	mu     sync.Mutex
+	closed bool
 }
 
-func (c *pipeConn) LocalAddr() net.Addr                { return c.addr }
-func (c *pipeConn) RemoteAddr() net.Addr               { return c.addr }
-func (c *pipeConn) SetDeadline(t time.Time) error      { return c.File.SetDeadline(t) }
-func (c *pipeConn) SetReadDeadline(t time.Time) error  { return c.File.SetReadDeadline(t) }
-func (c *pipeConn) SetWriteDeadline(t time.Time) error { return c.File.SetWriteDeadline(t) }
+func (c *pipeConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	var n uint32
+	if err := windows.ReadFile(c.h, p, &n, nil); err != nil {
+		// A peer that hung up is EOF, not a fault: the proxy exits when the
+		// browser closes the port, and that is the ordinary end of a session.
+		if errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
+			errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) ||
+			errors.Is(err, windows.ERROR_NO_DATA) {
+			return int(n), io.EOF
+		}
+		return int(n), err
+	}
+	if n == 0 {
+		return 0, io.EOF
+	}
+	return int(n), nil
+}
+
+func (c *pipeConn) Write(p []byte) (int, error) {
+	total := 0
+	for total < len(p) {
+		var n uint32
+		if err := windows.WriteFile(c.h, p[total:], &n, nil); err != nil {
+			if errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
+				errors.Is(err, windows.ERROR_NO_DATA) {
+				return total, io.ErrClosedPipe
+			}
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrShortWrite
+		}
+		total += int(n)
+	}
+	return total, nil
+}
+
+func (c *pipeConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	return windows.CloseHandle(c.h)
+}
+
+func (c *pipeConn) LocalAddr() net.Addr  { return c.addr }
+func (c *pipeConn) RemoteAddr() net.Addr { return c.addr }
+
+// A synchronous pipe has no deadlines. Reported as unsupported rather than
+// silently accepted, so nothing can come to depend on a timer that will never
+// fire; every caller here already ignores the result. Sessions are one
+// goroutine each, so a peer that never speaks blocks only itself.
+func (c *pipeConn) SetDeadline(time.Time) error      { return os.ErrNoDeadline }
+func (c *pipeConn) SetReadDeadline(time.Time) error  { return os.ErrNoDeadline }
+func (c *pipeConn) SetWriteDeadline(time.Time) error { return os.ErrNoDeadline }
 
 func newPipeInstance(name string, first bool) (windows.Handle, error) {
 	sd, err := currentUserSecurityDescriptor()
@@ -206,7 +284,7 @@ func (l *ownerPipeListener) Accept() (net.Conn, error) {
 		_ = windows.CloseHandle(h)
 		return nil, err
 	}
-	return &pipeConn{File: os.NewFile(uintptr(h), l.name), addr: pipeAddr(l.name)}, nil
+	return &pipeConn{h: h, addr: pipeAddr(l.name)}, nil
 }
 
 func (l *ownerPipeListener) Close() error {
@@ -240,7 +318,10 @@ func dialOwnerEndpoint(ctx context.Context, p ownerPaths) (net.Conn, error) {
 		h, err := windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE,
 			0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
 		if err == nil {
-			return &pipeConn{File: os.NewFile(uintptr(h), p.endpoint), addr: pipeAddr(p.endpoint)}, nil
+			// Same rule as the listener: keep the handle out of the Go
+			// runtime's poller. The client opens a synchronous handle too, and
+			// os.NewFile would break it identically.
+			return &pipeConn{h: h, addr: pipeAddr(p.endpoint)}, nil
 		}
 		if !errors.Is(err, windows.ERROR_PIPE_BUSY) && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 			return nil, err
