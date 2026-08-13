@@ -224,3 +224,53 @@ func TestUnopenableDatabaseIsNotAdopted(t *testing.T) {
 		t.Errorf("chosen base %s is not usable: %v", dir, err)
 	}
 }
+
+// TestDeniedSecretIsAlsoADeadEnd. Checking only keel.sqlite was too narrow:
+// the same directory holds owner-<id>.secret, which is read BEFORE the store is
+// ever opened, and a denied secret fails at the same point with the same
+// message. Any of Keel's own files being unopenable makes the directory a dead
+// end.
+func TestDeniedSecretIsAlsoADeadEnd(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open anything")
+	}
+	root := t.TempDir()
+	cfg := filepath.Join(root, "cfg")
+	poisoned := filepath.Join(cfg, "keel")
+	if err := os.MkdirAll(poisoned, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// No database at all — only a credential this user cannot read.
+	secret := filepath.Join(poisoned, "owner-abc123.secret")
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(secret, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(secret, 0o600) })
+
+	if err := ownerFilesOpenable(poisoned); err == nil {
+		t.Fatal("a denied secret was reported as fine")
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("LOCALAPPDATA", filepath.Join(root, "local"))
+	t.Setenv("KEEL_DATA_DIR", "")
+	t.Setenv("KEEL_DB", "")
+
+	dir, err := chooseOwnerBase()
+	if err != nil {
+		t.Fatalf("no base chosen: %v", err)
+	}
+	if dir == poisoned {
+		t.Fatal("adopted a directory whose credential cannot be read")
+	}
+}
+
+// A directory with no Keel files in it is fine, not suspicious.
+func TestEmptyDirectoryIsOpenable(t *testing.T) {
+	if err := ownerFilesOpenable(t.TempDir()); err != nil {
+		t.Errorf("an empty directory was rejected: %v", err)
+	}
+}

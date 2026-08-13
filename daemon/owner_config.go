@@ -56,6 +56,32 @@ func ownerDirUsable(dir string) error {
 	return nil
 }
 
+// ownerFilesOpenable proves every file Keel keeps in a directory can actually
+// be opened by this process.
+//
+// Checking only keel.sqlite was too narrow. The same directory holds
+// owner-<id>.secret and owner-<id>.log, and a denied secret fails at exactly
+// the same point, with exactly the same message, as a denied database — the
+// credential is read before the store is ever touched. Any one of them being
+// unopenable makes the whole directory a dead end, so the test is "can I open
+// everything of mine that is already here", not "is the database fine".
+func ownerFilesOpenable(dir string) error {
+	patterns := []string{"keel.sqlite", "keel.sqlite-wal", "keel.sqlite-shm",
+		"owner-*.secret", "owner-*.log"}
+	for _, pat := range patterns {
+		matches, err := filepath.Glob(filepath.Join(dir, pat))
+		if err != nil {
+			continue
+		}
+		for _, m := range matches {
+			if err := fileOpenable(m); err != nil {
+				return fmt.Errorf("%s cannot be opened: %w", filepath.Base(m), err)
+			}
+		}
+	}
+	return nil
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -137,8 +163,8 @@ func chooseOwnerBase() (string, error) {
 		// never read: the path becomes explicit from here on, so the store's own
 		// fallback is switched off, and every start fails with "Access is
 		// denied" on a file the daemon will not move away from. Prove it opens.
-		if err := fileOpenable(db); err != nil {
-			log.Printf("state directory: %s holds an unopenable database (%v); looking elsewhere", dir, err)
+		if err := ownerFilesOpenable(dir); err != nil {
+			log.Printf("state directory: %s is unusable (%v); looking elsewhere", dir, err)
 			continue
 		}
 		if err := ownerDirUsable(dir); err != nil {
@@ -157,11 +183,9 @@ func chooseOwnerBase() (string, error) {
 		// daemon will never move away from. Checked here as well as in the
 		// continuity pass above — skipping it there only to adopt it here is
 		// exactly the bug this is meant to fix.
-		if db := filepath.Join(dir, "keel.sqlite"); fileExists(db) {
-			if err := fileOpenable(db); err != nil {
-				problems = append(problems, fmt.Sprintf("%s holds a database that cannot be opened: %v", dir, err))
-				continue
-			}
+		if err := ownerFilesOpenable(dir); err != nil {
+			problems = append(problems, fmt.Sprintf("%s: %v", dir, err))
+			continue
 		}
 		if err := ownerDirUsable(dir); err != nil {
 			problems = append(problems, err.Error())
