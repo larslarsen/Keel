@@ -32,10 +32,41 @@ jobs:
         run: go build -o keel-host.exe .
 
       - name: Install, register, and self-test
+        id: install
+        continue-on-error: true
         working-directory: daemon
         run: |
           .\keel-host.exe install -all
           if ($LASTEXITCODE -ne 0) { throw "install failed with exit code $LASTEXITCODE" }
+
+      # The owner is a detached process: everything it says goes to its own log
+      # and nowhere else. Reading it back is the only way to see why it stops.
+      - name: The owner's own log
+        if: always()
+        run: |
+          $dirs = @("$env:APPDATA\keel", "$env:LOCALAPPDATA\Keel\data")
+          foreach ($d in $dirs) {
+            if (-not (Test-Path $d)) { continue }
+            Write-Host "=== $d"
+            Get-ChildItem $d -Force | Format-Table Name, Length, LastWriteTime | Out-String | Write-Host
+            Get-ChildItem "$d\owner-*.log" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "--- $($_.FullName)"
+              Get-Content $_.FullName
+            }
+          }
+
+      - name: Is anything still running?
+        if: always()
+        run: |
+          Get-Process keel-host -ErrorAction SilentlyContinue |
+            Format-Table Id, ProcessName, StartTime | Out-String | Write-Host
+          Write-Host "--- named pipes matching keel"
+          [System.IO.Directory]::GetFiles("\\.\\pipe\\") |
+            Where-Object { $_ -like "*keel*" } | Write-Host
+
+      - name: Fail if the install failed
+        if: always() && steps.install.outcome == 'failure'
+        run: throw "install failed; see the owner log above"
 
       - name: Show the install report
         if: always()
