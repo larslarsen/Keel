@@ -39,7 +39,16 @@ func currentUserSecurityDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
 	if err != nil {
 		return nil, err
 	}
-	return windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + sid.String() + ")")
+	return windows.SecurityDescriptorFromString(ownerSDDL(sid.String(), false))
+}
+
+// currentUserDirectorySecurityDescriptor is the same grant, made inheritable.
+func currentUserDirectorySecurityDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
+	sid, err := currentUserSID()
+	if err != nil {
+		return nil, err
+	}
+	return windows.SecurityDescriptorFromString(ownerSDDL(sid.String(), true))
 }
 
 func ownerEndpoint(_ string, id string) (string, error) {
@@ -50,8 +59,14 @@ func ownerEndpoint(_ string, id string) (string, error) {
 	return `\\.\pipe\keel-owner-` + sid.String() + "-" + id, nil
 }
 
-func secureOwnerPath(path string, _ bool) error {
+// secureOwnerPath locks a path to the current user. isDir matters: see
+// ownerSDDL. It was accepted and ignored here, which is the whole reason a
+// file inside Keel's own directory could end up unopenable by its own daemon.
+func secureOwnerPath(path string, isDir bool) error {
 	sd, err := currentUserSecurityDescriptor()
+	if isDir {
+		sd, err = currentUserDirectorySecurityDescriptor()
+	}
 	if err != nil {
 		return err
 	}
