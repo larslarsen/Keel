@@ -82,6 +82,10 @@ func (n *Node) handleShardRequest(s network.Stream) {
 		return
 	}
 	_, _ = s.Write(raw)
+	// Logged on success, not only on failure. Without a positive signal there is
+	// no way to tell "no one asked" from "asked and refused" — which is exactly
+	// what made intermittent search coverage undiagnosable from this side.
+	n.logf("shard %d: served %d bytes to %s", shard, len(raw), s.Conn().RemotePeer())
 	if err := n.st.RecordContributionServe(len(raw)); err != nil {
 		n.logf("shard %d: recording contribution activity: %v", shard, err)
 	}

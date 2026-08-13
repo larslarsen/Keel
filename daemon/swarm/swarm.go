@@ -906,9 +906,19 @@ func (n *Node) Announce(ctx context.Context) error {
 		}
 	}
 
+	// Order matters, and it used to be wrong. Shards were published last, behind
+	// thousands of catalogue records — but distributed search finds a peer by
+	// its SHARD provider record, so search stayed blind for the entire length of
+	// the catalogue round (half an hour on a real corpus) and then abruptly
+	// worked. The observed symptom was a coverage bar filling in once, seemingly
+	// at random.
+	//
+	// Graph and shards are small and are what makes a node useful to search
+	// immediately; the catalogue is by far the largest set and only labels
+	// results, so it goes last.
 	announced, graphErr := provideAll(ctx, n, keys, prefixCID)
-	catAnnounced, catErr := provideAll(ctx, n, catKeys, prefixCID)
 	shardAnnounced, shardErr := provideAll(ctx, n, shardKeys, shardCID)
+	catAnnounced, catErr := provideAll(ctx, n, catKeys, prefixCID)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
