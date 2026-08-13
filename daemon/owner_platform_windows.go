@@ -125,25 +125,83 @@ type pipeAddr string
 func (a pipeAddr) Network() string { return "named-pipe" }
 func (a pipeAddr) String() string  { return string(a) }
 
-// pipeConn is a net.Conn over a SYNCHRONOUS named-pipe handle.
+// overlappedIO performs one read or write on an overlapped handle and waits for
+// it, using an event of its own.
 //
-// It used to be os.NewFile(handle) wrapped in a struct, and that is what broke
-// the daemon on Windows. os.NewFile hands the handle to the Go runtime's I/O
-// completion port, which requires the handle to have been opened for
-// overlapped I/O. These pipes are created with PIPE_WAIT and no
-// FILE_FLAG_OVERLAPPED — deliberately, because Accept blocks in
-// ConnectNamedPipe — so the association is wrong and the first read fails with
-// "The handle is invalid".
+// Each call gets its own OVERLAPPED and event, which is what lets a read and a
+// write proceed at the same time on one handle — the property the proxy depends
+// on and a synchronous handle does not have.
+func overlappedIO(h windows.Handle, p []byte, write bool) (uint32, error) {
+	ev, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseHandle(ev)
+	ov := &windows.Overlapped{HEvent: ev}
+
+	var done uint32
+	if write {
+		err = windows.WriteFile(h, p, &done, ov)
+	} else {
+		err = windows.ReadFile(h, p, &done, ov)
+	}
+	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
+		return done, err
+	}
+	if errors.Is(err, windows.ERROR_IO_PENDING) {
+		if err := windows.GetOverlappedResult(h, ov, &done, true); err != nil {
+			return done, err
+		}
+	}
+	return done, nil
+}
+
+// connectOverlapped waits for a client on an overlapped listening handle.
+func connectOverlapped(h windows.Handle) error {
+	ev, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(ev)
+	ov := &windows.Overlapped{HEvent: ev}
+
+	err = windows.ConnectNamedPipe(h, ov)
+	if err == nil || errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
+		return nil
+	}
+	if !errors.Is(err, windows.ERROR_IO_PENDING) {
+		return err
+	}
+	var done uint32
+	if err := windows.GetOverlappedResult(h, ov, &done, true); err != nil {
+		if errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// pipeConn is a net.Conn over an OVERLAPPED named-pipe handle.
 //
-// The visible effect was the owner accepting a connection, immediately logging
-// "owner client rejected: read ...: The handle is invalid", and closing. The
-// proxy then reported "the pipe is being closed", the browser reported the
-// desktop app as not running, and nothing anywhere named a pipe. It looked
-// exactly like a permissions problem, a missing registry key, and a database
-// that would not open, in turn.
+// Two things about this were wrong in turn, and both presented to the user as
+// "the desktop app is not running".
 //
-// Reading and writing the handle directly keeps the pipe synchronous from end
-// to end, which is what it was created as.
+// It began as os.NewFile(handle) in a struct. os.NewFile registers the handle
+// with the Go runtime's I/O completion port, which requires a handle opened for
+// overlapped I/O — and the pipe was created synchronous, so the very first read
+// failed with "The handle is invalid" and the owner dropped every client.
+//
+// Reading the handle directly fixed that and introduced the next failure:
+// Windows serializes I/O on a SYNCHRONOUS handle, so a blocking ReadFile holds
+// it and a concurrent WriteFile queues behind. The proxy runs exactly that
+// shape — one goroutine copying browser→owner, another copying owner→browser —
+// so the browser's first frame was never written, the owner never answered, and
+// the client timed out with nothing in any log.
+//
+// So: overlapped handles, and each read and write carries its own OVERLAPPED
+// and event. That is what makes a read and a write independent on one handle,
+// which is the property the proxy requires.
 type pipeConn struct {
 	h    windows.Handle
 	addr pipeAddr
@@ -156,8 +214,8 @@ func (c *pipeConn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	var n uint32
-	if err := windows.ReadFile(c.h, p, &n, nil); err != nil {
+	n, err := overlappedIO(c.h, p, false)
+	if err != nil {
 		// A peer that hung up is EOF, not a fault: the proxy exits when the
 		// browser closes the port, and that is the ordinary end of a session.
 		if errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
@@ -176,8 +234,8 @@ func (c *pipeConn) Read(p []byte) (int, error) {
 func (c *pipeConn) Write(p []byte) (int, error) {
 	total := 0
 	for total < len(p) {
-		var n uint32
-		if err := windows.WriteFile(c.h, p[total:], &n, nil); err != nil {
+		n, err := overlappedIO(c.h, p[total:], true)
+		if err != nil {
 			if errors.Is(err, windows.ERROR_BROKEN_PIPE) ||
 				errors.Is(err, windows.ERROR_NO_DATA) {
 				return total, io.ErrClosedPipe
@@ -205,7 +263,8 @@ func (c *pipeConn) Close() error {
 func (c *pipeConn) LocalAddr() net.Addr  { return c.addr }
 func (c *pipeConn) RemoteAddr() net.Addr { return c.addr }
 
-// A synchronous pipe has no deadlines. Reported as unsupported rather than
+// Deadlines would need CancelIoEx wired into every pending operation; they are
+// reported unsupported rather than
 // silently accepted, so nothing can come to depend on a timer that will never
 // fire; every caller here already ignores the result. Sessions are one
 // goroutine each, so a peer that never speaks blocks only itself.
@@ -222,7 +281,13 @@ func newPipeInstance(name string, first bool) (windows.Handle, error) {
 		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
 		SecurityDescriptor: sd,
 	}
-	flags := uint32(windows.PIPE_ACCESS_DUPLEX)
+	// FILE_FLAG_OVERLAPPED is not optional here. A synchronous handle serializes
+	// I/O: a blocking ReadFile holds the handle, and a concurrent WriteFile on
+	// the same handle waits behind it. The proxy runs exactly that pattern — one
+	// goroutine copying browser→owner, another copying owner→browser — so on a
+	// synchronous pipe the browser's first frame is never written, the owner
+	// never answers, and the panel reports the desktop app as not running.
+	flags := uint32(windows.PIPE_ACCESS_DUPLEX | windows.FILE_FLAG_OVERLAPPED)
 	if first {
 		flags |= windows.FILE_FLAG_FIRST_PIPE_INSTANCE
 	}
@@ -274,7 +339,7 @@ func (l *ownerPipeListener) Accept() (net.Conn, error) {
 	l.pending = windows.InvalidHandle
 	l.connecting = h
 	l.mu.Unlock()
-	err := windows.ConnectNamedPipe(h, nil)
+	err := connectOverlapped(h)
 	l.mu.Lock()
 	if l.connecting == h {
 		l.connecting = windows.InvalidHandle
@@ -315,8 +380,11 @@ func dialOwnerEndpoint(ctx context.Context, p ownerPaths) (net.Conn, error) {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		// Overlapped on this side too: the proxy reads and writes this handle
+		// from two goroutines at once.
 		h, err := windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE,
-			0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+			0, nil, windows.OPEN_EXISTING,
+			windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED, 0)
 		if err == nil {
 			// Same rule as the listener: keep the handle out of the Go
 			// runtime's poller. The client opens a synchronous handle too, and
