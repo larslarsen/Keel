@@ -1,0 +1,87 @@
+# Run the thing on Windows.
+#
+# Every Windows failure in WO-091 was diagnosed by inference from a screenshot,
+# because the only Windows machine involved was a slow laptop belonging to
+# someone who had to type every command by hand. That was never necessary: a
+# Windows runner is free and takes two minutes, and it exercises the parts no
+# other job can reach — the registry, the DACLs, the native-messaging launch.
+#
+# This job installs and then actually runs the host the way a browser does. It
+# fails if any stage of the self-test fails.
+name: windows-e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  install-and-run:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          check-latest: true
+
+      - name: Build
+        working-directory: daemon
+        run: go build -o keel-host.exe .
+
+      - name: Install, register, and self-test
+        working-directory: daemon
+        run: |
+          .\keel-host.exe install -all
+          if ($LASTEXITCODE -ne 0) { throw "install failed with exit code $LASTEXITCODE" }
+
+      - name: Show the install report
+        if: always()
+        working-directory: daemon
+        run: |
+          if (Test-Path install-report.txt) { Get-Content install-report.txt }
+          else { Write-Host "no install-report.txt was written" }
+
+      - name: The registry actually holds what we wrote
+        run: |
+          $keys = @(
+            'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.keel.host',
+            'HKCU:\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.keel.host',
+            'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.keel.host',
+            'HKCU:\Software\Mozilla\NativeMessagingHosts\com.keel.host'
+          )
+          foreach ($k in $keys) {
+            if (-not (Test-Path $k)) { throw "missing registry key: $k" }
+            $manifest = (Get-ItemProperty -Path $k).'(default)'
+            if (-not $manifest) { throw "no default value on $k" }
+            if (-not (Test-Path $manifest)) { throw "$k points at a missing file: $manifest" }
+            $json = Get-Content $manifest -Raw | ConvertFrom-Json
+            if ($json.name -ne 'com.keel.host') { throw "$manifest has name $($json.name)" }
+            if (-not (Test-Path $json.path)) { throw "$manifest points at a missing exe: $($json.path)" }
+            # The two schemas must never share a file (WO-091's original defect).
+            if ($k -like '*Mozilla*') {
+              if (-not $json.allowed_extensions) { throw "Firefox manifest has no allowed_extensions" }
+              if ($json.allowed_origins) { throw "Firefox manifest carries allowed_origins" }
+            } else {
+              if (-not $json.allowed_origins) { throw "$k manifest has no allowed_origins" }
+              if ($json.allowed_extensions) { throw "$k manifest carries allowed_extensions" }
+            }
+            Write-Host "ok  $k -> $manifest"
+          }
+
+      - name: A second install must still work
+        working-directory: daemon
+        run: |
+          .\keel-host.exe install -all
+          if ($LASTEXITCODE -ne 0) { throw "the second install failed with $LASTEXITCODE" }
+
+      - name: End-to-end tests on Windows
+        working-directory: daemon
+        run: go test ./... -run 'EndToEnd|SelfTest|Repairs|Escapes|DoesNotCreate|DeletesAPoisoned' -v
+
+      - name: Stop the owner
+        if: always()
+        working-directory: daemon
+        run: .\keel-host.exe owner stop
