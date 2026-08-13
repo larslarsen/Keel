@@ -277,13 +277,32 @@ func ownerSecret(p ownerPaths) (string, error) {
 	if err := prepareOwnerPaths(p); err != nil {
 		return "", err
 	}
+	repaired := false
 	for attempt := 0; attempt < 20; attempt++ {
 		secret, err := readOwnerSecret(p.secret)
 		if err == nil {
 			return secret, nil
 		}
 		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, errSecretIncomplete) {
-			return "", err
+			// A credential that cannot be read or does not pass its own
+			// permission check is not a state anyone can be asked to resolve by
+			// hand — the error used to say "delete this file and run the
+			// installer again", which on a machine where typing costs minutes is
+			// not a fix at all. It is a random 256-bit value with no user data in
+			// it, and the only thing that depends on it is a running owner, which
+			// installing stops anyway. So: throw it away and make a new one.
+			//
+			// Once per call. If a freshly created credential also fails to read,
+			// the fault is not the file.
+			if repaired {
+				return "", err
+			}
+			repaired = true
+			log.Printf("owner credential: %v; recreating it", err)
+			if rmErr := forceRemove(p.secret); rmErr != nil {
+				return "", fmt.Errorf("%w (and it could not be replaced: %v)", err, rmErr)
+			}
+			continue
 		}
 		if errors.Is(err, fs.ErrNotExist) {
 			var raw [32]byte

@@ -274,3 +274,55 @@ func TestEmptyDirectoryIsOpenable(t *testing.T) {
 		t.Errorf("an empty directory was rejected: %v", err)
 	}
 }
+
+// TestUnreadableCredentialIsRecreated.
+//
+// The old behaviour was to fail with "delete this file and run the installer
+// again". On a machine where typing costs minutes and nothing can be copied
+// onto it, that is not a fix — it is a dead end with instructions.
+//
+// The credential is a random 256-bit value with no user data in it, and the
+// only thing depending on it is a running owner, which installing stops anyway.
+// So an unreadable one is replaced rather than reported.
+func TestUnreadableCredentialIsRecreated(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read anything")
+	}
+	dir := t.TempDir()
+	runtimeDir, err := os.MkdirTemp("", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	p := ownerPaths{
+		configDir:  dir,
+		runtimeDir: runtimeDir,
+		secret:     filepath.Join(dir, "owner-abc.secret"),
+		dbPath:     filepath.Join(dir, "keel.sqlite"),
+	}
+
+	// A credential this user cannot read at all.
+	if err := os.WriteFile(p.secret, []byte("unreadable\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p.secret, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p.secret, 0o600) })
+
+	got, err := ownerSecret(p)
+	if err != nil {
+		t.Fatalf("an unreadable credential was not replaced: %v", err)
+	}
+	if got == "" {
+		t.Fatal("no credential returned")
+	}
+	// And it must be a real, readable one afterwards.
+	again, err := ownerSecret(p)
+	if err != nil {
+		t.Fatalf("the replacement is not readable either: %v", err)
+	}
+	if again != got {
+		t.Errorf("the credential changed between reads: %q then %q", got, again)
+	}
+}
