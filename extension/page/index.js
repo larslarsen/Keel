@@ -9,6 +9,7 @@
 import { browser } from "../lib/browser.js";
 import { PEER_SEARCH_REV_RECIPROCAL } from "../lib/protocol.js";
 import { escapeHtml, fmtDuration } from "../lib/render.js";
+import { tokenColoringForWord } from "../lib/tokens.js";
 import {
   analysisTable,
   fmtAgo,
@@ -413,6 +414,17 @@ function renderPeerProgress(progress) {
     return;
   }
 
+  // One segment per distinct three-gram token. The daemon can report the same
+  // token_index more than once as a walk progresses, and a repeated token would
+  // be drawn as two bars — which reads as more of the query than there is.
+  const seen = new Set();
+  progress = progress.filter((p) => {
+    const k = Number(p.token_index) || 0;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
   const order = progress.map((_, i) => i);
   for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -450,6 +462,39 @@ function renderPeerProgress(progress) {
   });
 }
 
+/**
+ * The query word, with each three-gram's starting character in that
+ * three-gram's colour.
+ *
+ * Colours come from the same table and the same index as the sub-bars, so a
+ * letter and its bar always agree.
+ *
+ * @param {string} word
+ * @returns {DocumentFragment}
+ */
+function colorizedWord(word) {
+  const frag = document.createDocumentFragment();
+  const { chars, tokenIndex } = tokenColoringForWord(word);
+  if (!chars.length) {
+    frag.appendChild(document.createTextNode(String(word ?? "")));
+    return frag;
+  }
+  chars.forEach((ch, i) => {
+    // The normalized form is space-padded; those spaces are structure, not
+    // letters the user typed, so they are not rendered.
+    if (ch === " " && (i === 0 || i === chars.length - 1)) return;
+    const span = document.createElement("span");
+    span.textContent = ch;
+    const t = tokenIndex[i];
+    if (t >= 0) {
+      span.className = "tok-char";
+      span.style.color = PEER_PROGRESS_COLORS[Math.abs(t) % PEER_PROGRESS_COLORS.length];
+    }
+    frag.appendChild(span);
+  });
+  return frag;
+}
+
 // renderWordCorpus draws WO-068's two-tier bars: top = per-word global % of
 // observed graphs; bottom = per ShardK char-token coverage from gossiped
 // token sketches. Separate from renderPeerProgress (query-scoped fetch
@@ -478,7 +523,18 @@ function renderWordCorpus(stats) {
     label.className = "word-label";
     const pctText =
       typeof w.pct === "number" ? `~${w.pct}% of observed graphs` : "no estimate yet";
-    label.textContent = `${w.word} — ${pctText}`;
+    // The word is written a character at a time, each tinted with the colour of
+    // the three-gram that starts there — the same colour as that three-gram's
+    // sub-bar below. Three-grams overlap, so a character cannot belong to only
+    // one; giving each token the character it starts at gives every token
+    // exactly one, left to right, and makes the bars readable as parts of the
+    // word instead of an anonymous row.
+    //
+    // The daemon sends no token text (TokenCoverageWire is an opaque index), so
+    // this mapping is computed locally from the user's own query — see
+    // lib/tokens.js.
+    label.appendChild(colorizedWord(w.word));
+    label.appendChild(document.createTextNode(` — ${pctText}`));
     row.appendChild(label);
 
     const bar = document.createElement("div");
@@ -492,7 +548,18 @@ function renderWordCorpus(stats) {
     const sub = document.createElement("div");
     sub.className = "token-subbars";
     const fills = [[fill, typeof w.pct === "number" ? Math.min(100, w.pct) : 0]];
-    for (const t of w.tokens || []) {
+    // One bar per distinct three-gram, in token_index order — the same order
+    // the letters above were coloured in, so the two tiers line up. Duplicates
+    // would show the same three-gram twice and break that correspondence.
+    const seenToken = new Set();
+    const tokens = (w.tokens || []).filter((t) => {
+      const k = Number(t.token_index) || 0;
+      if (seenToken.has(k)) return false;
+      seenToken.add(k);
+      return true;
+    });
+    tokens.sort((a, b) => (Number(a.token_index) || 0) - (Number(b.token_index) || 0));
+    for (const t of tokens) {
       const color =
         PEER_PROGRESS_COLORS[Math.abs(t.token_index || 0) % PEER_PROGRESS_COLORS.length];
       const seg = document.createElement("div");
