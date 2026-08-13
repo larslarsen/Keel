@@ -620,13 +620,16 @@ func runInstall(args []string) int {
 		fmt.Println("\nChecking that the desktop app actually runs:")
 		rep.line("")
 		rep.line("Self-test")
-		for _, c := range selfTest(exe) {
+		// selfTest repairs what it can and re-runs, so the LAST verdict is the
+		// one that counts, not the first. Printing every attempt would bury it;
+		// printing only the end would hide that a repair happened at all.
+		results := selfTest(exe)
+		for _, c := range results {
 			fmt.Println(" ", c.line())
 			rep.line("  %s", c.line())
-			if c.err != nil {
-				failed = true
-				break // everything after the first failure is a consequence
-			}
+		}
+		if len(results) > 0 && results[len(results)-1].err != nil {
+			failed = true
 		}
 	}
 

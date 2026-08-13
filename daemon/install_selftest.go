@@ -19,7 +19,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
@@ -44,31 +47,121 @@ func (c checkResult) line() string {
 
 // selfTest runs each stage in the order the browser triggers them, so the first
 // FAIL is the cause and everything after it is a consequence.
+//
+// It also repairs what it can and tries again. The person this is for is on a
+// machine they cannot copy text off, so anything that requires reading an error
+// back to somebody else is worthless to them: the install has to fix what it
+// finds, by itself, and only report what survived every attempt.
 func selfTest(exe string) []checkResult {
-	var out []checkResult
+	out, ok := runStages(exe)
+	if ok {
+		return out
+	}
 
+	// Repairs, cheapest and least destructive first. Each is followed by a full
+	// re-run, because a repair that fixes an early stage can change everything
+	// after it.
+	for _, r := range repairs() {
+		if !r.applies(out) {
+			continue
+		}
+		detail, err := r.run()
+		note := checkResult{name: "repair: " + r.name, detail: detail, err: err}
+		retry, ok := runStages(exe)
+		out = append(out, note)
+		out = append(out, retry...)
+		if ok {
+			return out
+		}
+	}
+	return out
+}
+
+// runStages is one pass over the chain. ok is false as soon as a stage fails.
+func runStages(exe string) (out []checkResult, ok bool) {
 	p, err := resolveOwnerPaths()
 	if err != nil {
-		return append(out, checkResult{name: "state directory", err: err})
+		return append(out, checkResult{name: "state directory", err: err}), false
 	}
-	out = append(out, checkResult{
-		name:   "state directory",
-		detail: p.configDir,
-	})
+	out = append(out, checkResult{name: "state directory", detail: p.configDir})
 
 	// The store is where a startup failure actually lands, and its error is the
 	// one the owner logs before exiting.
 	st, err := store.Open(p.dbPath)
 	if err != nil {
-		out = append(out, checkResult{name: "database", err: err})
-		return out
+		return append(out, checkResult{name: "database", err: err}), false
 	}
 	dbPath := st.Path()
 	_ = st.Close()
 	out = append(out, checkResult{name: "database", detail: dbPath})
 
-	out = append(out, launchCheck(exe))
-	return out
+	launch := launchCheck(exe)
+	out = append(out, launch)
+	return out, launch.err == nil
+}
+
+// repair is an automatic remedy for a stage that failed.
+type repair struct {
+	name    string
+	applies func([]checkResult) bool
+	run     func() (string, error)
+}
+
+func failedStage(results []checkResult, name string) bool {
+	for _, c := range results {
+		if c.name == name && c.err != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func repairs() []repair {
+	return []repair{
+		{
+			// A daemon left running from an earlier build, or one wedged holding
+			// the database, answers nothing and blocks its replacement. Stopping
+			// it is free and cannot lose data.
+			name:    "stop the running desktop app",
+			applies: func(r []checkResult) bool { return true },
+			run: func() (string, error) {
+				if err := requestOwnerControl("shutdown"); err != nil {
+					return "none was running", nil
+				}
+				time.Sleep(500 * time.Millisecond)
+				return "stopped", nil
+			},
+		},
+		{
+			// A database that will not open is worth more gone than kept: it has
+			// never held anything if the daemon has never started, and keeping it
+			// means the install can never succeed. Only ever removed after it has
+			// actually failed to open.
+			name:    "remove the unusable database",
+			applies: func(r []checkResult) bool { return failedStage(r, "database") },
+			run: func() (string, error) {
+				p, err := resolveOwnerPaths()
+				if err != nil {
+					return "", err
+				}
+				var removed []string
+				for _, suffix := range []string{"", "-wal", "-shm"} {
+					path := p.dbPath + suffix
+					if _, err := os.Stat(path); err != nil {
+						continue
+					}
+					if err := os.Remove(path); err != nil {
+						return "", fmt.Errorf("could not remove %s: %w", path, err)
+					}
+					removed = append(removed, filepath.Base(path))
+				}
+				if len(removed) == 0 {
+					return "nothing to remove", nil
+				}
+				return "removed " + strings.Join(removed, ", "), nil
+			},
+		},
+	}
 }
 
 // launchCheck starts this executable the way a browser starts a native

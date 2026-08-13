@@ -360,3 +360,41 @@ func TestSelfTestReportsEachStage(t *testing.T) {
 		t.Errorf("a stage failed on a clean install:\n%s", out)
 	}
 }
+
+// TestInstallRepairsAnUnusableDatabase: the machine this is for cannot have
+// text copied off it, so an error the user has to read back to somebody is
+// worth nothing. The install has to fix what it finds and say what it fixed.
+func TestInstallRepairsAnUnusableDatabase(t *testing.T) {
+	host := buildHost(t)
+	data := t.TempDir()
+	runtimeDir, err := os.MkdirTemp("", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+
+	// A file that is not a database, exactly where the daemon expects one.
+	if err := os.WriteFile(filepath.Join(data, "keel.sqlite"),
+		[]byte("this is not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	install := exec.Command(host, "install", "-all")
+	install.Env = append(os.Environ(),
+		"KEEL_DATA_DIR="+data, "KEEL_RUNTIME_DIR="+runtimeDir, "HOME="+t.TempDir())
+	out, err := install.CombinedOutput()
+	t.Cleanup(func() {
+		stop := exec.Command(host, "owner", "stop")
+		stop.Env = install.Env
+		_ = stop.Run()
+	})
+	if err != nil {
+		t.Fatalf("install did not recover from an unusable database: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("repair:")) {
+		t.Errorf("no repair was attempted:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte("HELLO negotiated")) {
+		t.Errorf("the chain never came up after the repair:\n%s", out)
+	}
+}
