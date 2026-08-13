@@ -826,6 +826,10 @@ func provideAll[K any](ctx context.Context, n *Node, keys []K,
 // all. A node in that state cannot be found by any other install, so a caller
 // that retries on the usual multi-hour cadence would leave it invisible for
 // hours — see announceLoop.
+// announceFirstBatch is how many records to publish before reporting progress.
+// Small: being findable needs a few records, not all of them.
+const announceFirstBatch = 24
+
 var ErrAnnouncedNothing = errors.New("published no provider records")
 
 // RoutingTableSize is how many peers the DHT can actually route to.
@@ -870,6 +874,23 @@ func (n *Node) Announce(ctx context.Context) error {
 	// which is exactly how it was misread during live QA.
 	n.logf("announcing %d graph, %d catalogue, %d shard keys",
 		len(keys), len(catKeys), len(shardKeys))
+
+	// A node needs only a handful of records published to be findable at all;
+	// the rest is throughput. Publishing all of them before saying anything left
+	// a fresh node undiscoverable AND silent for half an hour, which is
+	// indistinguishable from broken — and was read as broken during live QA.
+	//
+	// So: a small first batch, then a line, then the rest. Reachability arrives
+	// in seconds instead of at the end of the round.
+	if len(keys) > announceFirstBatch {
+		got, err := provideAll(ctx, n, keys[:announceFirstBatch], prefixCID)
+		if err != nil && got == 0 {
+			n.logf("first announce batch published nothing: %v", err)
+		} else {
+			n.logf("first announce batch: %d/%d published; this node is now findable",
+				got, announceFirstBatch)
+		}
+	}
 
 	announced, graphErr := provideAll(ctx, n, keys, prefixCID)
 	catAnnounced, catErr := provideAll(ctx, n, catKeys, prefixCID)
