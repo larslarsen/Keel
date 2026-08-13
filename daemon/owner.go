@@ -341,12 +341,18 @@ func runOwnerProcess() int {
 	// usable directory, and the corpus must live with the credential that
 	// guards it. Passing an explicit path also means the store will not run its
 	// own fallback and land somewhere else.
+	// Timed, and logged even on success. The endpoint is created above but
+	// nothing accepts on it until serveOwner below, so every millisecond spent
+	// here is a client sitting connected to a pipe that no one is reading —
+	// which presents to the browser as the desktop app never answering.
+	storeStart := time.Now()
 	st, err := store.Open(p.dbPath)
 	if err != nil {
 		log.Printf("store open: %v", err)
 		return 1
 	}
 	defer st.Close()
+	log.Printf("store opened in %s", time.Since(storeStart).Round(time.Millisecond))
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSignals()
@@ -357,6 +363,7 @@ func runOwnerProcess() int {
 		startSwarm(swarmCtx, st)
 	}()
 
+	log.Printf("accepting connections after %s", time.Since(storeStart).Round(time.Millisecond))
 	err = serveOwner(ctx, ln, secret, st)
 	stopSwarm()
 	<-swarmDone
