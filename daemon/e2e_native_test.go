@@ -317,3 +317,46 @@ func TestHandshakeSurvivesAnUnwritableStateDirectory(t *testing.T) {
 		t.Fatalf("no answer with an unwritable state directory\nstderr: %s", stderr.String())
 	}
 }
+
+// TestSelfTestReportsEachStage: the installer's self-test must run the real
+// chain and name the stage that fails, because from the browser every failure
+// in it looks like the same sentence.
+func TestSelfTestReportsEachStage(t *testing.T) {
+	host := buildHost(t)
+	data := t.TempDir()
+	runtimeDir, err := os.MkdirTemp("", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+
+	install := exec.Command(host, "install", "-all")
+	install.Env = append(os.Environ(),
+		"KEEL_DATA_DIR="+data, "KEEL_RUNTIME_DIR="+runtimeDir, "HOME="+t.TempDir())
+	out, err := install.CombinedOutput()
+	t.Cleanup(func() {
+		stop := exec.Command(host, "owner", "stop")
+		stop.Env = install.Env
+		_ = stop.Run()
+	})
+	if err != nil {
+		t.Fatalf("install -all failed: %v\n%s", err, out)
+	}
+
+	// The self-test must have run, and every stage must have passed — this is
+	// the whole chain the browser depends on.
+	for _, want := range []string{
+		"Checking that the desktop app actually runs",
+		"state directory",
+		"database",
+		"browser-style launch",
+		"HELLO negotiated",
+	} {
+		if !bytes.Contains(out, []byte(want)) {
+			t.Errorf("self-test output is missing %q:\n%s", want, out)
+		}
+	}
+	if bytes.Contains(out, []byte("FAIL")) {
+		t.Errorf("a stage failed on a clean install:\n%s", out)
+	}
+}

@@ -613,6 +613,23 @@ func runInstall(args []string) int {
 		}
 	}
 
+	// Run the whole chain before declaring success. Everything above proves
+	// what was written; this proves it works — and if it does not, it says
+	// which stage, which is the thing that has never been visible.
+	if !*dry {
+		fmt.Println("\nChecking that the desktop app actually runs:")
+		rep.line("")
+		rep.line("Self-test")
+		for _, c := range selfTest(exe) {
+			fmt.Println(" ", c.line())
+			rep.line("  %s", c.line())
+			if c.err != nil {
+				failed = true
+				break // everything after the first failure is a consequence
+			}
+		}
+	}
+
 	if failed {
 		rep.finish(false)
 		fmt.Fprintln(os.Stderr, "\nInstallation is incomplete. See the report for the first error.")
