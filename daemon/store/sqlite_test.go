@@ -1517,3 +1517,30 @@ func TestDefaultLocationFallsBack(t *testing.T) {
 		t.Errorf("the fallback database is not usable: %v", err)
 	}
 }
+
+// TestExplicitPathErrorPointsAtTheSetting: "could not open a database in any
+// location" is a lie when the caller named exactly one, and it sends the reader
+// hunting for a fallback bug instead of at their own KEEL_DB.
+func TestExplicitPathErrorPointsAtTheSetting(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocker, []byte("a file where a folder must be"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	explicit := filepath.Join(blocker, "keel.sqlite")
+
+	_, err := Open(explicit)
+	if err == nil {
+		t.Fatal("want an error for an unusable explicit path")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, explicit) {
+		t.Errorf("error does not name the path: %v", err)
+	}
+	if !strings.Contains(msg, "KEEL_DB") {
+		t.Errorf("error does not point at the setting that chose it: %v", err)
+	}
+	if strings.Contains(msg, "any location") {
+		t.Errorf("error still claims every location was tried: %v", err)
+	}
+}

@@ -177,8 +177,17 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	if chosen == "" {
-		return nil, fmt.Errorf("could not open a database in any location: %s",
-			strings.Join(problems, "; "))
+		// One candidate means the caller named it — KEEL_DB, KEEL_DATA_DIR, or
+		// a packaging layout — and "any location" would be a lie that sends the
+		// reader looking for a fallback bug instead of at their own setting.
+		if len(candidates) == 1 {
+			return nil, fmt.Errorf(
+				"could not open the database at %s (this exact path was requested, "+
+					"so no other location was tried — check KEEL_DB and KEEL_DATA_DIR): %s",
+				candidates[0], strings.Join(problems, "; "))
+		}
+		return nil, fmt.Errorf("could not open a database in any of %d locations: %s",
+			len(candidates), strings.Join(problems, "; "))
 	}
 	if chosen != candidates[0] {
 		log.Printf("database: %s was not usable, using %s instead", candidates[0], chosen)
