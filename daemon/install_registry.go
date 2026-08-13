@@ -234,13 +234,23 @@ func repairManifestAccess(run cmdRunner, dir string) error {
 	if domain := os.Getenv("USERDOMAIN"); domain != "" && user != "" {
 		user = domain + "\\" + user
 	}
+	var second error
 	if user != "" {
-		if out2, err2 := run("icacls", dir, "/grant", user+":(OI)(CI)F", "/t", "/q"); err2 == nil {
+		if _, err2 := run("icacls", dir, "/grant", user+":(OI)(CI)F", "/t", "/q"); err2 == nil {
 			return nil
 		} else {
-			return fmt.Errorf("could not restore access on %s (reset: %v; grant: %v: %s)",
-				dir, first, err2, firstLine(out2))
+			second = err2
 		}
 	}
-	return fmt.Errorf("could not restore access on %s: %v", dir, first)
+
+	// Last resort: a DACL Keel itself applied can leave the directory in a state
+	// where its own owner cannot rewrite the ACL. Taking ownership back is what
+	// the Security tab's "Change owner" does, and it only ever runs against a
+	// directory Keel created and broke.
+	if _, err3 := run("takeown", "/f", dir, "/r", "/d", "y"); err3 == nil {
+		if _, err4 := run("icacls", dir, "/reset", "/t", "/q"); err4 == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("could not restore access on %s (reset: %v; grant: %v)", dir, first, second)
 }

@@ -477,6 +477,29 @@ func runInstall(args []string) int {
 		return 1
 	}
 
+	// Repair the manifest directory's permissions BEFORE writing into it.
+	//
+	// This ran after the write loop and was therefore useless: writing into a
+	// locked directory is what fails first, so the install died with "Access is
+	// denied" before the thing that fixes it ever ran. An earlier Keel build
+	// applied a protected DACL to this directory, so the machines that need the
+	// repair are exactly the ones that cannot get past the write.
+	//
+	// Best effort: a directory whose permissions cannot be rewritten may still
+	// be perfectly usable, and refusing to install over that would turn a
+	// maybe-working install into a certainly-broken one.
+	if runtime.GOOS == "windows" && !*dry {
+		if base, err := windowsInstallBase(os.Getenv); err == nil {
+			if err := repairManifestAccess(execRunner, base); err != nil {
+				rep.line("access   %-9s WARNING  %v", "manifests", err)
+				rep.line("               continuing; the folder may already be writable")
+				fmt.Fprintln(os.Stderr, "note: could not adjust permissions on", base, "—", err)
+			} else {
+				rep.line("access   %-9s OK       permissions restored on %s", "manifests", base)
+			}
+		}
+	}
+
 	var wrote, skipped []string
 	for _, e := range plan.entries {
 		if e.skip != "" {
@@ -531,21 +554,6 @@ func runInstall(args []string) int {
 		// just written. An earlier Keel build applied a protected DACL to this
 		// directory and locked browsers out of their own manifest, and no
 		// amount of correct registration fixes a directory they cannot read.
-		//
-		// Best effort, deliberately: a directory whose permissions cannot be
-		// rewritten may still be perfectly readable, and refusing to register
-		// there converts a maybe-working install into a certainly-broken one.
-		// The first version of this failed the install on a denied icacls,
-		// which is the same mistake as making a diagnostic fatal.
-		if base, err := windowsInstallBase(os.Getenv); err == nil {
-			if err := repairManifestAccess(execRunner, base); err != nil {
-				rep.line("access   %-9s WARNING  %v", "manifests", err)
-				rep.line("               registration continues; the folder may already be readable")
-				fmt.Fprintln(os.Stderr, "note: could not adjust permissions on", base, "—", err)
-			} else {
-				rep.line("access   %-9s OK       permissions restored on %s", "manifests", base)
-			}
-		}
 		results := installWindowsRegistry(execRunner, plan.chromium, plan.firefox)
 		for _, r := range results {
 			rep.registry(r)

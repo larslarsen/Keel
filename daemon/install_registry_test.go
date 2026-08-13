@@ -299,7 +299,32 @@ func TestRepairManifestAccess(t *testing.T) {
 		}
 	})
 
-	t.Run("reports both failures without inventing success", func(t *testing.T) {
+	// A DACL Keel itself applied can leave the directory in a state where even
+	// its owner cannot rewrite the ACL. Taking ownership back is the only way
+	// out, and it only ever runs against a directory Keel created and broke.
+	t.Run("takes ownership when both icacls attempts are denied", func(t *testing.T) {
+		t.Setenv("USERNAME", "qa")
+		t.Setenv("USERDOMAIN", "PC")
+		var calls []string
+		run := func(name string, args ...string) ([]byte, error) {
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			if name == "icacls" && len(calls) < 3 {
+				return []byte("Access is denied."), errors.New("exit status 5")
+			}
+			return []byte("SUCCESS"), nil
+		}
+		if err := repairManifestAccess(run, dir); err != nil {
+			t.Fatalf("the takeown path did not recover: %v", err)
+		}
+		if len(calls) != 4 {
+			t.Fatalf("want reset, grant, takeown, reset; got %v", calls)
+		}
+		if !strings.HasPrefix(calls[2], "takeown ") {
+			t.Errorf("third attempt is not takeown: %q", calls[2])
+		}
+	})
+
+	t.Run("reports every failure without inventing success", func(t *testing.T) {
 		t.Setenv("USERNAME", "qa")
 		t.Setenv("USERDOMAIN", "")
 		failing := func(string, ...string) ([]byte, error) {
