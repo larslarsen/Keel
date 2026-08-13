@@ -246,3 +246,51 @@ func TestUninstallReportsAKeyItCannotRemove(t *testing.T) {
 	}
 	assertOnlyBraveFails(t, uninstallWindowsRegistry(run))
 }
+
+// TestRepairManifestAccess: a browser reads com.keel.host.json itself, so
+// anything that strips inherited permissions from that directory uninstalls
+// native messaging without touching the registry — and reports exactly what a
+// missing key reports. An earlier Keel build did this to its own manifest
+// directory, so the installer repairs it on every run.
+func TestRepairManifestAccess(t *testing.T) {
+	const dir = `C:\Users\qa\AppData\Local\Keel`
+
+	var calls []string
+	run := func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return []byte("Successfully processed 3 files."), nil
+	}
+	if err := repairManifestAccess(run, dir); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("want one command, got %v", calls)
+	}
+	for _, want := range []string{"icacls", dir, "/reset", "/t"} {
+		if !strings.Contains(calls[0], want) {
+			t.Errorf("command %q is missing %q", calls[0], want)
+		}
+	}
+
+	// A failure must be reported, not swallowed: leaving the directory locked
+	// while claiming the install succeeded is the whole defect.
+	failing := func(string, ...string) ([]byte, error) {
+		return []byte("Access is denied."), errors.New("exit status 1")
+	}
+	err := repairManifestAccess(failing, dir)
+	if err == nil {
+		t.Fatal("a failed repair was reported as success")
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Errorf("error does not name the directory: %v", err)
+	}
+
+	// No directory, nothing to do — must not invent a command.
+	calls = nil
+	if err := repairManifestAccess(run, ""); err != nil {
+		t.Errorf("empty dir: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("ran %v for an empty directory", calls)
+	}
+}

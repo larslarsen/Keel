@@ -475,6 +475,19 @@ func runInstall(args []string) int {
 	failed := false
 	if runtime.GOOS == "windows" && !*dry {
 		rep.line("")
+		// Before registering: make sure the browser can still read what was
+		// just written. An earlier Keel build applied a protected DACL to this
+		// directory and locked browsers out of their own manifest, and no
+		// amount of correct registration fixes a directory they cannot read.
+		if base, err := windowsInstallBase(os.Getenv); err == nil {
+			if err := repairManifestAccess(execRunner, base); err != nil {
+				rep.line("access   %-9s FAILED   %v", "manifests", err)
+				fmt.Fprintln(os.Stderr, "manifest access:", err)
+				failed = true
+			} else {
+				rep.line("access   %-9s OK       inherited permissions restored on %s", "manifests", base)
+			}
+		}
 		results := installWindowsRegistry(execRunner, plan.chromium, plan.firefox)
 		for _, r := range results {
 			rep.registry(r)

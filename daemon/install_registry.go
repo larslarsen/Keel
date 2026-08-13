@@ -168,3 +168,31 @@ func firstLine(b []byte) string {
 	}
 	return s
 }
+
+// repairManifestAccess restores inherited permissions on the directory holding
+// the native-host manifests.
+//
+// A browser reads com.keel.host.json itself. Anything that removes inherited
+// access from that directory therefore uninstalls native messaging without
+// touching the registry, and the browser reports exactly what a missing key
+// reports: "Specified native messaging host not found".
+//
+// Keel did this to itself. A state-directory fallback briefly treated
+// %LOCALAPPDATA%\Keel as a place for private data and applied a PROTECTED DACL
+// to it, which strips inheritance. Machines that ran that build still have the
+// locked directory; nothing about installing a corrected binary would fix it,
+// because the damage is on disk rather than in the code.
+//
+// So the installer repairs it every time: icacls /reset restores the inherited
+// ACLs from the parent, which is what an ordinary per-user directory should
+// have had all along. It is idempotent and harmless on a healthy machine.
+func repairManifestAccess(run cmdRunner, dir string) error {
+	if dir == "" {
+		return nil
+	}
+	out, err := run("icacls", dir, "/reset", "/t", "/q")
+	if err != nil {
+		return fmt.Errorf("could not restore read access on %s: %v: %s", dir, err, firstLine(out))
+	}
+	return nil
+}
