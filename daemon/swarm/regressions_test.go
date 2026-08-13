@@ -85,7 +85,7 @@ func TestRegressionPublishLiveRefreshesLocalWhenSuppressed(t *testing.T) {
 	// The index already holds this stream from an hour-old observation, kept
 	// warm by re-gossip (lastSeen = now, so shouldPublish is false).
 	n.Live().merge(LiveRecord{VideoID: vid, Title: "Re-broadcast stream",
-		SeenAt: now.Add(-time.Hour).UnixMilli()})
+		SeenAt: now.Add(-time.Hour).UnixMilli()}, false)
 
 	// The node observes it live again right now. Because lastSeen is warm this
 	// observation is inside the suppression window — the pre-fix code returned

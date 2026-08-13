@@ -349,7 +349,7 @@ func TestPublishSuppressionScales(t *testing.T) {
 	}
 
 	// Already known and fresh: stay quiet.
-	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ", SeenAt: time.Now().UnixMilli()})
+	li.merge(LiveRecord{VideoID: "dQw4w9WgXcQ", SeenAt: time.Now().UnixMilli()}, false)
 	if li.shouldPublish("yt", "dQw4w9WgXcQ") {
 		t.Error("re-announced a stream already in the index")
 	}
@@ -385,7 +385,7 @@ func TestLiveSnapshotBackfill(t *testing.T) {
 		{VideoID: "dQw4w9WgXcQ", Title: "Existing stream one", SeenAt: now},
 		{VideoID: "oHg5SJYRHA0", Title: "Existing stream two", SeenAt: now},
 	} {
-		warm.Live().merge(r)
+		warm.Live().merge(r, false)
 	}
 
 	cold, err := Start(ctx, newStore(t, "cold.sqlite"), liveCfg(t, false))
@@ -410,6 +410,57 @@ func TestLiveSnapshotBackfill(t *testing.T) {
 	}
 }
 
+// TestBackfillLiveRunsForANodeWithOnlyItsOwnSightings is the regression this
+// bug always needed: TestLiveSnapshotBackfill above proves fetchLiveSnapshot
+// itself works, but calls it directly on a node it deliberately starts empty
+// — it never exercises backfillLive's own decision to call it at all.
+//
+// startLive runs seedLiveFromLocal synchronously before backfillLive's
+// goroutine even starts (live.go's startLive), so any node with its own
+// recent live sightings — the ordinary case for anyone who watches live
+// content — has a nonzero index from the moment backfillLive takes its
+// first look. Gating backfill on Size()>0 meant such a node would never
+// once ask a connected peer for its snapshot: two real nodes could report
+// "1 peer connected" to each other forever and never converge on a shared
+// live count, because neither node's own sightings ever satisfied the
+// other's backfill guard, and neither ever legitimately received the
+// other's data.
+func TestBackfillLiveRunsForANodeWithOnlyItsOwnSightings(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	warm, err := Start(ctx, newStore(t, "warm.sqlite"), liveCfg(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer warm.Close()
+	warm.Live().merge(LiveRecord{VideoID: "dQw4w9WgXcQ", Title: "Warm's own stream", SeenAt: time.Now().UnixMilli()}, false)
+
+	// mine is not empty — it has exactly one record of its own, the same
+	// shape seedLiveFromLocal leaves behind at real startup. The bug's
+	// guard (Size()>0) would treat this identically to a node gossip had
+	// already filled, and backfillLive would return without ever trying.
+	mine, err := Start(ctx, newStore(t, "mine.sqlite"), liveCfg(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mine.Close()
+	mine.Live().merge(LiveRecord{VideoID: "oHg5SJYRHA0", Title: "Mine's own stream", SeenAt: time.Now().UnixMilli()}, false)
+	if mine.Live().Size() == 0 {
+		t.Fatal("test setup: mine must start non-empty to exercise the bug")
+	}
+	if mine.Live().ReceivedFromPeer() {
+		t.Fatal("test setup: mine must not already believe it heard from a peer")
+	}
+
+	connect(t, mine, warm)
+	go mine.backfillLive(ctx)
+
+	waitFor(t, "mine to backfill warm's stream despite already having its own", func() bool {
+		return mine.Live().ReceivedFromPeer() && mine.Live().Size() == 2
+	})
+}
+
 // TestStaleStreamIsNotPromoted is WO-054's regression.
 //
 // A record's lastSeen is refreshed on every gossip receive, and nodes
@@ -428,12 +479,12 @@ func TestStaleStreamIsNotPromoted(t *testing.T) {
 	li.merge(LiveRecord{
 		VideoID: "staleaaaaaa", Title: "Finished six hours ago",
 		SeenAt: now.Add(-6 * time.Hour).UnixMilli(),
-	})
+	}, false)
 	// Seen live ten minutes ago.
 	li.merge(LiveRecord{
 		VideoID: "freshbbbbbb", Title: "Actually running",
 		SeenAt: now.Add(-10 * time.Minute).UnixMilli(),
-	})
+	}, false)
 
 	for _, id := range []string{"staleaaaaaa", "freshbbbbbb"} {
 		if li.entries["yt:"+id].lastSeen.Before(now.Add(-time.Minute)) {
@@ -494,7 +545,7 @@ func TestFirstInsertResurrectionGuard(t *testing.T) {
 		VideoID: "deadstream1",
 		Title:   "Dead stream",
 		SeenAt:  peerClaim,
-	})
+	}, false)
 
 	// The stored SeenAt should stay at yesterday (our local truth),
 	// not the peer's incredible claim.
@@ -525,7 +576,7 @@ func TestFirstInsertNoLocalObservationAcceptsPeer(t *testing.T) {
 		VideoID: "longtailstr",
 		Title:   "Long tail stream",
 		SeenAt:  peerClaim,
-	})
+	}, false)
 
 	// Should accept peer's claim since we have no local knowledge to contradict it.
 	e := li.entries["yt:longtailstr"]
@@ -557,7 +608,7 @@ func TestFirstInsertLocalMoreRecentKeepsLocal(t *testing.T) {
 		VideoID: "recentstrm1",
 		Title:   "Recent stream",
 		SeenAt:  peerClaim,
-	})
+	}, false)
 
 	// Should keep our more recent local observation.
 	e := li.entries["yt:recentstrm1"]
@@ -590,7 +641,7 @@ func TestFirstInsertPeerWithinWindowAccepted(t *testing.T) {
 		VideoID: "runningstrm",
 		Title:   "Running stream",
 		SeenAt:  peerClaim,
-	})
+	}, false)
 
 	// Should accept peer's more recent claim since stream might still be live.
 	e := li.entries["yt:runningstrm"]
@@ -632,8 +683,8 @@ func TestPlatformAwareIDs(t *testing.T) {
 func TestPlatformsDoNotCollide(t *testing.T) {
 	li := &LiveIndex{entries: map[string]*liveEntry{}, logf: func(string, ...any) {}}
 	now := time.Now().UnixMilli()
-	li.merge(LiveRecord{Platform: "yt", VideoID: "dQw4w9WgXcQ", Title: "A YouTube stream", SeenAt: now})
-	li.merge(LiveRecord{Platform: "tt", VideoID: "7300000000000000000", Title: "A TikTok stream", SeenAt: now})
+	li.merge(LiveRecord{Platform: "yt", VideoID: "dQw4w9WgXcQ", Title: "A YouTube stream", SeenAt: now}, false)
+	li.merge(LiveRecord{Platform: "tt", VideoID: "7300000000000000000", Title: "A TikTok stream", SeenAt: now}, false)
 
 	if got := li.Size(); got != 2 {
 		t.Fatalf("index holds %d entries, want 2", got)
@@ -675,7 +726,7 @@ func TestDeadStreamRetiredDespiteReannounce(t *testing.T) {
 			VideoID: "deadstreamX",
 			Title:   "Quick Friday Stream",
 			SeenAt:  now.Add(-5 * time.Minute).UnixMilli(),
-		})
+		}, false)
 	}
 
 	// The stream must not appear in the feed — ever, even with re-announcements.
@@ -692,7 +743,7 @@ func TestDeadStreamRetiredDespiteReannounce(t *testing.T) {
 	}
 
 	// And a genuinely fresh stream must survive the same merge path.
-	li.merge(LiveRecord{VideoID: "freshliveYY", Title: "Actually live", SeenAt: now.Add(-2 * time.Minute).UnixMilli()})
+	li.merge(LiveRecord{VideoID: "freshliveYY", Title: "Actually live", SeenAt: now.Add(-2 * time.Minute).UnixMilli()}, false)
 	if _, ok := li.entries["yt:freshliveYY"]; !ok {
 		t.Errorf("a fresh stream was wrongly retired")
 	}
@@ -737,7 +788,7 @@ func TestDeadStreamByStartedAt(t *testing.T) {
 			Title:     "Quick Friday Stream",
 			SeenAt:    now.Add(-20 * time.Minute).UnixMilli(),
 			StartedAt: now.Add(-17 * time.Hour).UnixMilli(),
-		})
+		}, false)
 	}
 
 	if hasVideoID(li.Search("", 100), "deadstreamX") {
@@ -758,26 +809,26 @@ func TestMergeMinAccumulatesStartedAt(t *testing.T) {
 	// not frozen by the age guard).
 	t3 := now.Add(-3 * time.Hour).UnixMilli()
 
-	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-2 * time.Minute).UnixMilli(), StartedAt: t3})
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-2 * time.Minute).UnixMilli(), StartedAt: t3}, false)
 	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != t3 {
 		t.Fatalf("first merge did not record StartedAt: want %d, got %d", t3, got)
 	}
 
 	// A later report OMITS StartedAt (the pre-fix announceLive behaviour).
 	// It must NOT clobber the real 3h start with 0.
-	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-2 * time.Minute).UnixMilli()})
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-2 * time.Minute).UnixMilli()}, false)
 	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != t3 {
 		t.Fatalf("merge with StartedAt=0 clobbered real start: want %d, got %d", t3, got)
 	}
 
 	// A later report claims a LATER start (1h ago). Min must hold at 3h.
-	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-1 * time.Minute).UnixMilli(), StartedAt: now.Add(-1 * time.Hour).UnixMilli()})
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-1 * time.Minute).UnixMilli(), StartedAt: now.Add(-1 * time.Hour).UnixMilli()}, false)
 	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != t3 {
 		t.Fatalf("merge raised StartedAt on a later report: want %d, got %d", t3, got)
 	}
 
 	// And a genuinely-earlier start (5h) from another reporter must lower it.
-	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-1 * time.Minute).UnixMilli(), StartedAt: now.Add(-5 * time.Hour).UnixMilli()})
+	li.merge(LiveRecord{VideoID: "accXaaaaaaa", Title: "Stream", SeenAt: now.Add(-1 * time.Minute).UnixMilli(), StartedAt: now.Add(-5 * time.Hour).UnixMilli()}, false)
 	if got := li.entries["yt:accXaaaaaaa"].rec.StartedAt; got != now.Add(-5*time.Hour).UnixMilli() {
 		t.Fatalf("merge did not adopt an earlier start: want %d, got %d", now.Add(-5*time.Hour).UnixMilli(), got)
 	}
@@ -799,7 +850,7 @@ func TestDeadStreamTombstoneBlocksResurrection(t *testing.T) {
 	}
 
 	// Freeze it (as a gossip re-announcement would).
-	li.merge(LiveRecord{VideoID: "deadstreamX", SeenAt: now.Add(-5 * time.Minute).UnixMilli()})
+	li.merge(LiveRecord{VideoID: "deadstreamX", SeenAt: now.Add(-5 * time.Minute).UnixMilli()}, false)
 	if hasVideoID(li.Search("", 100), "deadstreamX") {
 		t.Fatalf("dead stream visible immediately after freeze")
 	}
@@ -809,7 +860,7 @@ func TestDeadStreamTombstoneBlocksResurrection(t *testing.T) {
 
 	// Peers re-announce it repeatedly — this used to resurrect it.
 	for i := 0; i < 5; i++ {
-		li.merge(LiveRecord{VideoID: "deadstreamX", SeenAt: now.Add(-5 * time.Minute).UnixMilli()})
+		li.merge(LiveRecord{VideoID: "deadstreamX", SeenAt: now.Add(-5 * time.Minute).UnixMilli()}, false)
 	}
 
 	if _, ok := li.entries[key]; ok {

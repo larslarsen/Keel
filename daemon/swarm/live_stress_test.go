@@ -116,7 +116,7 @@ func TestLiveIndexStressConcurrentMergeSearch(t *testing.T) {
 							atomic.AddInt64(&panics, 1)
 						}
 					}()
-					li.merge(rec)
+					li.merge(rec, false)
 				}()
 
 				// Interleave reads — these run concurrently with merges/sweep.
@@ -217,7 +217,7 @@ func TestLiveIndexInvariantRandomSequence(t *testing.T) {
 			SeenAt:    seenAt,
 			StartedAt: startedAt,
 			ChannelID: "@c",
-		})
+		}, false)
 		if startedAt > 0 {
 			if cur, ok := wantStart[key]; !ok || startedAt < cur {
 				wantStart[key] = startedAt
@@ -268,7 +268,7 @@ func TestLiveIndexSweepRaceWithMerge(t *testing.T) {
 				Title:     "S",
 				SeenAt:    now.Add(-time.Duration(r.Intn(10)) * time.Second).UnixMilli(),
 				StartedAt: now.Add(-3 * time.Hour).UnixMilli(),
-			})
+			}, false)
 		}
 	}()
 

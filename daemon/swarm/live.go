@@ -188,25 +188,37 @@ type LiveIndex struct {
 	sub   *pubsub.Subscription
 	self  peer.ID
 	logf  func(string, ...any)
+
+	// receivedFromPeer is true once gossip or a snapshot backfill has
+	// actually merged a record that came from another node — never set by
+	// seedLiveFromLocal or by folding in this node's own publish. Separate
+	// from Size()>0 on purpose: seedLiveFromLocal runs before backfillLive
+	// even starts, so any node with its own recent sightings — the common
+	// case for anyone who watches live content — has Size()>0 from startup
+	// with zero peer data in it. Gating backfill on Size() meant such a
+	// node would never once ask a connected peer for their index: two
+	// nodes could show "1 Keel node connected" and never converge on a
+	// shared live count, because neither ever backfilled the other's.
+	// Plain bool behind the mutex, same as everything else here — merge and
+	// fetchLiveSnapshot already take the lock, so this rides along for free.
+	receivedFromPeer bool
 }
 
 // startLive joins the topic and begins accumulating.
 //
-// **Every node subscribes, including Level 1.** An earlier version gated this on
-// Fetch, which contradicted §7.3a: gossip is a tier-1 mechanism, meaning there
-// is no per-item query at all. Level 1's promise is that nothing about what the
-// user watches leaves the machine, and subscribing discloses only that this node
-// looks at livestreams — the same class of fact as downloading the seed everyone
-// downloads.
+// **Level 2+ only, since WO-089 — superseding this file's earlier design.**
+// An older version subscribed every node, including Level 1, on the theory
+// that receiving is free and only publishing discloses anything. WO-089
+// rejected that asymmetry: a sighting is derived from what this user was
+// shown either way, direct-peer timing can still infer origin even from an
+// unsigned report, and gossipsub subscribers relay for their topic — a node
+// cannot receive without carrying traffic for others. Live is sharing, and
+// sharing starts at Level 2. There is deliberately no receive-only mode; see
+// swarm.go's call site and Policy.Live.
 //
-// So the default, maximum-privacy setting gets a working global live feed while
-// disclosing nothing about its user. That asymmetry is the point: receiving is
-// free, publishing is the part that costs something.
-//
-// The one real cost is that gossipsub subscribers relay for their topic — a node
-// cannot receive without carrying traffic for others. At a few hundred KB a day
-// that is a fair bargain, and it is intrinsic to gossip rather than a policy
-// choice.
+// The caller gates this on cfg.Policy.Live, so everything below — joining
+// the topic, seeding from local sightings, serving the snapshot handler —
+// only ever runs for a node that has already agreed to Level 2.
 func (n *Node) startLive(ctx context.Context) error {
 	if n.ps == nil {
 		return fmt.Errorf("pubsub not available")
@@ -270,7 +282,7 @@ func (n *Node) seedLiveFromLocal() {
 		n.live.merge(LiveRecord{
 			VideoID: v.VideoID, Title: v.Title, ChannelID: v.ChannelID,
 			SeenAt: v.SeenAt, StartedAt: v.StartedAt, Platform: v.Platform,
-		})
+		}, false)
 		n.live.setLocalSeenAt(v.Platform, v.VideoID, v.SeenAt)
 	}
 	n.logf("live index seeded with %d local sightings", len(seen))
@@ -333,8 +345,8 @@ func (n *Node) backfillLive(ctx context.Context) {
 			return
 		case <-time.After(5 * time.Second):
 		}
-		if n.live == nil || n.live.Size() > 0 {
-			return // gossip already filled it, or we are shutting down
+		if n.live == nil || n.live.ReceivedFromPeer() {
+			return // gossip or a prior backfill already filled it, or we are shutting down
 		}
 		for _, p := range n.host.Network().Peers() {
 			if n.fetchLiveSnapshot(ctx, p) {
@@ -367,7 +379,7 @@ func (n *Node) fetchLiveSnapshot(ctx context.Context, p peer.ID) bool {
 	}
 	for _, r := range recs {
 		if len(r.VideoID) == 11 {
-			n.live.merge(r)
+			n.live.merge(r, true)
 		}
 	}
 	if len(recs) > 0 {
@@ -452,7 +464,7 @@ func (li *LiveIndex) consume(ctx context.Context) {
 		if err := json.Unmarshal(msg.Data, &r); err != nil {
 			continue
 		}
-		li.merge(r)
+		li.merge(r, true)
 	}
 }
 
@@ -482,7 +494,13 @@ func (li *LiveIndex) isRetired(key string, now time.Time) bool {
 //
 // There is no publisher to record: messages are authorless by design, and the
 // index is a set of streams rather than a tally of who saw what.
-func (li *LiveIndex) merge(r LiveRecord) {
+//
+// fromPeer marks a report that actually arrived from another node — gossip
+// (consume) or a snapshot backfill (fetchLiveSnapshot) — as opposed to this
+// node's own local sightings (seedLiveFromLocal) or its own announcement
+// folded in locally (Publish, PublishLive). It exists solely to drive
+// receivedFromPeer; nothing about admission or ranking depends on it.
+func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) {
 	if r.SeenAt <= 0 || !validVideoID(r.Platform, r.VideoID) {
 		return // unplaceable: see validateLiveMessage
 	}
@@ -492,6 +510,9 @@ func (li *LiveIndex) merge(r LiveRecord) {
 	now := time.Now()
 	li.mu.Lock()
 	defer li.mu.Unlock()
+	if fromPeer {
+		li.receivedFromPeer = true
+	}
 
 	// A livestream cannot have been "seen" longer ago than maxLiveAge and still
 	// be running. A peer reporting SeenAt that old is re-announcing a stream
@@ -670,7 +691,8 @@ func (li *LiveIndex) Publish(ctx context.Context, r LiveRecord) error {
 	}
 	// Fold our own announcement in locally: gossipsub does not deliver a node
 	// its own messages, and a user should see their own discovery in the feed.
-	li.merge(r)
+	// Not a peer report — this is our own, so it must not satisfy backfill.
+	li.merge(r, false)
 	return li.topic.Publish(ctx, raw)
 }
 
@@ -758,6 +780,15 @@ func (li *LiveIndex) Size() int {
 	return len(li.entries)
 }
 
+// ReceivedFromPeer reports whether gossip or a snapshot backfill has ever
+// merged a record that actually came from another node — see the field's
+// own doc comment for why this must not be inferred from Size().
+func (li *LiveIndex) ReceivedFromPeer() bool {
+	li.mu.RLock()
+	defer li.mu.RUnlock()
+	return li.receivedFromPeer
+}
+
 // setLocalSeenAt records this node's own local observation time for a video.
 // Called from seedLiveFromLocal (startup) and PublishLive (live observation).
 //
@@ -803,8 +834,9 @@ func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
 	n.live.setLocalSeenAt(r.Platform, r.VideoID, r.SeenAt)
 	// Always refresh our own index from our own observation, so the panel's
 	// "seen live" time reflects when we actually saw it — independent of whether
-	// we gossip it. Gossip to peers stays gated on shouldPublish below.
-	n.live.merge(r)
+	// we gossip it. Gossip to peers stays gated on shouldPublish below. Our own
+	// observation, not a peer's, so it must not satisfy backfill.
+	n.live.merge(r, false)
 	if !n.live.shouldPublish(r.Platform, r.VideoID) {
 		return
 	}
