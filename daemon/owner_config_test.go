@@ -171,3 +171,56 @@ func TestProbeDoesNotSecureDirectoriesItRejects(t *testing.T) {
 		t.Errorf("probe left files behind: %v", entries)
 	}
 }
+
+// TestUnopenableDatabaseIsNotAdopted is the live-QA dead end.
+//
+// The directory is writable and a keel.sqlite is sitting in it, so it looked
+// like the corpus lived there and was adopted. But the file itself denies this
+// user. From that point the database path is explicit, which switches off the
+// store's own fallback, so every start failed on a file the daemon would never
+// move away from — "Access is denied", forever, on a machine with three other
+// perfectly good locations available.
+func TestUnopenableDatabaseIsNotAdopted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open anything")
+	}
+	root := t.TempDir()
+
+	// A writable directory holding a database this user cannot open. It has to
+	// be the directory the candidate list actually names — <config>/keel —
+	// or the test proves nothing.
+	cfg := filepath.Join(root, "cfg")
+	poisoned := filepath.Join(cfg, "keel")
+	if err := os.MkdirAll(poisoned, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(poisoned, "keel.sqlite")
+	if err := os.WriteFile(db, []byte("SQLite format 3\x00 pretend contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(db, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(db, 0o600) })
+
+	good := filepath.Join(root, "good")
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("LOCALAPPDATA", good)
+	t.Setenv("KEEL_DATA_DIR", "")
+	t.Setenv("KEEL_DB", "")
+
+	// The poisoned directory must not be adopted just because a file is there.
+	if err := fileOpenable(db); err == nil {
+		t.Fatal("setup: the database is still openable")
+	}
+	dir, err := chooseOwnerBase()
+	if err != nil {
+		t.Fatalf("no base chosen at all: %v", err)
+	}
+	if dir == poisoned {
+		t.Fatalf("adopted %s, whose database cannot be opened", dir)
+	}
+	if err := ownerDirUsable(dir); err != nil {
+		t.Errorf("chosen base %s is not usable: %v", dir, err)
+	}
+}

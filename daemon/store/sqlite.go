@@ -166,6 +166,14 @@ func Open(path string) (*Store, error) {
 		if err != nil || fi.Size() == 0 {
 			continue
 		}
+		// Openable, not merely present: a file can exist in a writable directory
+		// and still deny this user, and adopting it means every start fails on a
+		// database that will never open.
+		if f, err := os.OpenFile(c, os.O_RDWR, 0); err != nil {
+			continue
+		} else {
+			_ = f.Close()
+		}
 		if err := preflightDatabasePath(c); err == nil {
 			chosen = c
 			break

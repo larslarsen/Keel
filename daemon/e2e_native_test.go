@@ -398,3 +398,64 @@ func TestInstallRepairsAnUnusableDatabase(t *testing.T) {
 		t.Errorf("the chain never came up after the repair:\n%s", out)
 	}
 }
+
+// TestInstallEscapesAnUnopenableDatabase: the live-QA dead end, against the
+// real binary. A writable directory holding a keel.sqlite this user cannot open
+// must not trap the daemon there — it has other locations available and must
+// use one.
+func TestInstallEscapesAnUnopenableDatabase(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open anything")
+	}
+	host := buildHost(t)
+	root := t.TempDir()
+
+	cfg := filepath.Join(root, "cfg")
+	poisoned := filepath.Join(cfg, "keel")
+	if err := os.MkdirAll(poisoned, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(poisoned, "keel.sqlite")
+	if err := os.WriteFile(db, []byte("SQLite format 3\x00 pretend"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(db, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(db, 0o600) })
+
+	runtimeDir, err := os.MkdirTemp("", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+
+	install := exec.Command(host, "install", "-all")
+	install.Env = append(os.Environ(),
+		"KEEL_DATA_DIR=", "KEEL_DB=",
+		"XDG_CONFIG_HOME="+cfg,
+		"LOCALAPPDATA="+filepath.Join(root, "local"),
+		"HOME="+root,
+		"KEEL_RUNTIME_DIR="+runtimeDir,
+	)
+	out, err := install.CombinedOutput()
+	t.Cleanup(func() {
+		stop := exec.Command(host, "owner", "stop")
+		stop.Env = install.Env
+		_ = stop.Run()
+	})
+	if err != nil {
+		t.Fatalf("install trapped on an unopenable database: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("HELLO negotiated")) {
+		t.Fatalf("the chain never came up:\n%s", out)
+	}
+	// The poisoned path appears in the lines explaining the escape, so check the
+	// verdict itself: the database stage must not have adopted it.
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		if bytes.Contains(line, []byte("PASS database")) &&
+			bytes.Contains(line, []byte(poisoned)) {
+			t.Errorf("adopted the unopenable database anyway: %s", line)
+		}
+	}
+}

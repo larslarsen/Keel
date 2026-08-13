@@ -56,6 +56,23 @@ func ownerDirUsable(dir string) error {
 	return nil
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// fileOpenable reports whether this process can actually read and write a file
+// that already exists. os.Stat only proves something is there; on Windows a
+// file can be present, in a perfectly writable directory, and still deny its
+// own owner.
+func fileOpenable(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 // ownerBaseCandidates lists directories that could hold Keel's state, in
 // preference order, for the case where the user named none.
 //
@@ -104,13 +121,24 @@ func ownerBaseCandidates() []string {
 func chooseOwnerBase() (string, error) {
 	candidates := ownerBaseCandidates()
 	for _, dir := range candidates {
+		db := filepath.Join(dir, "keel.sqlite")
 		// Size, not existence. preflightDatabasePath creates the file before
 		// SQLite ever opens it, so a location that failed *after* the probe
 		// leaves a 0-byte keel.sqlite behind — and treating that as "a corpus
 		// lives here" would pin every future start to the location that just
 		// failed. An empty file is a scar, not a database.
-		fi, err := os.Stat(filepath.Join(dir, "keel.sqlite"))
+		fi, err := os.Stat(db)
 		if err != nil || fi.Size() == 0 {
+			continue
+		}
+		// And openable, not merely present. A writable directory can hold a file
+		// this user cannot open — the exact state a denied ACL on keel.sqlite
+		// produces. Adopting that directory pins the daemon to a database it can
+		// never read: the path becomes explicit from here on, so the store's own
+		// fallback is switched off, and every start fails with "Access is
+		// denied" on a file the daemon will not move away from. Prove it opens.
+		if err := fileOpenable(db); err != nil {
+			log.Printf("state directory: %s holds an unopenable database (%v); looking elsewhere", dir, err)
 			continue
 		}
 		if err := ownerDirUsable(dir); err != nil {
@@ -123,6 +151,18 @@ func chooseOwnerBase() (string, error) {
 	}
 	var problems []string
 	for _, dir := range candidates {
+		// A directory being writable is not enough if the database already in it
+		// cannot be opened: adopting it makes the path explicit, which switches
+		// off the store's fallback, and every start then fails on a file the
+		// daemon will never move away from. Checked here as well as in the
+		// continuity pass above — skipping it there only to adopt it here is
+		// exactly the bug this is meant to fix.
+		if db := filepath.Join(dir, "keel.sqlite"); fileExists(db) {
+			if err := fileOpenable(db); err != nil {
+				problems = append(problems, fmt.Sprintf("%s holds a database that cannot be opened: %v", dir, err))
+				continue
+			}
+		}
 		if err := ownerDirUsable(dir); err != nil {
 			problems = append(problems, err.Error())
 			continue
