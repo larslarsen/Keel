@@ -112,7 +112,10 @@ jobs:
         working-directory: daemon
         run: go test ./... -run 'EndToEnd|SelfTest|Repairs|Escapes|DoesNotCreate|DeletesAPoisoned' -v
 
+      # Cleanup only. "not running" is the normal state here — the tests stop
+      # their own owners — and must not fail a job whose real checks passed.
       - name: Stop the owner
         if: always()
+        continue-on-error: true
         working-directory: daemon
         run: .\keel-host.exe owner stop
