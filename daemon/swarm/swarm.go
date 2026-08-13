@@ -759,6 +759,24 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 	return 0, nil
 }
 
+// ErrAnnouncedNothing means the announce round published no provider records at
+// all. A node in that state cannot be found by any other install, so a caller
+// that retries on the usual multi-hour cadence would leave it invisible for
+// hours — see announceLoop.
+var ErrAnnouncedNothing = errors.New("published no provider records")
+
+// RoutingTableSize is how many peers the DHT can actually route to.
+//
+// Provide fails outright with "failed to find any peer in table" while this is
+// zero, which is the state right after start: joining the DHT and populating a
+// routing table take time that announcing does not wait for.
+func (n *Node) RoutingTableSize() int {
+	if n.dht == nil {
+		return 0
+	}
+	return n.dht.RoutingTable().Size()
+}
+
 // Announce publishes provider records for everything this node can serve.
 //
 // Called periodically; DHT provider records expire, so re-announcing is how a
@@ -775,6 +793,7 @@ func (n *Node) Announce(ctx context.Context) error {
 		return err
 	}
 	var announced int
+	var firstErr error
 	for _, k := range keys {
 		c, err := prefixCID(k)
 		if err != nil {
@@ -782,7 +801,13 @@ func (n *Node) Announce(ctx context.Context) error {
 		}
 		if err := n.dht.Provide(ctx, c, true); err != nil {
 			// One failure is normal — the DHT is best-effort and a partially
-			// announced node is still useful.
+			// announced node is still useful. Every failure is not: a node that
+			// publishes nothing is invisible to every other install, and the
+			// count alone ("announced 0/44") never said why. Keep the first
+			// reason so the log can.
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		announced++
@@ -841,6 +866,13 @@ func (n *Node) Announce(ctx context.Context) error {
 	}
 	n.logf("announced %d/%d graph buckets, %d/%d catalogue buckets, %d/%d shards",
 		announced, len(keys), catAnnounced, len(catKeys), shardAnnounced, len(shardKeys))
+	// Announcing nothing means this node cannot be found by any other install,
+	// which is indistinguishable from "nobody else is running Keel" — the two
+	// have to be told apart, and only this line can do it.
+	if announced == 0 && catAnnounced == 0 && shardAnnounced == 0 && firstErr != nil {
+		n.logf("announce published NOTHING; this node is not discoverable: %v", firstErr)
+		return fmt.Errorf("%w: %v", ErrAnnouncedNothing, firstErr)
+	}
 	return nil
 }
 

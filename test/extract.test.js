@@ -2,7 +2,7 @@
 /**
  * Fixture-driven extract tests — WATCH_NEXT + HOME (WO-010).
  */
-import { describe, it } from "node:test";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -607,5 +607,84 @@ describe("TikTok surfaces (WO-057)", () => {
   it("a YouTube id is not accepted as a TikTok clip id", () => {
     const r = surfaceFromUrl("https://www.tiktok.com/@someone/video/dQw4w9WgXcQ");
     assert.equal(r.surface, null, "TikTok clip ids are long and numeric");
+  });
+});
+
+// A stream that ENDED at 20:55 was recorded by Keel as LIVE at 22:17 — 86
+// minutes after it stopped. YouTube's own player response for that video says
+// isLiveContent:true with isLiveNow:false: livestream content, not live.
+//
+// Detection was `\blive\b` over a badge container's whole textContent, and the
+// containers include `[class*='badge']`, which matches wrappers as well as
+// badges. So any wrapped text containing the word — "Streamed live 12 hours
+// ago" under a finished stream — read as a live broadcast. A false LIVE is a
+// claim about the world that is simply untrue, so precision wins here (WO-066).
+describe("LIVE badge text (WO-066 follow-up: ended streams)", () => {
+  let isLiveBadgeText, matchersFor;
+  before(async () => {
+    const m = await import("../extension/content/extract.js");
+    isLiveBadgeText = m.isLiveBadgeText;
+    // matchers() is internal; rebuild the two fields the helper reads.
+    matchersFor = {
+      live: /\b(?:live)\b/i,
+      age: /(\d+\s*[a-z]{1,6}\s+(?:ago))\s*$/i,
+    };
+  });
+
+  it("accepts a genuine badge", () => {
+    for (const t of ["LIVE", "Live", "● LIVE", "• live", "LIVE NOW"]) {
+      assert.ok(isLiveBadgeText(t, matchersFor), `should be live: ${t}`);
+    }
+  });
+
+  it("rejects metadata about a stream that already ended", () => {
+    for (const t of [
+      "Streamed live 12 hours ago",
+      "Streamed live 3 days ago",
+      "was live 2 hours ago",
+      "Started streaming 12 hours ago",
+    ]) {
+      assert.ok(!isLiveBadgeText(t, matchersFor), `should NOT be live: ${t}`);
+    }
+  });
+
+  it("rejects prose that merely mentions live", () => {
+    for (const t of [
+      "LIVE coverage of the murder trial",
+      "Watch our live studio recap show",
+      "Live chat replay",
+    ]) {
+      assert.ok(!isLiveBadgeText(t, matchersFor), `should NOT be live: ${t}`);
+    }
+  });
+});
+
+// Through extractBadges itself, not the helper — otherwise the test passes
+// whether or not the helper is actually wired in, which is exactly the mistake
+// that let the first version of this fix look verified when it was not.
+describe("extractBadges rejects an ended stream's metadata", () => {
+  let extractBadges;
+  before(async () => {
+    ({ extractBadges } = await import("../extension/content/extract.js"));
+  });
+
+  const card = (badgeHtml) =>
+    parseHTML(`<div id="c">${badgeHtml}</div>`).document.getElementById("c");
+
+  it("does not flag a finished stream whose metadata says it was streamed live", () => {
+    // The shape that caused it: a wrapper matching [class*='badge'] whose text
+    // is a sentence containing the word.
+    const el = card(`<span class="badge-wrap">Streamed live 12 hours ago</span>`);
+    assert.deepEqual(extractBadges(el), []);
+  });
+
+  it("still flags a genuine badge", () => {
+    assert.deepEqual(extractBadges(card(`<badge-shape>LIVE</badge-shape>`)), ["LIVE"]);
+    assert.deepEqual(extractBadges(card(`<span class="badge">● LIVE</span>`)), ["LIVE"]);
+  });
+
+  it("does not flag replay labels", () => {
+    assert.deepEqual(extractBadges(card(`<badge-shape>LIVE replay</badge-shape>`)), []);
+    assert.deepEqual(extractBadges(card(`<span class="badge">Live chat replay</span>`)), []);
   });
 });

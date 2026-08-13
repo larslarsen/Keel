@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -31,6 +32,15 @@ import (
 // 24 hours; refreshing well inside that keeps a node findable without adding
 // meaningful traffic.
 const announceInterval = 6 * time.Hour
+
+// announceRetryMin is how soon to try again after publishing nothing. Short,
+// because until something is published this node does not exist as far as any
+// other install is concerned.
+const announceRetryMin = 60 * time.Second
+
+// routingTableWait is how long to let the DHT bootstrap before the first
+// announce. Provide cannot succeed before this happens.
+const routingTableWait = 90 * time.Second
 
 // prewarmTimeout bounds a background fetch. It runs ahead of the user, so it
 // must never delay anything the user is waiting for.
@@ -84,14 +94,56 @@ func startSwarm(ctx context.Context, st *store.Store) {
 // tick from re-advertising a cache the user just withdrew even before this
 // loop's context is cancelled.
 func announceLoop(ctx context.Context, n *swarm.Node) {
+	// Wait for the DHT to be routable before the first attempt.
+	//
+	// Provide fails outright with "failed to find any peer in table" while the
+	// routing table is empty, which is exactly the state at start-up: joining
+	// the DHT takes seconds that announcing did not wait for. Every publish
+	// failed, the failures were swallowed one by one as "best effort", and the
+	// next attempt was six hours away — so a node announced nothing for its
+	// entire first day, was never discoverable, and every install reported zero
+	// Keel users while looking perfectly healthy.
+	if !waitForRoutingTable(ctx, n) {
+		return
+	}
 	for {
-		if err := n.Announce(ctx); err != nil && ctx.Err() == nil {
+		err := n.Announce(ctx)
+		if err != nil && ctx.Err() == nil {
 			log.Printf("swarm: announce: %v", err)
+		}
+		// Publishing nothing is not a state to sit in for six hours: retry soon,
+		// backing off, until something lands.
+		wait := announceInterval
+		if errors.Is(err, swarm.ErrAnnouncedNothing) {
+			wait = announceRetryMin
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(announceInterval):
+		case <-time.After(wait):
+		}
+	}
+}
+
+// waitForRoutingTable blocks until the DHT can route, the context ends, or the
+// wait becomes pointless. Reports whether announcing should proceed.
+func waitForRoutingTable(ctx context.Context, n *swarm.Node) bool {
+	deadline := time.Now().Add(routingTableWait)
+	for {
+		if n.RoutingTableSize() > 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			// Announce anyway: an isolated node's failures are then logged with
+			// a reason, which is better than never trying.
+			log.Printf("swarm: DHT routing table still empty after %s; announcing anyway",
+				routingTableWait)
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }

@@ -322,13 +322,52 @@ export function parseAge(text, cfg = DEFAULT_SELECTORS) {
   return m ? m[1].replace(/\s+/g, " ").trim() : null;
 }
 
+/**
+ * Is this element's text a LIVE *badge*, as opposed to text mentioning live?
+ *
+ * `mt.live` is `\blive\b` over an element's entire textContent, and the badge
+ * containers include `[class*='badge']`, which matches wrappers as well as the
+ * badge itself. So any wrapped text with the word "live" in it — "Streamed live
+ * 12 hours ago" under a finished stream, a description, a title — reads as a
+ * live broadcast.
+ *
+ * Confirmed against YouTube: a stream that ENDED at 20:55 was recorded by Keel
+ * as LIVE at 22:17, 86 minutes later. YouTube's own player response for it says
+ * `isLiveContent: true` with `isLiveNow: false` — livestream content, not live.
+ *
+ * A genuine badge is the word itself, sometimes with a dot: "LIVE", "● LIVE",
+ * "EN DIRECT". It is never a sentence, and never carries a timestamp. So the
+ * text must BE the label rather than contain it: bounded length, starting at
+ * the word, and rejecting anything with a relative-time phrase in it. Genuine
+ * badges are unaffected, which is the requirement WO-066 set — precision over
+ * recall, because a false LIVE is a claim about the world that is simply untrue.
+ *
+ * @param {string} t trimmed textContent of a badge container
+ * @param {ReturnType<typeof matchers>} mt
+ */
+export function isLiveBadgeText(t, mt) {
+  if (!t || !mt.live.test(t)) return false;
+  // A badge is a label. Anything long enough to be a sentence is not one.
+  if (t.length > 24) return false;
+  // "Streamed live 12 hours ago", "was live 3 days ago": a relative-time phrase
+  // means this is metadata about a past broadcast, not a live indicator.
+  if (mt.age.test(t) || /\bago\b/i.test(t)) return false;
+  // "LIVE replay", "Live chat replay": YouTube's labels for an ended broadcast.
+  // Both ytInitialData paths already reject these; the DOM path never did.
+  if (/\b(?:replay|chat)\b/i.test(t)) return false;
+  // The label must BEGIN with the word, after an optional dot or bullet — not
+  // merely contain it somewhere.
+  const head = t.replace(/^[\s\u2022\u25cf\u2219.\u00b7-]+/, "");
+  return mt.live.test(head.slice(0, 12));
+}
+
 /** @param {Element} el */
 export function extractBadges(el, cfg = DEFAULT_SELECTORS) {
   const out = new Set();
   const mt = matchers(cfg);
   for (const n of pickAll(el, cfg.badges.containers)) {
     const t = (n.textContent || "").trim();
-    if (mt.live.test(t)) out.add("LIVE");
+    if (isLiveBadgeText(t, mt)) out.add("LIVE");
     if (mt.verified.test(t)) out.add("VERIFIED");
     if (mt.sponsored.test(t)) out.add("SPONSORED");
     if (mt.ageGated.test(t)) out.add("AGE_GATED");
