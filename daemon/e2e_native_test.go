@@ -459,3 +459,60 @@ func TestInstallEscapesAnUnopenableDatabase(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallDoesNotCreateTheDatabase.
+//
+// The installer used to open the store to check it, and store.Open creates
+// keel.sqlite when it is missing. That made the installer's process the file's
+// creator — and an installer double-clicked through SmartScreen can hold a
+// different token than the host the browser later launches, so the host got
+// "Access is denied" on a file the installer had just made for it. Every
+// install re-created it, which is why each new fallback location failed in turn.
+//
+// The daemon owns its database. The installer must not bring one into being.
+func TestInstallDoesNotCreateTheDatabase(t *testing.T) {
+	host := buildHost(t)
+	data := t.TempDir()
+	runtimeDir, err := os.MkdirTemp("", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+
+	db := filepath.Join(data, "keel.sqlite")
+	if _, err := os.Stat(db); err == nil {
+		t.Fatal("setup: the database already exists")
+	}
+
+	install := exec.Command(host, "install", "-all", "-dry-run")
+	install.Env = append(os.Environ(),
+		"KEEL_DATA_DIR="+data, "KEEL_RUNTIME_DIR="+runtimeDir, "HOME="+t.TempDir())
+	if out, err := install.CombinedOutput(); err != nil {
+		t.Fatalf("dry-run install failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(db); err == nil {
+		t.Error("a dry run created the database")
+	}
+
+	// A real install starts the daemon, which legitimately creates it — but the
+	// file must be made by the daemon, not by the installer's own store.Open.
+	// Proven by the self-test reporting it as the desktop app's to create.
+	install = exec.Command(host, "install", "-all")
+	install.Env = append(os.Environ(),
+		"KEEL_DATA_DIR="+data, "KEEL_RUNTIME_DIR="+runtimeDir, "HOME="+t.TempDir())
+	out, err := install.CombinedOutput()
+	t.Cleanup(func() {
+		stop := exec.Command(host, "owner", "stop")
+		stop.Env = install.Env
+		_ = stop.Run()
+	})
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("created by the desktop app")) {
+		t.Errorf("the installer still claims the database as its own:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte("HELLO negotiated")) {
+		t.Errorf("the chain did not come up:\n%s", out)
+	}
+}

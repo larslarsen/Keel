@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
-	"github.com/keel-app/keel/daemon/store"
 )
 
 // checkResult is one stage of the chain and what happened to it.
@@ -85,19 +84,39 @@ func runStages(exe string) (out []checkResult, ok bool) {
 	}
 	out = append(out, checkResult{name: "state directory", detail: p.configDir})
 
-	// The store is where a startup failure actually lands, and its error is the
-	// one the owner logs before exiting.
-	st, err := store.Open(p.dbPath)
-	if err != nil {
+	// The installer does NOT open the database. It used to, and that was the
+	// bug: store.Open creates keel.sqlite when it is missing, so the file was
+	// created by the installer's process — and an installer double-clicked
+	// through SmartScreen can hold a different token than the host the browser
+	// later launches. The host then got "Access is denied" on a file the
+	// installer had just made for it, every install re-created it, and every
+	// fallback I added was defeated by the next install poisoning the new
+	// location too.
+	//
+	// The daemon owns its database. The installer only reports where it will be,
+	// and the launch check below exercises it for real, through the daemon,
+	// under the token that will actually use it.
+	if err := fileOpenableIfPresent(p.dbPath); err != nil {
 		return append(out, checkResult{name: "database", err: err}), false
 	}
-	dbPath := st.Path()
-	_ = st.Close()
-	out = append(out, checkResult{name: "database", detail: dbPath})
+	out = append(out, checkResult{name: "database", detail: p.dbPath + " (created by the desktop app)"})
 
 	launch := launchCheck(exe)
 	out = append(out, launch)
 	return out, launch.err == nil
+}
+
+// fileOpenableIfPresent checks an existing file without creating one. Creating
+// it here is what poisoned it: see runStages.
+func fileOpenableIfPresent(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return nil // absent is fine; the daemon will create it
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // repair is an automatic remedy for a stage that failed.
@@ -137,8 +156,12 @@ func repairs() []repair {
 			// never held anything if the daemon has never started, and keeping it
 			// means the install can never succeed. Only ever removed after it has
 			// actually failed to open.
-			name:    "remove the unusable database",
-			applies: func(r []checkResult) bool { return failedStage(r, "database") },
+			name: "remove the unusable database",
+			// Also when the launch fails: with the installer no longer opening
+			// the database, a bad one surfaces there instead.
+			applies: func(r []checkResult) bool {
+				return failedStage(r, "database") || failedStage(r, "browser-style launch")
+			},
 			run: func() (string, error) {
 				p, err := resolveOwnerPaths()
 				if err != nil {
