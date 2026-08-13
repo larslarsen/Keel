@@ -296,6 +296,12 @@ func swarmStatus() map[string]any {
 		// Peers that speak our protocol: actual other installs. This is the
 		// number a person should be shown.
 		"keel_peers": n.KeelPeers(),
+		// Why keel_peers is what it is. Zero has three unrelated causes and the
+		// count alone cannot tell them apart: never published (nobody can find
+		// us), published and searching (nobody is there), or not permitted at
+		// this level. WO-093 exists because a day was spent on the first while
+		// reading it as the second.
+		"rendezvous": n.RendezvousState(),
 		"id":         n.ID().String(),
 		// What the versions around us look like (WO-061). Reported even when
 		// everything agrees, because "no update needed" is itself the answer

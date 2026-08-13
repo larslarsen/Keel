@@ -160,11 +160,38 @@ If it remains after registration is valid, file a separate runtime order.
 - [x] `GOOS=windows GOARCH=amd64 go build` succeeds; `go test ./...`,
       `go test -race ./...`, `go vet ./...`, `npm test` (174/174), and
       `git diff --check` pass.
-- [ ] Live QA on the affected machine requires no typing: place the new binary,
-      double-click it, open `install-report.txt`, reload Brave, and confirm
-      “Desktop app connected.” Record the report's registry and manifest
-      results in this order. If version oscillation remains with a valid chain,
-      open a separate runtime ticket.
+- [x] Live QA on the affected machine: the install completed and the panel
+      reported **Desktop app connected**. Independently verified since by a
+      `windows-latest` CI job (`.github/workflows/windows-e2e.yml`) that
+      installs, reads every registry key back with PowerShell rather than
+      trusting Keel's own verification, decodes each manifest, checks the
+      executable exists, reinstalls, and runs the end-to-end suite on Windows.
+
+## What this order got wrong
+
+Every defect it named was real and is fixed. None of them was the reason the
+user could not connect.
+
+The actual blocker was `os.NewFile` on a synchronous named-pipe handle: Go's
+runtime requires an overlapped handle, so the owner's first read failed with
+"The handle is invalid" and it dropped every client. Removing os.NewFile
+exposed a second fault underneath — Windows serializes I/O on a synchronous
+handle, so the proxy's reader goroutine held the pipe and the writer queued
+behind it forever, and the browser's first frame was never sent. Both handles
+are overlapped now, each read and write carrying its own OVERLAPPED.
+
+That is worth recording because of how it presented. A pipe that cannot talk
+looks exactly like a missing registry key, an unreadable manifest, a locked
+directory, a database that will not open, and a blocked download — and it was
+diagnosed as each of those in turn, with a build shipped for every one. The
+thing that found it was running the program on a Windows runner and reading the
+owner's own log, which was available from the first hour and used in the last.
+
+Two further defects were introduced by those speculative fixes and are also
+fixed: `lib/errors.js` was not in `web_accessible_resources`, which killed every
+content script; and a protected DACL applied to `%LOCALAPPDATA%\Keel` locked
+browsers out of reading their own manifest.
+
 
 ## Implementation record
 

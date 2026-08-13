@@ -54,6 +54,25 @@ func RendezvousCID() (cid.Cid, error) {
 	return cid.NewCidV1(cid.Raw, sum), nil
 }
 
+// rendezvousState is what this node knows about its own discoverability.
+//
+// Reported to the interface because zero peers has three unrelated causes —
+// never published, published and nobody there, or not permitted at this level —
+// and they are indistinguishable from the count alone (WO-093).
+type rendezvousState struct {
+	Published  bool  `json:"published"`
+	LastLookAt int64 `json:"last_look_at,omitempty"`
+	LastFound  int   `json:"last_found"`
+	Looks      int   `json:"looks"`
+}
+
+// RendezvousState reports discoverability for the interface.
+func (n *Node) RendezvousState() rendezvousState {
+	n.rvMu.Lock()
+	defer n.rvMu.Unlock()
+	return n.rv
+}
+
 // announceRendezvous publishes the rendezvous key.
 //
 // Gate-aware like every other outbound action: a node that may not announce may
@@ -66,7 +85,13 @@ func (n *Node) announceRendezvous(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return n.dht.Provide(ctx, c, true)
+	if err := n.dht.Provide(ctx, c, true); err != nil {
+		return err
+	}
+	n.rvMu.Lock()
+	n.rv.Published = true
+	n.rvMu.Unlock()
+	return nil
 }
 
 // FindPeers looks up the rendezvous key and connects to what it finds.
@@ -89,6 +114,13 @@ func (n *Node) FindPeers(ctx context.Context, max int) (int, error) {
 	}
 	self := n.host.ID()
 	connected := 0
+	defer func() {
+		n.rvMu.Lock()
+		n.rv.LastLookAt = time.Now().UnixMilli()
+		n.rv.LastFound = connected
+		n.rv.Looks++
+		n.rvMu.Unlock()
+	}()
 	for p := range n.dht.FindProvidersAsync(ctx, c, max) {
 		if p.ID == self || len(p.Addrs) == 0 {
 			continue

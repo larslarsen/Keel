@@ -178,6 +178,11 @@ type Config struct {
 
 // Node is a running swarm participant.
 type Node struct {
+	// rv tracks this node's own discoverability — see RendezvousState. Guarded
+	// because the rendezvous loop writes it while the interface reads it.
+	rvMu sync.Mutex
+	rv   rendezvousState
+
 	host host.Host
 	dht  *dht.IpfsDHT
 	st   Store
