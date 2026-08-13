@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -253,4 +254,32 @@ func repairManifestAccess(run cmdRunner, dir string) error {
 		}
 	}
 	return fmt.Errorf("could not restore access on %s (reset: %v; grant: %v)", dir, first, second)
+}
+
+// restoreStateDirDACL re-secures dir's nested "data" state directory, if one
+// has been adopted, after repairManifestAccess's recursive reset just
+// stripped its PROTECTED DACL along with everything else in the tree.
+//
+// ownerBaseCandidates deliberately nests Keel's own state under
+// dir+"/data" (owner_config.go), specifically to keep it out of the
+// directory a browser reads manifests from — that separation is the whole
+// point of the "/data" suffix. repairManifestAccess's icacls /reset /t does
+// not know about that distinction: it resets everything under dir,
+// including a legitimately protected state directory, on exactly the
+// machines using that fallback — the population the manifest repair exists
+// for in the first place. This is the other half of that repair.
+//
+// Returns restored=false, err=nil when there is nothing to restore: a state
+// directory that was never adopted under dir doesn't exist yet, which is
+// not a failure.
+func restoreStateDirDACL(dir string) (restored bool, err error) {
+	dataDir := filepath.Join(dir, "data")
+	fi, statErr := os.Stat(dataDir)
+	if statErr != nil || !fi.IsDir() {
+		return false, nil
+	}
+	if err := secureOwnerPath(dataDir, true); err != nil {
+		return false, err
+	}
+	return true, nil
 }

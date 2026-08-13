@@ -497,6 +497,12 @@ func runInstall(args []string) int {
 			} else {
 				rep.line("access   %-9s OK       permissions restored on %s", "manifests", base)
 			}
+			if restored, err := restoreStateDirDACL(base); err != nil {
+				rep.line("access   %-9s WARNING  could not re-secure %s: %v",
+					"state", filepath.Join(base, "data"), err)
+			} else if restored {
+				rep.line("access   %-9s OK       state directory re-secured after manifest repair", "state")
+			}
 		}
 	}
 

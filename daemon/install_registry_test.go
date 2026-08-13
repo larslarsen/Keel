@@ -6,6 +6,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -350,6 +352,61 @@ func TestRepairManifestAccess(t *testing.T) {
 		}
 		if len(calls) != 0 {
 			t.Errorf("ran %v for an empty directory", calls)
+		}
+	})
+}
+
+// TestRestoreStateDirDACLReSecuresAfterManifestRepair is the other half of
+// TestRepairManifestAccess's fix: repairManifestAccess's icacls /reset /t is
+// recursive, so on a machine using the state-directory fallback it strips
+// the PROTECTED DACL owner_config.go deliberately applies to base+"/data" —
+// exactly the machines the manifest repair exists for. restoreStateDirDACL
+// has to put that protection back.
+//
+// Uses a real temp directory rather than an injected runner, unlike
+// repairManifestAccess's tests: this function does real filesystem work
+// (os.Stat, secureOwnerPath), not shell out, and secureOwnerPath has a real
+// implementation on every OS this test runs on (chmod on Unix, DACL on
+// Windows) — nothing here needs faking.
+func TestRestoreStateDirDACLReSecuresAfterManifestRepair(t *testing.T) {
+	t.Run("re-secures an adopted state directory", func(t *testing.T) {
+		base := t.TempDir()
+		dataDir := base + string(filepath.Separator) + "data"
+		if err := os.Mkdir(dataDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		restored, err := restoreStateDirDACL(base)
+		if err != nil {
+			t.Fatalf("restoreStateDirDACL: %v", err)
+		}
+		if !restored {
+			t.Fatal("restored = false, want true — an existing state directory must be re-secured")
+		}
+	})
+
+	t.Run("does nothing when no state directory was ever adopted", func(t *testing.T) {
+		base := t.TempDir() // no "data" subdirectory created
+		restored, err := restoreStateDirDACL(base)
+		if err != nil {
+			t.Fatalf("restoreStateDirDACL on a directory with no state subfolder: %v", err)
+		}
+		if restored {
+			t.Fatal("restored = true, want false — nothing to restore is not an error")
+		}
+	})
+
+	t.Run("ignores a file named data, only a directory is a state directory", func(t *testing.T) {
+		base := t.TempDir()
+		dataFile := base + string(filepath.Separator) + "data"
+		if err := os.WriteFile(dataFile, []byte("not a directory"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		restored, err := restoreStateDirDACL(base)
+		if err != nil {
+			t.Fatalf("restoreStateDirDACL: %v", err)
+		}
+		if restored {
+			t.Fatal("restored = true for a plain file named \"data\" — only a directory is a state directory")
 		}
 	})
 }
