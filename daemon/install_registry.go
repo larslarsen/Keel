@@ -38,14 +38,41 @@ type registryTarget struct {
 	firefox bool
 }
 
+// windowsRegistryTargets lists every key a supported browser might read.
+//
+// Each release channel is a separate product with its own registry root:
+// Brave Beta reads Brave-Browser-Beta, Chrome Canary reads "Chrome SxS", and so
+// on. Registering only the stable roots means an install can verify perfectly —
+// key present, value correct, manifest decoding, executable there — while the
+// browser in front of the user looks somewhere else entirely and reports
+// "Specified native messaging host not found". That failure is indistinguishable
+// from every other cause, and nothing on the machine points at the channel.
+//
+// Writing the extra keys costs nothing: they live under HKCU, only the browser
+// that owns one ever reads it, and an unread key is inert.
 func windowsRegistryTargets() []registryTarget {
-	return []registryTarget{
-		{"Chrome", `HKCU\Software\Google\Chrome\NativeMessagingHosts\` + hostName, false},
-		{"Chromium", `HKCU\Software\Chromium\NativeMessagingHosts\` + hostName, false},
-		{"Brave", `HKCU\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\` + hostName, false},
-		{"Edge", `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\` + hostName, false},
-		{"Firefox", `HKCU\Software\Mozilla\NativeMessagingHosts\` + hostName, true},
+	chromium := []struct{ browser, root string }{
+		{"Chrome", `Google\Chrome`},
+		{"Chrome Beta", `Google\Chrome Beta`},
+		{"Chrome Dev", `Google\Chrome Dev`},
+		{"Chrome Canary", `Google\Chrome SxS`},
+		{"Chromium", `Chromium`},
+		{"Brave", `BraveSoftware\Brave-Browser`},
+		{"Brave Beta", `BraveSoftware\Brave-Browser-Beta`},
+		{"Brave Nightly", `BraveSoftware\Brave-Browser-Nightly`},
+		{"Brave Dev", `BraveSoftware\Brave-Browser-Dev`},
+		{"Edge", `Microsoft\Edge`},
+		{"Edge Beta", `Microsoft\Edge Beta`},
+		{"Edge Dev", `Microsoft\Edge Dev`},
+		{"Edge Canary", `Microsoft\Edge SxS`},
 	}
+	out := make([]registryTarget, 0, len(chromium)+1)
+	for _, c := range chromium {
+		out = append(out, registryTarget{c.browser, `HKCU\Software\` + c.root + `\NativeMessagingHosts\` + hostName, false})
+	}
+	// Firefox and its forks all read the one Mozilla root.
+	out = append(out, registryTarget{"Firefox", `HKCU\Software\Mozilla\NativeMessagingHosts\` + hostName, true})
+	return out
 }
 
 // registryResult is what one key ended up holding, and why that is or is not

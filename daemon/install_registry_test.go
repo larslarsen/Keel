@@ -85,8 +85,8 @@ func TestRegistryInstallPointsEachFamilyAtItsOwnManifest(t *testing.T) {
 	f := newFakeRegistry()
 	results := installWindowsRegistry(f.run, chromiumManifestPath, firefoxManifestPath)
 
-	if len(results) != 5 {
-		t.Fatalf("got %d results, want one per supported browser", len(results))
+	if len(results) != len(windowsRegistryTargets()) {
+		t.Fatalf("got %d results, want one per supported browser key", len(results))
 	}
 	for _, r := range results {
 		if r.err != nil {
@@ -215,8 +215,8 @@ func TestNormalizeWindowsPath(t *testing.T) {
 func TestUninstallRemovesEveryOwnedKey(t *testing.T) {
 	f := newFakeRegistry()
 	installWindowsRegistry(f.run, chromiumManifestPath, firefoxManifestPath)
-	if len(f.values) != 5 {
-		t.Fatalf("setup: %d keys, want 5", len(f.values))
+	if len(f.values) != len(windowsRegistryTargets()) {
+		t.Fatalf("setup: %d keys, want %d", len(f.values), len(windowsRegistryTargets()))
 	}
 	for _, r := range uninstallWindowsRegistry(f.run) {
 		if r.err != nil {
@@ -292,5 +292,60 @@ func TestRepairManifestAccess(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Errorf("ran %v for an empty directory", calls)
+	}
+}
+
+// TestEveryChannelRootIsRegistered.
+//
+// Each release channel is a separate product with its own registry root, and a
+// browser reads only its own. Registering just the stable roots lets an install
+// verify perfectly while the browser in front of the user looks elsewhere and
+// reports "Specified native messaging host not found" — a failure that names
+// neither the channel nor the key.
+func TestEveryChannelRootIsRegistered(t *testing.T) {
+	targets := windowsRegistryTargets()
+	want := []string{
+		`Google\Chrome\`, `Google\Chrome Beta\`, `Google\Chrome Dev\`, `Google\Chrome SxS\`,
+		`Chromium\`,
+		`BraveSoftware\Brave-Browser\`, `BraveSoftware\Brave-Browser-Beta\`,
+		`BraveSoftware\Brave-Browser-Nightly\`, `BraveSoftware\Brave-Browser-Dev\`,
+		`Microsoft\Edge\`, `Microsoft\Edge Beta\`, `Microsoft\Edge Dev\`, `Microsoft\Edge SxS\`,
+		`Mozilla\`,
+	}
+	for _, w := range want {
+		found := false
+		for _, tg := range targets {
+			if strings.Contains(tg.key, w) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no registry key under %s", w)
+		}
+	}
+	// Every key must be HKCU (no admin rights) and name the host exactly once.
+	seen := map[string]bool{}
+	for _, tg := range targets {
+		if !strings.HasPrefix(tg.key, `HKCU\Software\`) {
+			t.Errorf("%s is not under HKCU\\Software: %s", tg.browser, tg.key)
+		}
+		if !strings.HasSuffix(tg.key, `\NativeMessagingHosts\`+hostName) {
+			t.Errorf("%s key has the wrong shape: %s", tg.browser, tg.key)
+		}
+		if seen[tg.key] {
+			t.Errorf("duplicate key %s", tg.key)
+		}
+		seen[tg.key] = true
+	}
+	// Exactly one Firefox-schema target: the rest are Chromium.
+	ff := 0
+	for _, tg := range targets {
+		if tg.firefox {
+			ff++
+		}
+	}
+	if ff != 1 {
+		t.Errorf("got %d Firefox targets, want 1", ff)
 	}
 }
