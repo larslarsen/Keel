@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/keel-app/keel/daemon/bridge"
@@ -169,22 +168,6 @@ func copyOwnerToNative(in io.Reader, out io.Writer) error {
 	}
 }
 
-// startOwnerHandshakeErr is startOwnerHandshake when only the error matters.
-func startOwnerHandshakeErr(conn net.Conn, secret string) error {
-	_, err := startOwnerHandshake(conn, secret, "session")
-	return err
-}
-
-// isOwnerGoneError reports whether a handshake failed because the owner went
-// away mid-exchange, rather than because it refused us.
-func isOwnerGoneError(err error) bool {
-	return errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, io.ErrClosedPipe) ||
-		errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, syscall.EPIPE)
-}
-
 // redialOwner opens one more authenticated session, for the case where a stale
 // owner could not be retired and is still the only owner there is.
 func redialOwner(p ownerPaths, secret string) (net.Conn, error) {
@@ -226,36 +209,27 @@ func connectOrSpawnOwner(p ownerPaths, secret string) (net.Conn, error) {
 		ack, hsErr := startOwnerHandshake(conn, secret, "session")
 		if hsErr != nil {
 			_ = conn.Close()
-			// An owner that is shutting down still has a live endpoint for a
-			// moment: the dial succeeds, and then the handshake dies on a pipe
-			// that is closing under it. That is not an incompatible owner, it is
-			// no owner — so start one, rather than failing the browser with a
-			// transport error it can do nothing about. Every install stops the
-			// previous owner, so this window is hit routinely.
-			if !isOwnerGoneError(hsErr) {
-				return nil, hsErr // never replace or kill an incompatible owner
-			}
-			log.Printf("owner: the previous one was closing (%v); starting a new one", hsErr)
-		} else if !ownerIsStale(ack.OwnerBuild) {
-			return conn, nil
-		} else {
-			// The resident owner is a different binary from this one: it has been
-			// running since before an upgrade. The owner outlives the browser by
-			// design, so without this it keeps answering forever and the update
-			// never takes effect — the extension negotiates against old code and is
-			// refused, while the new binary sits on disk unused.
-			//
-			// Checked once per proxy process, on the owner that was already there:
-			// the owner we spawn below is by definition ours, so this cannot loop.
-			_ = conn.Close()
-			if err := requestOwnerControl("shutdown"); err != nil {
-				// Could not retire it. Serving through the old owner beats not
-				// serving at all, so fall back to using it.
-				log.Printf("owner: could not retire the previous build: %v", err)
-				return redialOwner(p, secret)
-			}
-			waitOwnerEndpointFree(p)
+			return nil, hsErr // never replace or kill an incompatible/unknown owner
 		}
+		if !ownerIsStale(ack.OwnerBuild) {
+			return conn, nil
+		}
+		// The resident owner is a different binary from this one: it has been
+		// running since before an upgrade. The owner outlives the browser by
+		// design, so without this it keeps answering forever and the update
+		// never takes effect — the extension negotiates against old code and is
+		// refused, while the new binary sits on disk unused.
+		//
+		// Checked once per proxy process, on the owner that was already there:
+		// the owner we spawn below is by definition ours, so this cannot loop.
+		_ = conn.Close()
+		if err := requestOwnerControl("shutdown"); err != nil {
+			// Could not retire it. Serving through the old owner beats not
+			// serving at all, so fall back to using it.
+			log.Printf("owner: could not retire the previous build: %v", err)
+			return redialOwner(p, secret)
+		}
+		waitOwnerEndpointFree(p)
 	}
 	if err := spawnOwner(p); err != nil {
 		return nil, err
@@ -269,18 +243,11 @@ func connectOrSpawnOwner(p ownerPaths, secret string) (net.Conn, error) {
 		conn, lastErr = dialOwnerEndpoint(ctx, p)
 		cancel()
 		if lastErr == nil {
-			hsErr := startOwnerHandshakeErr(conn, secret)
-			if hsErr == nil {
-				return conn, nil
+			if _, err := startOwnerHandshake(conn, secret, "session"); err != nil {
+				_ = conn.Close()
+				return nil, err
 			}
-			_ = conn.Close()
-			// Same race, on the way up: a contender's owner can win the endpoint
-			// and then exit, so the handshake meets a pipe closing under it.
-			// Keep waiting rather than failing the browser.
-			if !isOwnerGoneError(hsErr) {
-				return nil, hsErr
-			}
-			lastErr = hsErr
+			return conn, nil
 		}
 		time.Sleep(backoff)
 		if backoff < 250*time.Millisecond {
