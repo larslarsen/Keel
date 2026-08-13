@@ -398,6 +398,26 @@ const PEER_PROGRESS_COLORS = [
   "#d55181", "#008300", "#9085e9", "#e66767",
 ];
 
+// Mirrors daemon/store/keyscheme.go's ShardK — frozen, never runtime
+// (WO-060). The tokenizer cuts a word into fixed, non-overlapping blocks of
+// this many characters from the front (daemon/store/shard.go's tokenize),
+// so colorizedWord below has to chop the same way to draw the same blocks.
+const CHAR_TOKENS_K = 3;
+
+// A stable colour for a token, from the token's own characters — no
+// dictionary, no server-assigned index. The word is already sent to this
+// page in plaintext (it's the user's own query), so hashing the substring
+// here is simpler than keying off an id whose only job was picking a
+// colour. Deterministic: the same three characters always land on the same
+// colour, so a repeated block reuses it for free.
+function colorForToken(text) {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) {
+    h = (h * 31 + text.charCodeAt(i)) | 0;
+  }
+  return PEER_PROGRESS_COLORS[Math.abs(h) % PEER_PROGRESS_COLORS.length];
+}
+
 // renderPeerProgress draws one segment per query token the daemon walked,
 // color-coded and shuffled — deliberately not labeled and not in query
 // order, so the bar itself cannot be read back into the query's structure
@@ -462,37 +482,25 @@ function renderPeerProgress(progress) {
 }
 
 /**
- * The query word, with each three-gram's first character in that three-gram's
- * colour.
- *
- * No tokenizer here: the daemon sends one entry per three-gram in word order,
- * so the nth character starts the nth three-gram and the two line up by index.
- * Counting characters is the whole algorithm.
- *
- * Three-grams overlap, so a character belongs to up to three of them; giving
- * each three-gram the character it starts at gives every one exactly one, left
- * to right.
+ * The query word, chopped into ShardK-character blocks from the front, each
+ * tinted by colorForToken. Purely local string-chopping — no tokenizer, no
+ * dictionary, nothing from the wire: the word is already plaintext here, and
+ * cutting every 3 characters is the whole algorithm.
  *
  * @param {string} word
- * @param {Array<{token_index?: number}>} tokens in word order
  * @returns {DocumentFragment}
  */
-function colorizedWord(word, tokens) {
+function colorizedWord(word) {
   const frag = document.createDocumentFragment();
   const text = String(word ?? "");
-  [...text].forEach((ch, i) => {
-    const t = tokens[i];
-    if (!t) {
-      frag.appendChild(document.createTextNode(ch));
-      return;
-    }
+  for (let i = 0; i < text.length; i += CHAR_TOKENS_K) {
+    const block = text.slice(i, i + CHAR_TOKENS_K);
     const span = document.createElement("span");
-    span.textContent = ch;
+    span.textContent = block;
     span.className = "tok-char";
-    span.style.color =
-      PEER_PROGRESS_COLORS[Math.abs(Number(t.token_index) || 0) % PEER_PROGRESS_COLORS.length];
+    span.style.color = colorForToken(block);
     frag.appendChild(span);
-  });
+  }
   return frag;
 }
 
@@ -524,11 +532,10 @@ function renderWordCorpus(stats) {
     label.className = "word-label";
     const pctText =
       typeof w.pct === "number" ? `~${w.pct}% of observed graphs` : "no estimate yet";
-    // The word is written a character at a time, each tinted with the colour of
-    // the three-gram that starts there — the same colour as that three-gram's
-    // bar below, because the daemon sends them in word order and the two line
-    // up by index.
-    label.appendChild(colorizedWord(w.word, w.tokens || []));
+    // The word is written a ShardK-character block at a time, each tinted by
+    // colorForToken — the same colour as that block's bar below, since both
+    // hash the identical substring computed the identical way.
+    label.appendChild(colorizedWord(w.word));
     label.appendChild(document.createTextNode(` — ${pctText}`));
     row.appendChild(label);
 
@@ -543,13 +550,15 @@ function renderWordCorpus(stats) {
     const sub = document.createElement("div");
     sub.className = "token-subbars";
     const fills = [[fill, typeof w.pct === "number" ? Math.min(100, w.pct) : 0]];
-    // One bar per three-gram, in word order — the daemon sends them that way,
-    // so the nth bar is the nth three-gram and matches the nth coloured letter
-    // above it. No sorting or de-duplicating here: a word with a repeated
-    // three-gram really does have two of them.
-    for (const t of w.tokens || []) {
-      const color =
-        PEER_PROGRESS_COLORS[Math.abs(t.token_index || 0) % PEER_PROGRESS_COLORS.length];
+    // One bar per ShardK-character block, in word order — the daemon sends
+    // coverage that way, so the nth bar is the nth block and matches the
+    // nth coloured block above it. No sorting or de-duplicating here: a
+    // word with a repeated block really does have two bars for it — they
+    // just share a colour, the same as the label does.
+    const word = String(w.word ?? "");
+    (w.tokens || []).forEach((t, i) => {
+      const block = word.slice(i * CHAR_TOKENS_K, i * CHAR_TOKENS_K + CHAR_TOKENS_K);
+      const color = colorForToken(block);
       const seg = document.createElement("div");
       seg.style.setProperty("--seg-color", color);
       if (t.known) {
@@ -570,7 +579,7 @@ function renderWordCorpus(stats) {
         seg.title = "No network estimate yet for this part of the word";
       }
       sub.appendChild(seg);
-    }
+    });
     row.appendChild(sub);
     el.wordCorpus.appendChild(row);
 

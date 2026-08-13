@@ -28,7 +28,8 @@ func TestNormalizeWord(t *testing.T) {
 }
 
 func TestCharTokensForWord(t *testing.T) {
-	// "trading" → normalize " trading " → sliding ShardK windows
+	// "trading" → fixed, non-overlapping ShardK pieces cut from the front,
+	// tail padded: "tra", "din", "g  ".
 	toks := CharTokensForWord("trading")
 	if len(toks) == 0 {
 		t.Fatal("expected char tokens for trading")
