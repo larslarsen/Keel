@@ -526,14 +526,8 @@ function renderWordCorpus(stats) {
       typeof w.pct === "number" ? `~${w.pct}% of observed graphs` : "no estimate yet";
     // The word is written a character at a time, each tinted with the colour of
     // the three-gram that starts there — the same colour as that three-gram's
-    // sub-bar below. Three-grams overlap, so a character cannot belong to only
-    // one; giving each token the character it starts at gives every token
-    // exactly one, left to right, and makes the bars readable as parts of the
-    // word instead of an anonymous row.
-    //
-    // The daemon sends no token text (TokenCoverageWire is an opaque index), so
-    // this mapping is computed locally from the user's own query — see
-    // lib/tokens.js.
+    // bar below, because the daemon sends them in word order and the two line
+    // up by index.
     label.appendChild(colorizedWord(w.word, w.tokens || []));
     label.appendChild(document.createTextNode(` — ${pctText}`));
     row.appendChild(label);
