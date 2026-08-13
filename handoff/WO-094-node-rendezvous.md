@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev |
-| **Status** | **Ready** |
+| **Status** | **Implemented and live-verified 2026-08-13** — remaining acceptance items unchecked below are gate/version cases, not the connection itself |
 | **Date** | 2026-08-13 |
 | **Source** | Live QA: two consented Level-2 nodes, both healthy, never connected across a full day |
 | **Depends on** | WO-093 (making the failure visible) |
@@ -61,9 +61,14 @@ each of those was investigated and eliminated first.
 
 ## Acceptance
 
-- [ ] Two nodes on different machines, with **no overlapping corpus**, both at
+- [x] Two nodes on different machines, with **no overlapping corpus**, both at
       Level 2, connect within minutes of both being up, and each reports
-      `keel_peers: 1`.
+      `keel_peers: 1`. Verified 2026-08-13 across Linux and Windows: this node
+      published, looked once, found the other and connected —
+      `rendezvous: {published: true, looks: 1, last_found: 1}`, `keel_peers: 1`.
+      The other machine's interface reported "Connected to 1 other Keel user" and
+      "21 livestreams known", so the live index crossed the link as well: a
+      connection carrying data, not just a handshake.
 - [ ] A Level-1 node neither provides nor looks up the rendezvous key.
 - [ ] Withdrawing consent or dropping to Level 1 stops rendezvous within one
       tick, verified through the outbound gate rather than by inspection.
