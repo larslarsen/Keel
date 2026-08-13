@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -167,24 +168,62 @@ func repairs() []repair {
 				if err != nil {
 					return "", err
 				}
-				var removed []string
+				var removed, stuck []string
 				for _, suffix := range []string{"", "-wal", "-shm"} {
 					path := p.dbPath + suffix
 					if _, err := os.Stat(path); err != nil {
 						continue
 					}
-					if err := os.Remove(path); err != nil {
-						return "", fmt.Errorf("could not remove %s: %w", path, err)
+					if err := forceRemove(path); err != nil {
+						stuck = append(stuck, filepath.Base(path))
+						continue
 					}
 					removed = append(removed, filepath.Base(path))
 				}
-				if len(removed) == 0 {
+				switch {
+				case len(stuck) > 0 && len(removed) == 0:
+					return "", fmt.Errorf("could not remove %s", strings.Join(stuck, ", "))
+				case len(stuck) > 0:
+					return "removed " + strings.Join(removed, ", ") +
+						"; could not remove " + strings.Join(stuck, ", "), nil
+				case len(removed) == 0:
 					return "nothing to remove", nil
 				}
 				return "removed " + strings.Join(removed, ", "), nil
 			},
 		},
 	}
+}
+
+// forceRemove deletes a file, taking ownership of it first if it has to.
+//
+// A file whose ACL denies this user can usually still be deleted, because
+// deleting is governed by the parent directory. When it is not — a file left by
+// a process running under another token, which is exactly what an installer run
+// through SmartScreen can produce — taking ownership and granting this user
+// full control is the only way out, and it is what a person would do by hand in
+// the Security tab. Nothing here is asked of the user.
+func forceRemove(path string) error {
+	err := os.Remove(path)
+	if err == nil {
+		return nil
+	}
+	if runtime.GOOS != "windows" {
+		return err
+	}
+	// Best effort, in the order a person would try them.
+	_, _ = execRunner("takeown", "/f", path)
+	user := os.Getenv("USERNAME")
+	if domain := os.Getenv("USERDOMAIN"); domain != "" && user != "" {
+		user = domain + "\\" + user
+	}
+	if user != "" {
+		_, _ = execRunner("icacls", path, "/grant", user+":F")
+	}
+	if err2 := os.Remove(path); err2 != nil {
+		return fmt.Errorf("%w (after taking ownership: %v)", err, err2)
+	}
+	return nil
 }
 
 // launchCheck starts this executable the way a browser starts a native

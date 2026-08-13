@@ -516,3 +516,55 @@ func TestInstallDoesNotCreateTheDatabase(t *testing.T) {
 		t.Errorf("the chain did not come up:\n%s", out)
 	}
 }
+
+// TestInstallDeletesAPoisonedDatabaseItself.
+//
+// The user cannot type: five seconds per character on that machine. So a fix
+// that requires "just run del" is not a fix. An install that meets a database
+// it cannot open has to clear it and carry on, by itself.
+func TestInstallDeletesAPoisonedDatabaseItself(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can open anything")
+	}
+	host := buildHost(t)
+	data := t.TempDir()
+	runtimeDir, err := os.MkdirTemp("", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+
+	// A database that exists, is non-empty, and denies this user.
+	db := filepath.Join(data, "keel.sqlite")
+	if err := os.WriteFile(db, []byte("SQLite format 3\x00 poisoned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(db, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(db, 0o600) })
+
+	install := exec.Command(host, "install", "-all")
+	install.Env = append(os.Environ(),
+		"KEEL_DATA_DIR="+data, "KEEL_RUNTIME_DIR="+runtimeDir, "HOME="+t.TempDir())
+	out, err := install.CombinedOutput()
+	t.Cleanup(func() {
+		stop := exec.Command(host, "owner", "stop")
+		stop.Env = install.Env
+		_ = stop.Run()
+	})
+	if err != nil {
+		t.Fatalf("install did not clear the poisoned database on its own: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("HELLO negotiated")) {
+		t.Fatalf("the chain never came up:\n%s", out)
+	}
+	// And it must be a working database afterwards, not just an absent one.
+	fi, err := os.Stat(db)
+	if err != nil {
+		t.Fatalf("no database after the install: %v", err)
+	}
+	if fi.Size() == 0 {
+		t.Error("the database was left empty")
+	}
+}
