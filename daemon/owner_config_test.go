@@ -148,3 +148,26 @@ func TestStateDirNeverCollidesWithTheManifestDir(t *testing.T) {
 		}
 	}
 }
+
+// TestProbeDoesNotSecureDirectoriesItRejects.
+//
+// chooseOwnerBase probes candidates it may not use. secureOwnerPath sets a
+// PROTECTED DACL, which strips inherited permissions — so probing with it
+// permanently alters directories Keel then walks away from. That is how the
+// native-host manifest folder got locked and the browser lost the ability to
+// read its own manifest. A probe must not mutate what it is only asking about.
+func TestProbeDoesNotSecureDirectoriesItRejects(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "candidate")
+	if err := ownerDirUsable(dir); err != nil {
+		t.Fatalf("a writable candidate was rejected: %v", err)
+	}
+	// The probe may create the directory; it must not leave a probe file, and
+	// on Unix it must not have tightened the mode beyond what MkdirAll set.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("probe left files behind: %v", entries)
+	}
+}

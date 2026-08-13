@@ -158,11 +158,17 @@ func Open(path string) (*Store, error) {
 	// An existing database keeps its contents reachable.
 	chosen := ""
 	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			if err := preflightDatabasePath(c); err == nil {
-				chosen = c
-				break
-			}
+		// Size, not existence: preflightDatabasePath creates the file before
+		// SQLite opens it, so a location that failed after the probe leaves a
+		// 0-byte keel.sqlite behind. Treating that as "a corpus lives here"
+		// would pin every future start to the location that just failed.
+		fi, err := os.Stat(c)
+		if err != nil || fi.Size() == 0 {
+			continue
+		}
+		if err := preflightDatabasePath(c); err == nil {
+			chosen = c
+			break
 		}
 	}
 	var problems []string

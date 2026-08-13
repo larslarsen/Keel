@@ -32,16 +32,19 @@ type ownerPaths struct {
 
 // ownerDirUsable reports whether a directory can hold the owner's state.
 //
-// It performs exactly what prepareOwnerPaths will do — create, apply the
-// owner-only permissions, and write a file — so a directory that passes here
-// cannot fail there. Probing with the real operations is the point: on Windows
-// a directory can exist and still refuse both the DACL and the write.
+// Deliberately does NOT apply the owner-only permissions. chooseOwnerBase calls
+// this on candidates it may well not use, and secureOwnerPath sets a PROTECTED
+// DACL — probing with it would permanently alter directories Keel then walks
+// away from. That is not hypothetical: applying it to %LOCALAPPDATA%\Keel,
+// where the installer keeps the native-host manifests, locked the browser out
+// of reading its own manifest and native messaging stopped working. A probe
+// must not mutate anything it is only asking about.
+//
+// Permissions are applied by prepareOwnerPaths, to the one directory chosen,
+// and chooseOwnerBase verifies that step separately on that directory alone.
 func ownerDirUsable(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
-	}
-	if err := secureOwnerPath(dir, true); err != nil {
-		return fmt.Errorf("secure %s: %w", dir, err)
 	}
 	probe := filepath.Join(dir, ".keel-write-probe")
 	f, err := os.OpenFile(probe, os.O_CREATE|os.O_RDWR, 0o600)
@@ -101,17 +104,34 @@ func ownerBaseCandidates() []string {
 func chooseOwnerBase() (string, error) {
 	candidates := ownerBaseCandidates()
 	for _, dir := range candidates {
-		if _, err := os.Stat(filepath.Join(dir, "keel.sqlite")); err != nil {
+		// Size, not existence. preflightDatabasePath creates the file before
+		// SQLite ever opens it, so a location that failed *after* the probe
+		// leaves a 0-byte keel.sqlite behind — and treating that as "a corpus
+		// lives here" would pin every future start to the location that just
+		// failed. An empty file is a scar, not a database.
+		fi, err := os.Stat(filepath.Join(dir, "keel.sqlite"))
+		if err != nil || fi.Size() == 0 {
 			continue
 		}
-		if err := ownerDirUsable(dir); err == nil {
-			return dir, nil
+		if err := ownerDirUsable(dir); err != nil {
+			continue
 		}
+		if err := secureOwnerPath(dir, true); err != nil {
+			continue
+		}
+		return dir, nil
 	}
 	var problems []string
 	for _, dir := range candidates {
 		if err := ownerDirUsable(dir); err != nil {
 			problems = append(problems, err.Error())
+			continue
+		}
+		// Only now, on the directory actually being adopted, is the protected
+		// DACL applied — and if it will not take, this candidate is rejected
+		// rather than left half-secured.
+		if err := secureOwnerPath(dir, true); err != nil {
+			problems = append(problems, fmt.Sprintf("secure %s: %v", dir, err))
 			continue
 		}
 		if len(problems) > 0 {

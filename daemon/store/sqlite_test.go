@@ -1544,3 +1544,51 @@ func TestExplicitPathErrorPointsAtTheSetting(t *testing.T) {
 		t.Errorf("error still claims every location was tried: %v", err)
 	}
 }
+
+// TestEmptyDatabaseIsNotTreatedAsExisting.
+//
+// preflightDatabasePath creates the file before SQLite ever opens it, so a
+// location that fails after the probe leaves a 0-byte keel.sqlite behind.
+// Counting that as an existing corpus would pin every future start to the
+// location that had just failed — a fallback that permanently prefers the
+// broken option.
+func TestEmptyDatabaseIsNotTreatedAsExisting(t *testing.T) {
+	root := t.TempDir()
+	preferred := filepath.Join(root, "preferred")
+	if err := os.MkdirAll(preferred, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The scar a failed probe leaves behind.
+	if err := os.WriteFile(filepath.Join(preferred, "keel.sqlite"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(root, "local")
+	// dbCandidates puts LOCALAPPDATA's database under a "Keel" subfolder.
+	real := filepath.Join(local, "Keel")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(filepath.Join(real, "keel.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("KEEL_DATA_DIR", preferred)
+	t.Setenv("LOCALAPPDATA", local)
+	// A real database beats an empty file, wherever the empty one sits.
+	got := dbCandidates("")
+	if len(got) < 2 {
+		t.Fatalf("want several candidates, got %v", got)
+	}
+	st2, err := Open("")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st2.Close()
+	if filepath.Dir(st2.Path()) == preferred {
+		t.Errorf("chose the 0-byte scar at %s over the real database", st2.Path())
+	}
+}
