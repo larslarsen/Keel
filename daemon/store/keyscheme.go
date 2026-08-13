@@ -75,7 +75,13 @@ package store
 //	    WO-059 added the shard tokenizer/grouping constants below without
 //	    bumping this: they are a new domain, not a change to an existing one,
 //	    so nothing that already agreed on scheme 1 stops agreeing.
-const KeySchemeVersion = 1
+//
+// Bumped to 2: tokens are now fixed, non-overlapping k-grams rather than a
+// sliding window. Every shard key, sketch and provider record derived from the
+// old tokenization is incompatible, and the version is what keeps the two apart
+// — nodes on different schemes use different protocol ids and never exchange
+// data that would silently mismatch (WO-060).
+const KeySchemeVersion = 2
 
 // Domain separators. Each hash input is prefixed with a string naming what is
 // being hashed, so a video id can never produce the same digest in two

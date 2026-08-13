@@ -21,15 +21,41 @@ import "testing"
 // intended and then bump KeySchemeVersion. Do not edit the expectation to match
 // the new output without doing that.
 func TestKeySchemeGoldenVectors(t *testing.T) {
-	if KeySchemeVersion != 1 {
-		t.Fatalf("KeySchemeVersion is %d — the vectors below describe scheme 1. "+
+	if KeySchemeVersion != 2 {
+		t.Fatalf("KeySchemeVersion is %d — the vectors below describe scheme 2. "+
 			"Add vectors for the new scheme rather than changing these.", KeySchemeVersion)
+	}
+
+	// Scheme 2 changed exactly one thing: tokens are fixed, non-overlapping
+	// k-grams cut per word from the front with the tail padded, instead of a
+	// sliding window. Everything else below is unchanged from scheme 1 and is
+	// still checked, because a bump is not licence to move the rest.
+	for _, tc := range []struct {
+		word string
+		want []string
+	}{
+		{"eclipse", []string{"ecl", "ips", "e  "}},
+		{"recommendation ai", []string{"rec", "omm", "end", "ati", "on ", "ai "}},
+		{"men", []string{"men"}},
+		{"a", []string{"a  "}},
+		{"", nil},
+	} {
+		got := tokenize(tc.word, ShardK)
+		if len(got) != len(tc.want) {
+			t.Errorf("tokenize(%q) = %v, want %v", tc.word, got, tc.want)
+			continue
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("tokenize(%q)[%d] = %q, want %q", tc.word, i, got[i], tc.want[i])
+			}
+		}
 	}
 
 	// Bucket width. Everything downstream of this changes if it moves, so it is
 	// checked on its own as well as through the vectors.
 	if DefaultPrefixBits != 12 {
-		t.Errorf("DefaultPrefixBits = %d, want 12 for key scheme 1", DefaultPrefixBits)
+		t.Errorf("DefaultPrefixBits = %d, want 12 for key scheme 2", DefaultPrefixBits)
 	}
 
 	for _, tc := range []struct {
@@ -69,10 +95,10 @@ func TestKeySchemeGoldenVectors(t *testing.T) {
 		t.Errorf("shardDomain = %q — every shard bucket moves; bump KeySchemeVersion", shardDomain)
 	}
 	if ShardK != 3 {
-		t.Errorf("ShardK = %d, want 3 for key scheme 1", ShardK)
+		t.Errorf("ShardK = %d, want 3 for key scheme 2", ShardK)
 	}
 	if ShardM != 256 {
-		t.Errorf("ShardM = %d, want 256 for key scheme 1", ShardM)
+		t.Errorf("ShardM = %d, want 256 for key scheme 2", ShardM)
 	}
 	if TokenDictAlphabet != " abcdefghijklmnopqrstuvwxyz" {
 		t.Errorf("TokenDictAlphabet = %q — every token index moves; bump KeySchemeVersion", TokenDictAlphabet)
