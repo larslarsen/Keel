@@ -129,3 +129,22 @@ func TestOwnerPathsKeepTheCorpusWithItsCredential(t *testing.T) {
 		t.Errorf("secret %s is not in the chosen directory %s", p.secret, p.configDir)
 	}
 }
+
+// TestStateDirNeverCollidesWithTheManifestDir.
+//
+// ownerDirUsable applies a protected DACL, which strips inherited permissions.
+// Pointed at %LOCALAPPDATA%\Keel — where the installer writes the native-host
+// manifests — that locks the browser out of reading its own manifest, and the
+// browser reports "Specified native messaging host not found". A fallback for
+// Keel's private state must never select a directory a browser has to read.
+func TestStateDirNeverCollidesWithTheManifestDir(t *testing.T) {
+	local := t.TempDir()
+	t.Setenv("LOCALAPPDATA", local)
+
+	manifestDir := filepath.Join(local, "Keel")
+	for _, c := range ownerBaseCandidates() {
+		if c == manifestDir {
+			t.Fatalf("candidate %s is the native-host manifest directory", c)
+		}
+	}
+}

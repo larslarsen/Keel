@@ -79,7 +79,14 @@ func ownerBaseCandidates() []string {
 		add(filepath.Join(base, "keel"))
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); v != "" {
-		add(filepath.Join(v, "Keel"))
+		// A "data" subfolder, never %LOCALAPPDATA%\Keel itself: that directory
+		// holds the native-host manifests the installer writes, and
+		// ownerDirUsable applies a PROTECTED DACL — which strips inherited
+		// permissions and locks the browser out of reading its own manifest.
+		// The symptom is "Specified native messaging host not found", i.e. this
+		// fallback silently uninstalls native messaging. Keel's private state
+		// and the files a browser must read cannot share a directory.
+		add(filepath.Join(v, "Keel", "data"))
 	}
 	if exe, err := os.Executable(); err == nil {
 		add(filepath.Join(filepath.Dir(exe), "keel-data"))
