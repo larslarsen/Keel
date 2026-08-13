@@ -369,6 +369,16 @@ func FilterStopwords(words []string) []string {
 // CharTokensForWord returns the ShardK character n-grams of an isolated
 // normalized word, using the same tokenize/normalize path titles use.
 // For a single word w, normalize produces " w " so windows are well-defined.
+// CharTokensInOrder is every three-gram of a word, in the order they occur.
+//
+// CharTokensForWord sorts and de-duplicates, which is right for looking things
+// up and wrong for describing a word to a person: the nth token should be the
+// nth three-gram, so an interface can line the bars up with the letters without
+// reimplementing this function to undo the sort.
+func CharTokensInOrder(word string) []string {
+	return tokenize(word, ShardK)
+}
+
 func CharTokensForWord(word string) []string {
 	return uniqueSorted(tokenize(word, ShardK))
 }

@@ -1007,10 +1007,23 @@ func wordStatsFromLocal(query string, local *store.WordTelemetry, st *store.Stor
 			r := math.Round(pct*10) / 10
 			ww.Pct = &r
 		}
-		for _, tok := range store.CharTokensForWord(w) {
+		// One entry per three-gram, IN WORD ORDER, never skipped.
+		//
+		// This used to send store.CharTokensForWord — sorted and de-duplicated,
+		// with tokens missing from the dictionary dropped. Two consequences: the
+		// interface drew fewer bars than the word has three-grams, and the ones
+		// it drew were in an order unrelated to the word, so a bar could not be
+		// tied to the letters it came from without reimplementing the tokenizer
+		// in JavaScript to undo the sort. Word order makes the nth bar the nth
+		// three-gram, which is all the interface ever needed.
+		//
+		// TokenIndex stays the dictionary index, so one three-gram keeps one
+		// colour wherever it appears; a three-gram the dictionary does not know
+		// gets a negative index, distinct within the word and never a real one.
+		for i, tok := range store.CharTokensInOrder(w) {
 			idx, ok := store.TokenDictIndex(tok)
 			if !ok {
-				continue
+				idx = -1 - i
 			}
 			tc := bridge.TokenCoverageWire{TokenIndex: idx}
 			if st != nil {

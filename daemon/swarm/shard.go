@@ -363,7 +363,7 @@ func (n *Node) PeerSearch(ctx context.Context, query string) ([]string, []TokenP
 	}
 	progress := make([]TokenProgress, 0, len(tokens))
 	var result map[string]bool
-	for _, tok := range tokens {
+	for i, tok := range tokens {
 		// Must be read BEFORE FetchShard, not after: FetchShard's own defer
 		// folds this search's results into the estimate via
 		// RecordTokenSearch, so reading afterward would report a target
@@ -374,11 +374,23 @@ func (n *Node) PeerSearch(ctx context.Context, query string) ([]string, []TokenP
 		if err != nil {
 			return nil, nil, err
 		}
-		if idx, ok := store.TokenDictIndex(tok); ok {
-			progress = append(progress, TokenProgress{
-				TokenIndex: idx, Fetched: len(hits), Target: target, Known: known,
-			})
+		// One entry per token FETCHED, always. It used to be one per token that
+		// happened to have a dictionary index, so a token with no entry was
+		// fetched and then reported nothing — the interface drew fewer bars than
+		// there were tokens being fetched, with nothing to say a bar was
+		// missing. The count of bars is meant to be the count of the work.
+		//
+		// A token outside the dictionary gets a negative index derived from its
+		// position: distinct within this query, never colliding with a real
+		// dictionary index, and unmistakably not one.
+		idx, ok := store.TokenDictIndex(tok)
+		if !ok {
+			idx = -1 - i
+			known = false
 		}
+		progress = append(progress, TokenProgress{
+			TokenIndex: idx, Fetched: len(hits), Target: target, Known: known,
+		})
 
 		set := make(map[string]bool, len(hits))
 		for id := range hits {

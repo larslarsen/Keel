@@ -9,7 +9,6 @@
 import { browser } from "../lib/browser.js";
 import { PEER_SEARCH_REV_RECIPROCAL } from "../lib/protocol.js";
 import { escapeHtml, fmtDuration } from "../lib/render.js";
-import { tokenColoringForWord } from "../lib/tokens.js";
 import {
   analysisTable,
   fmtAgo,
@@ -463,33 +462,35 @@ function renderPeerProgress(progress) {
 }
 
 /**
- * The query word, with each three-gram's starting character in that
- * three-gram's colour.
+ * The query word, with each three-gram's first character in that three-gram's
+ * colour.
  *
- * Colours come from the same table and the same index as the sub-bars, so a
- * letter and its bar always agree.
+ * No tokenizer here: the daemon sends one entry per three-gram in word order,
+ * so the nth character starts the nth three-gram and the two line up by index.
+ * Counting characters is the whole algorithm.
+ *
+ * Three-grams overlap, so a character belongs to up to three of them; giving
+ * each three-gram the character it starts at gives every one exactly one, left
+ * to right.
  *
  * @param {string} word
+ * @param {Array<{token_index?: number}>} tokens in word order
  * @returns {DocumentFragment}
  */
-function colorizedWord(word) {
+function colorizedWord(word, tokens) {
   const frag = document.createDocumentFragment();
-  const { chars, tokenIndex } = tokenColoringForWord(word);
-  if (!chars.length) {
-    frag.appendChild(document.createTextNode(String(word ?? "")));
-    return frag;
-  }
-  chars.forEach((ch, i) => {
-    // The normalized form is space-padded; those spaces are structure, not
-    // letters the user typed, so they are not rendered.
-    if (ch === " " && (i === 0 || i === chars.length - 1)) return;
+  const text = String(word ?? "");
+  [...text].forEach((ch, i) => {
+    const t = tokens[i];
+    if (!t) {
+      frag.appendChild(document.createTextNode(ch));
+      return;
+    }
     const span = document.createElement("span");
     span.textContent = ch;
-    const t = tokenIndex[i];
-    if (t >= 0) {
-      span.className = "tok-char";
-      span.style.color = PEER_PROGRESS_COLORS[Math.abs(t) % PEER_PROGRESS_COLORS.length];
-    }
+    span.className = "tok-char";
+    span.style.color =
+      PEER_PROGRESS_COLORS[Math.abs(Number(t.token_index) || 0) % PEER_PROGRESS_COLORS.length];
     frag.appendChild(span);
   });
   return frag;
@@ -533,7 +534,7 @@ function renderWordCorpus(stats) {
     // The daemon sends no token text (TokenCoverageWire is an opaque index), so
     // this mapping is computed locally from the user's own query — see
     // lib/tokens.js.
-    label.appendChild(colorizedWord(w.word));
+    label.appendChild(colorizedWord(w.word, w.tokens || []));
     label.appendChild(document.createTextNode(` — ${pctText}`));
     row.appendChild(label);
 
@@ -548,18 +549,11 @@ function renderWordCorpus(stats) {
     const sub = document.createElement("div");
     sub.className = "token-subbars";
     const fills = [[fill, typeof w.pct === "number" ? Math.min(100, w.pct) : 0]];
-    // One bar per distinct three-gram, in token_index order — the same order
-    // the letters above were coloured in, so the two tiers line up. Duplicates
-    // would show the same three-gram twice and break that correspondence.
-    const seenToken = new Set();
-    const tokens = (w.tokens || []).filter((t) => {
-      const k = Number(t.token_index) || 0;
-      if (seenToken.has(k)) return false;
-      seenToken.add(k);
-      return true;
-    });
-    tokens.sort((a, b) => (Number(a.token_index) || 0) - (Number(b.token_index) || 0));
-    for (const t of tokens) {
+    // One bar per three-gram, in word order — the daemon sends them that way,
+    // so the nth bar is the nth three-gram and matches the nth coloured letter
+    // above it. No sorting or de-duplicating here: a word with a repeated
+    // three-gram really does have two of them.
+    for (const t of w.tokens || []) {
       const color =
         PEER_PROGRESS_COLORS[Math.abs(t.token_index || 0) % PEER_PROGRESS_COLORS.length];
       const seg = document.createElement("div");
