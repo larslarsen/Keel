@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -35,7 +36,13 @@ func buildHost(t *testing.T) string {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go toolchain")
 	}
-	out := filepath.Join(t.TempDir(), "keel-host")
+	// .exe on Windows: without it the file builds fine and then cannot be
+	// executed, and every test here fails with "executable file not found".
+	name := "keel-host"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	out := filepath.Join(t.TempDir(), name)
 	cmd := exec.Command("go", "build", "-o", out, ".")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, b)
