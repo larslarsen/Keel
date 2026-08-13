@@ -759,6 +759,69 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 	return 0, nil
 }
 
+// provideAll publishes a set of CIDs with bounded concurrency.
+//
+// Each Provide is a full DHT walk taking seconds, and a node holding a real
+// corpus has thousands of keys — announcing them one at a time takes hours,
+// during which the node is not discoverable at all. Nothing about the DHT
+// requires them to be sequential; the worker limit exists so a node does not
+// open thousands of lookups at once.
+//
+// Returns how many succeeded and the first failure, so a round that publishes
+// nothing can say why.
+func provideAll[K any](ctx context.Context, n *Node, keys []K,
+	cidFor func(K) (cid.Cid, error)) (int, error) {
+	const workers = 12
+	jobs := make(chan K)
+	type result struct {
+		ok  bool
+		err error
+	}
+	results := make(chan result, workers)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k := range jobs {
+				c, err := cidFor(k)
+				if err != nil {
+					results <- result{err: err}
+					continue
+				}
+				if err := n.dht.Provide(ctx, c, true); err != nil {
+					results <- result{err: err}
+					continue
+				}
+				results <- result{ok: true}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, k := range keys {
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- k:
+			}
+		}
+	}()
+	go func() { wg.Wait(); close(results) }()
+
+	var ok int
+	var firstErr error
+	for r := range results {
+		if r.ok {
+			ok++
+		} else if firstErr == nil {
+			firstErr = r.err
+		}
+	}
+	return ok, firstErr
+}
+
 // ErrAnnouncedNothing means the announce round published no provider records at
 // all. A node in that state cannot be found by any other install, so a caller
 // that retries on the usual multi-hour cadence would leave it invisible for
@@ -792,31 +855,8 @@ func (n *Node) Announce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var announced int
-	var firstErr error
-	for _, k := range keys {
-		c, err := prefixCID(k)
-		if err != nil {
-			continue
-		}
-		if err := n.dht.Provide(ctx, c, true); err != nil {
-			// One failure is normal — the DHT is best-effort and a partially
-			// announced node is still useful. Every failure is not: a node that
-			// publishes nothing is invisible to every other install, and the
-			// count alone ("announced 0/44") never said why. Keep the first
-			// reason so the log can.
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		announced++
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-	}
+	announced, graphErr := provideAll(ctx, n, keys, prefixCID)
+
 	// Catalogue buckets are announced separately, because the two datasets are
 	// held independently — a node can hold titles for videos whose graph it has
 	// evicted, and vice versa.
@@ -824,22 +864,8 @@ func (n *Node) Announce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var catAnnounced int
-	for _, k := range catKeys {
-		c, err := prefixCID("catalogue/" + k)
-		if err != nil {
-			continue
-		}
-		if err := n.dht.Provide(ctx, c, true); err != nil {
-			continue
-		}
-		catAnnounced++
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-	}
+	catAnnounced, catErr := provideAll(ctx, n, catKeys, prefixCID)
+
 	// Shards are announced separately again, same reasoning: a node's title
 	// index and its shard index are recomputed from the same source but are
 	// their own namespace (shardCID, shard.go), so a shard fetch and a
@@ -848,21 +874,14 @@ func (n *Node) Announce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var shardAnnounced int
-	for _, sh := range shardKeys {
-		c, err := shardCID(sh)
-		if err != nil {
-			continue
-		}
-		if err := n.dht.Provide(ctx, c, true); err != nil {
-			continue
-		}
-		shardAnnounced++
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+	shardAnnounced, shardErr := provideAll(ctx, n, shardKeys, shardCID)
+
+	firstErr := graphErr
+	if firstErr == nil {
+		firstErr = catErr
+	}
+	if firstErr == nil {
+		firstErr = shardErr
 	}
 	n.logf("announced %d/%d graph buckets, %d/%d catalogue buckets, %d/%d shards",
 		announced, len(keys), catAnnounced, len(catKeys), shardAnnounced, len(shardKeys))
