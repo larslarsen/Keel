@@ -366,16 +366,13 @@ func runInstall(args []string) int {
 		fmt.Fprintf(os.Stderr, "cannot determine own path: %v\n", err)
 		return 1
 	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	} else {
-		fmt.Fprintf(os.Stderr, "cannot resolve own path: %v\n", err)
-		return 1
-	}
-
-	// Windows QA happens by double-clicking, where the console vanishes with the
-	// process. The report is the only thing left to read afterwards, so it is
-	// opened before anything can fail and written as the install proceeds.
+	// The report comes first, before anything that can fail. Windows QA happens
+	// by double-clicking: the console vanishes with the process, so a failure
+	// that happens before this line leaves no trace at all — a window that
+	// flashes and closes, and nothing on disk to read. That is not a
+	// hypothetical. EvalSymlinks below used to run first and exit on failure,
+	// which it can do on a OneDrive-backed folder where the executable is a
+	// cloud placeholder, and the install then explained itself to nobody.
 	rep := discardedReport()
 	if runtime.GOOS == "windows" && !*dry {
 		r, err := openInstallReport(filepath.Dir(exe))
@@ -385,6 +382,15 @@ func runInstall(args []string) int {
 		}
 		defer r.close()
 		rep = r
+	}
+
+	// Resolving symlinks is a nicety — it makes the manifest name the real file
+	// rather than a link. Failing it is not worth refusing to install over: the
+	// unresolved path is what the browser would launch anyway.
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	} else {
+		rep.line("note: could not resolve the executable path (%v); using %s", err, exe)
 	}
 	rep.line("Keel install report")
 	rep.line("host version   %s (built %s)", version, builtAt())
