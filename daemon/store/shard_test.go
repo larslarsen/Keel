@@ -10,18 +10,14 @@ import (
 	"github.com/keel-app/keel/daemon/bridge"
 )
 
-// TestTokenizeFixedSizeSpaceAware checks the concrete scheme: normalize pads
-// with a leading/trailing space and collapses inter-word gaps to one space,
-// then every consecutive ShardK-length window of that string is a token —
-// fixed size always, space included as an ordinary character rather than
-// anchored to word starts specially.
+// TestTokenizeFixedSizeSpaceAware checks the concrete scheme: fixed,
+// non-overlapping k-grams, cut per word from the front, tail padded. A
+// word's tokens are the same wherever the word appears, which is what makes
+// a query word's tokens equal a document word's tokens.
 func TestTokenizeFixedSizeSpaceAware(t *testing.T) {
-	// normalize("Recommendation AI") = " recommendation ai " (19 chars);
-	// k=3 gives 19-3+1 = 17 windows.
 	got := tokenize("Recommendation AI", 3)
 	want := []string{
-		" re", "rec", "eco", "com", "omm", "mme", "men", "end", "nda", "dat",
-		"ati", "tio", "ion", "on ", "n a", " ai", "ai ",
+		"rec", "omm", "end", "ati", "on ", "ai ",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tokenize() = %v (%d tokens), want %d", got, len(got), len(want))
@@ -38,33 +34,26 @@ func TestTokenizeFixedSizeSpaceAware(t *testing.T) {
 	}
 }
 
-// TestTokenizeCrossWordBleed is WO-059 attack #7, restated for the fixed-
-// window scheme: a query for the whole word "men" shares its bare interior
-// window ("men", no space either side) with the same run buried mid-word in
-// "recommendation" — that residual overlap is the accepted "minimal, not
-// zero" bleed. But the query's word-boundary windows (" me", "en ", which
-// only occur where "men" is a whole word on its own) must NOT appear in
-// recommendation's tokens, because "men" sits mid-word there with letters
-// (not spaces) on both sides.
+// TestTokenizeCrossWordBleed is WO-059 attack #7 under the aligned scheme.
+//
+// The bleed a sliding window had is gone by construction: tokens are cut per
+// word at fixed offsets, so "men" as a whole word produces exactly "men",
+// and "recommendation" — cut rec|omm|end|ati|on_ — never produces it. A word
+// searched on its own cannot collide with the same letters buried inside a
+// longer word unless they happen to fall on the same offsets.
 func TestTokenizeCrossWordBleed(t *testing.T) {
 	title := tokenize("recommendation", 3)
-	query := TokenizeQuery("men") // normalize("men") = " men ": " me","men","en "
-	want := []string{" me", "en ", "men"}
-	if len(query) != len(want) {
-		t.Fatalf("TokenizeQuery(\"men\") = %v, want %v", query, want)
+	query := TokenizeQuery("men")
+	if len(query) != 1 || query[0] != "men" {
+		t.Fatalf("TokenizeQuery(\"men\") = %v, want [men]", query)
 	}
 
 	inTitle := map[string]bool{}
 	for _, tt := range title {
 		inTitle[tt] = true
 	}
-	if !inTitle["men"] {
-		t.Fatal(`expected the bare interior window "men" in recommendation's tokens (residual bleed) — test assumption changed`)
-	}
-	for _, edge := range []string{" me", "en "} {
-		if inTitle[edge] {
-			t.Errorf("title token set contains %q, a word-boundary window that should only occur where \"men\" stands alone", edge)
-		}
+	if inTitle["men"] {
+		t.Errorf("recommendation tokenizes to %v, which contains the whole-word token %q", title, "men")
 	}
 }
 
@@ -73,8 +62,8 @@ func TestTokenizeCrossWordBleed(t *testing.T) {
 // (keyscheme.go, WO-060) that every node's ShardSlice tokenizes titles at.
 // A client falling back to some other k for a short query would compute
 // shards no server populates at that width and silently find nothing — so
-// there must be no fallback, and padding (normalize) must make even a
-// one- or two-letter query produce a real ShardK token on its own.
+// there must be no fallback, and tail-padding must make even a one- or
+// two-letter query produce a real ShardK token on its own.
 func TestTokenizeQueryNeverFallsBackToADifferentK(t *testing.T) {
 	for _, q := range []string{"a", "ai", "go"} {
 		got := TokenizeQuery(q)

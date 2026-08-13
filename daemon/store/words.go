@@ -367,9 +367,9 @@ func FilterStopwords(words []string) []string {
 }
 
 // CharTokensForWord returns the ShardK character n-grams of an isolated
-// normalized word, using the same tokenize/normalize path titles use.
-// For a single word w, normalize produces " w " so windows are well-defined.
-// CharTokensInOrder is every three-gram of a word, in the order they occur.
+// word, using the same tokenize path titles use — fixed, non-overlapping
+// pieces cut from the front, tail padded. CharTokensInOrder is every piece
+// of a word, in the order they occur.
 //
 // CharTokensForWord sorts and de-duplicates, which is right for looking things
 // up and wrong for describing a word to a person: the nth token should be the

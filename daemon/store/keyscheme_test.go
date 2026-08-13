@@ -26,6 +26,32 @@ func TestKeySchemeGoldenVectors(t *testing.T) {
 			"Add vectors for the new scheme rather than changing these.", KeySchemeVersion)
 	}
 
+	// Fixed, non-overlapping k-grams cut per word from the front, tail
+	// padded — not a sliding window. A word's tokens are identical wherever
+	// it appears, which is the basis of matching: a query word and a
+	// document word chunk the same way, so their token sets are equal.
+	for _, tc := range []struct {
+		word string
+		want []string
+	}{
+		{"eclipse", []string{"ecl", "ips", "e  "}},
+		{"recommendation ai", []string{"rec", "omm", "end", "ati", "on ", "ai "}},
+		{"men", []string{"men"}},
+		{"a", []string{"a  "}},
+		{"", nil},
+	} {
+		got := tokenize(tc.word, ShardK)
+		if len(got) != len(tc.want) {
+			t.Errorf("tokenize(%q) = %v, want %v", tc.word, got, tc.want)
+			continue
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("tokenize(%q)[%d] = %q, want %q", tc.word, i, got[i], tc.want[i])
+			}
+		}
+	}
+
 	// Bucket width. Everything downstream of this changes if it moves, so it is
 	// checked on its own as well as through the vectors.
 	if DefaultPrefixBits != 12 {

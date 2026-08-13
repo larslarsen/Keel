@@ -32,57 +32,47 @@ import (
 // incompatibly, mirroring catalogueSchemaVersion.
 const shardSchemaVersion = 1
 
-// tokenize splits text into every fixed k-length window of its normalized
-// form (normalize below), sliding by one. Fixed size, not word-anchored:
-// every token is exactly k characters, always, and space is an ordinary
-// alphabet member rather than a marker bolted onto one token per word. A
-// token is "space-aware" only in the sense that a window landing on a word
-// boundary naturally contains a space and one that doesn't, doesn't — that
-// difference falls out of sliding uniformly over space-including text, it is
-// not special-cased.
+// tokenize splits text into fixed, non-overlapping k-grams, cut per word.
 //
-// Because normalize pads the whole string with one leading and one trailing
-// space, even a single-letter word produces at least one token at k=3 (a
-// 1-letter word normalizes to 3 characters exactly: " x "), which is why
-// TokenizeQuery below needs no fallback to a smaller k for short queries.
+// Each word is cut at the same offsets every time — characters 0..k-1, then
+// k..2k-1, and so on, padding the last piece with spaces. That is what makes
+// a word's tokens identical wherever the word appears, which is the whole
+// basis of matching here: a query word and a document word chunk the same
+// way, so their token sets are equal.
 //
-// Letters only inside a word: normalize collapses everything else (digits,
-// punctuation, extra whitespace) to single-space separators, which keeps the
-// vocabulary the size WO-059 measured rather than multiplying it for no
-// privacy gain.
+// Per word, not across the whole string: chunking a joined string would make
+// a word's tokens depend on the words before it, and the same word would
+// tokenize differently in different queries. That is precisely the
+// determinism this must not lose.
+//
+// A sliding window (every overlapping k-length run) was tried instead: it
+// finds substrings across alignment — "clip" inside "eclipse" — at the cost
+// of one word producing len(word)-k+1 tokens instead of ceil(len(word)/k),
+// and of the same word's tokens depending on what sits next to it. Search
+// here is word-based, so the extra tokens bought a property nothing used.
 func tokenize(text string, k int) []string {
 	if k <= 0 {
 		return nil
 	}
-	norm := normalize(text)
-	if len(norm) < k {
-		return nil
-	}
-	out := make([]string, 0, len(norm)-k+1)
-	for i := 0; i+k <= len(norm); i++ {
-		out = append(out, norm[i:i+k])
+	var out []string
+	for _, w := range splitWords(text) {
+		// The word's own characters, cut from the front: 0..k-1, k..2k-1, and
+		// so on. No leading space — cutting per word already prevents one
+		// word's letters from joining the next, and a leading space would
+		// only produce a token that is mostly padding.
+		for i := 0; i < len(w); i += k {
+			end := i + k
+			if end > len(w) {
+				// The tail is padded, not dropped: the final letters of a
+				// word still have to contribute a token or they cannot be
+				// searched.
+				out = append(out, w[i:]+strings.Repeat(" ", end-len(w)))
+				continue
+			}
+			out = append(out, w[i:end])
+		}
 	}
 	return out
-}
-
-// normalize lowercases, collapses every run of non a-z runes to a single
-// space, and pads the result with a leading and trailing space — so the
-// first and last words get the same word-boundary information a window in
-// the middle of the string gets for free. Empty (no letters at all) stays
-// empty rather than becoming a lone space, so tokenize can tell "nothing to
-// tokenize" apart from "one very short word".
-//
-// There is exactly one implementation of this, used by both title
-// tokenization (ShardSlice, LocalShards) and query tokenization
-// (TokenizeQuery) — titles and queries must pad identically, or a token
-// computed for a query would never equal the token computed for the same
-// text inside a title, and the whole scheme depends on that equality.
-func normalize(s string) string {
-	words := splitWords(s)
-	if len(words) == 0 {
-		return ""
-	}
-	return " " + strings.Join(words, " ") + " "
 }
 
 // splitWords lowercases and splits on runs of non a-z runes.
@@ -112,9 +102,9 @@ func splitWords(s string) []string {
 // protocol constant (keyscheme.go, WO-060): every node tokenizes titles for
 // ShardSlice at exactly ShardK, so a client that tokenized a query at some
 // other k would compute shards no server ever populates at that width and
-// silently find nothing. Because normalize pads the text, this is not the
-// compromise it would be under a per-word scheme — see tokenize's doc
-// comment for why even a one-letter query still yields a token at k=3.
+// silently find nothing. Because tokenize pads a word's last piece rather
+// than dropping it, even a one-letter query still yields a token at k=3 —
+// see tokenize's doc comment.
 func TokenizeQuery(query string) []string {
 	return uniqueSorted(tokenize(query, ShardK))
 }
