@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: Apache-2.0
+/**
+ * Bundled TikTok selector configuration (WO-107).
+ *
+ * Semantically identical to daemon/selectors_tt.json. The two copies are
+ * checked in together; test/selector-source.test.js fails if they drift.
+ * There is no generator or build step.
+ */
+export const SELECTORS_TT = {
+  "version": 1,
+  "platform": "tt",
+  "cards": "[data-e2e=\"recommend-list-item-container\"], [data-e2e=\"video-card\"], div[class*=\"DivItemContainer\"]",
+  "homeItems": "[data-e2e=\"recommend-list-item-container\"], div[class*=\"DivItemContainer\"]",
+  "shapes": {
+    "compact": {
+      "match": "[data-e2e=\"video-card\"]",
+      "href": [
+        "a[href*=\"/video/\"]",
+        "a[href*=\"/live\"]"
+      ],
+      "title": [
+        "[data-e2e=\"video-desc\"]",
+        "img[alt]",
+        "a[title]"
+      ],
+      "channelLink": [
+        "a[href^=\"/@\"]",
+        "[data-e2e=\"video-author-uniqueid\"]"
+      ],
+      "duration": [
+        "[class*=\"DivTimeTag\"]",
+        "[class*=\"video-time\"]"
+      ],
+      "metadata": [
+        "[data-e2e=\"video-views\"]",
+        "strong[title]",
+        "[class*=\"StrongVideoCount\"]"
+      ]
+    },
+    "lockup": {
+      "match": "[data-e2e=\"explore-item\"], [data-e2e=\"recommend-list-item-container\"], div[class*=\"DivItemContainer\"]",
+      "links": [
+        "a[href*=\"/video/\"]",
+        "a[href*=\"/live\"]",
+        "a[href^=\"/@\"]"
+      ],
+      "playerId": [
+        "[id^=\"xgwrapper-\"]"
+      ],
+      "title": [
+        "[data-e2e=\"video-desc\"]",
+        "h1",
+        "img[alt]"
+      ],
+      "channelLink": [
+        "a[data-e2e=\"explore-card-user-link\"]",
+        "a[data-e2e=\"video-author-avatar\"]",
+        "a[href^=\"/@\"]"
+      ],
+      "hashtag": [
+        "a[data-e2e=\"search-common-link\"][href^=\"/tag/\"]"
+      ],
+      "sound": [
+        "a[data-e2e=\"video-music\"][href*=\"/music/\"]"
+      ],
+      "metadataRow": [
+        "[class*=\"DivInfoContainer\"]",
+        "[class*=\"DivContentContainer\"]"
+      ],
+      "leadingIcon": [
+        "svg",
+        "[class*=\"Icon\"]"
+      ],
+      "duration": [
+        "[class*=\"DivTimeTag\"]"
+      ],
+      "durationScan": [
+        "[class*=\"DivTimeTag\"]",
+        "span"
+      ],
+      "metadata": [
+        "[data-e2e=\"video-views\"]",
+        "[data-e2e=\"like-count\"]",
+        "[class*=\"StrongVideoCount\"]",
+        "strong[title]"
+      ]
+    }
+  },
+  "containers": {
+    "watch": [
+      "[data-e2e=\"recommend-list-item-container\"]",
+      "div[class*=\"DivRecommendContainer\"]",
+      "main"
+    ],
+    "home": [
+      "[data-e2e=\"recommend-list-item-container\"]",
+      "div[class*=\"DivVideoFeed\"]",
+      "main"
+    ],
+    "explore": [
+      "[data-e2e=\"explore-item-list\"]",
+      "[data-e2e=\"explore-list\"]",
+      "div[data-e2e=\"recommend-list\"]"
+    ],
+    "following": [
+      "[data-e2e=\"following-feed\"]",
+      "div[data-e2e=\"recommend-list\"]"
+    ],
+    "liveWall": [
+      "main#tiktok-live-main-container-id"
+    ],
+    "liveRoom": [
+      "main#tiktok-live-main-container-id",
+      "[data-e2e=\"live-room\"]",
+      "main[data-e2e=\"live-room\"]"
+    ]
+  },
+  "live": {
+    "cards": "[data-e2e=\"discover_category-list-live-card\"]",
+    "active": [
+      "[data-e2e=\"live-room-content\"] .xgplayer-playing video",
+      "[data-e2e=\"live-room-content\"]",
+      ".xgplayer-playing",
+      "[data-e2e=\"live-player\"]",
+      "[data-e2e=\"live-badge\"]"
+    ],
+    "locator": [
+      "[data-e2e=\"live-header-container\"] a[href^=\"/@\"]",
+      "a[href^=\"/@\"][href$=\"/live\"]"
+    ],
+    "creator": [
+      "[data-e2e=\"live-header-container\"] [data-e2e=\"room-header-anchor-name\"]",
+      "a[href^=\"/@\"][href$=\"/live\"] > div:nth-child(2)"
+    ],
+    "title": ["a[href^=\"/@\"][href$=\"/live\"] > div:first-child"]
+  },
+  "rendererKeys": [
+    "itemStruct"
+  ],
+  "vocabulary": {
+    "ago": [
+      "ago"
+    ],
+    "views": [
+      "views",
+      "view",
+      "watching",
+      "likes"
+    ],
+    "live": [
+      "live"
+    ],
+    "verified": [
+      "verified"
+    ],
+    "sponsored": [
+      "sponsored",
+      "ad",
+      "promoted"
+    ],
+    "ageGated": [
+      "age",
+      "18+"
+    ],
+    "broadcast": [
+      "streamed",
+      "premiered"
+    ],
+    "magnitudes": [
+      "k",
+      "m",
+      "b"
+    ]
+  },
+  "badges": {
+    "containers": [
+      "[class*=\"Badge\"]",
+      "[data-e2e*=\"live\"]",
+      "[class*=\"DivTag\"]"
+    ],
+    "overlay": [
+      "[class*=\"DivTimeTag\"]",
+      "[class*=\"Badge\"]"
+    ]
+  }
+};

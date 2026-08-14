@@ -31,6 +31,7 @@ const el = {
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
+  explore: document.getElementById("stat-explore"),
   time: document.getElementById("time-range"),
   channelNote: document.getElementById("channel-note"),
   meta: document.getElementById("suggest-meta"),
@@ -679,6 +680,7 @@ function renderStats(stats) {
     el.total.textContent = "—";
     el.watch.textContent = "—";
     if (el.home) el.home.textContent = "—";
+    if (el.explore) el.explore.textContent = "—";
     el.time.textContent = "Counts appear when the desktop app is running.";
     if (el.channelNote) {
       el.channelNote.textContent =
@@ -691,6 +693,7 @@ function renderStats(stats) {
   el.total.textContent = String(stats.total ?? 0);
   el.watch.textContent = String(stats.by_surface?.WATCH_NEXT ?? 0);
   if (el.home) el.home.textContent = String(stats.by_surface?.HOME ?? 0);
+  if (el.explore) el.explore.textContent = String(stats.by_surface?.EXPLORE ?? 0);
   el.time.textContent = `First: ${fmt(stats.first_observed_at)} · Last: ${fmt(
     stats.last_observed_at
   )}`;
@@ -707,13 +710,13 @@ function renderStats(stats) {
   }
 }
 
-/** Bump visible counts from an insert ACK until the next STATS refresh. */
+/** Bump the combined total from an insert ACK until the next STATS refresh.
+ *  Per-surface tiles wait for STATS — attributing every insert to WATCH_NEXT
+ *  made TikTok Explore look like YouTube watch-next (WO-009). */
 function bumpCounts(inserted) {
   if (typeof inserted !== "number" || inserted <= 0) return;
   const t = Number(el.total.textContent);
   if (Number.isFinite(t)) el.total.textContent = String(t + inserted);
-  const w = Number(el.watch.textContent);
-  if (Number.isFinite(w)) el.watch.textContent = String(w + inserted);
 }
 
 /**
@@ -840,7 +843,7 @@ async function doWipe() {
     const deleted = r.wipe?.deleted ?? 0;
     renderStats({
       total: 0,
-      by_surface: { WATCH_NEXT: 0, HOME: 0 },
+      by_surface: { WATCH_NEXT: 0, HOME: 0, EXPLORE: 0 },
       first_observed_at: null,
       last_observed_at: null,
     });

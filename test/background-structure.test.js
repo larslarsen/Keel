@@ -38,9 +38,19 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CONTENT_SCRIPT_HOSTS,
+  generatedManifestFamily,
+  importsOf as importsFromSource,
+  missingWebAccessible,
+  PREPARE_CHROME,
+  PREPARE_FIREFOX,
+  staleGeneratedManifestMessage,
+  webAccessibleHostErrors,
+} from "./manifest-closure.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const extRoot = resolve(here, "..", "extension");
@@ -63,22 +73,8 @@ const files = walk(extRoot);
 const rel = (f) => relative(extRoot, f).replace(/\\/g, "/");
 const source = new Map(files.map((f) => [rel(f), readFileSync(f, "utf8")]));
 
-/** Static `import ... from "..."` and `import("...")` specifiers, resolved. */
 function importsOf(relPath) {
-  const src = source.get(relPath) || "";
-  const specs = [];
-  const staticRe = /^\s*import\s[^;]*?from\s+["']([^"']+)["']/gm;
-  const bareRe = /^\s*import\s+["']([^"']+)["']/gm;
-  const dynRe = /\bimport\(\s*["']([^"']+)["']\s*\)/g;
-  for (const re of [staticRe, bareRe, dynRe]) {
-    let m;
-    while ((m = re.exec(src))) specs.push(m[1]);
-  }
-  const from = dirname(relPath);
-  return specs
-    .filter((s) => s.startsWith("."))
-    .map((s) => join(from, s).replace(/\\/g, "/"))
-    .filter((p) => source.has(p));
+  return importsFromSource(relPath, source);
 }
 
 /** The service worker's control plane: what WO-083 restructured. */
@@ -267,62 +263,95 @@ describe("no [object Object] hazards in the extension", () => {
 describe("content-script closure is web accessible", () => {
   const MANIFESTS = ["manifest.chrome.json", "manifest.firefox.json"];
 
-  /** Extension-root-relative paths named in runtime.getURL("...") calls. */
-  function getURLTargets(relPath) {
-    const src = source.get(relPath) || "";
-    const out = [];
-    const re = /getURL\(\s*["']([^"']+)["']\s*\)/g;
-    let m;
-    while ((m = re.exec(src))) if (source.has(m[1])) out.push(m[1]);
-    return out;
-  }
-
-  function closure(roots) {
-    const seen = new Set();
-    const stack = [...roots];
-    while (stack.length) {
-      const f = stack.pop();
-      if (!f || seen.has(f)) continue;
-      seen.add(f);
-      for (const dep of importsOf(f)) stack.push(dep);
-      for (const dep of getURLTargets(f)) stack.push(dep);
-    }
-    return seen;
+  function assertManifestClosure(name, manifest) {
+    const { entries, listed, needed, missing } = missingWebAccessible(manifest, source);
+    assert.ok(entries.length, `${name}: no content_scripts declared`);
+    assert.deepEqual(
+      missing,
+      [],
+      `${name}: not in web_accessible_resources — the content script will fail to load:\n  ${missing.join("\n  ")}`,
+    );
+    assert.ok(
+      listed.has("content/live_policy.js"),
+      `${name}: observer closure must include content/live_policy.js`,
+    );
+    assert.ok(needed.includes("content/live_policy.js"));
+    const hostErrors = webAccessibleHostErrors(manifest, CONTENT_SCRIPT_HOSTS);
+    assert.deepEqual(hostErrors, [], `${name}: ${hostErrors.join("; ")}`);
   }
 
   for (const name of MANIFESTS) {
     it(`${name} lists every file a content script pulls in`, () => {
       const manifest = JSON.parse(readFileSync(join(extRoot, name), "utf8"));
-      const entries = (manifest.content_scripts || []).flatMap((cs) => cs.js || []);
-      assert.ok(entries.length, "no content_scripts declared");
-
-      const listed = new Set(
-        (manifest.web_accessible_resources || []).flatMap((w) => w.resources || []),
-      );
-      // Seed from the declared entries AND from what is already published:
-      // those listed .js files are the dynamic entry points bootstrap reaches.
-      const roots = [...entries, ...[...listed].filter((f) => f.endsWith(".js"))];
-      // Only the injected entry script is exempt; the browser loads it directly.
-      const needed = [...closure(roots)].filter((f) => !entries.includes(f)).sort();
-      const missing = needed.filter((f) => !listed.has(f));
-      assert.deepEqual(
-        missing,
-        [],
-        `not in web_accessible_resources — the content script will fail to load:\n  ${missing.join("\n  ")}`,
-      );
+      assertManifestClosure(name, manifest);
     });
   }
+
+  function loadTemplates() {
+    return {
+      chrome: readFileSync(join(extRoot, "manifest.chrome.json")),
+      firefox: readFileSync(join(extRoot, "manifest.firefox.json")),
+    };
+  }
+
+  it("the generated artifact matches a template and the same closure", () => {
+    const templates = loadTemplates();
+    const generatedPath = join(extRoot, "manifest.json");
+    if (!existsSync(generatedPath)) {
+      // Fresh clone: generated file absent; the templates are already
+      // validated above. prepare:chrome / prepare:firefox / the installer
+      // will write one of them.
+      return;
+    }
+    const generated = readFileSync(generatedPath);
+    const family = generatedManifestFamily(generated, templates);
+    assert.ok(family, staleGeneratedManifestMessage());
+    assertManifestClosure(`manifest.json (${family})`, JSON.parse(generated.toString("utf8")));
+  });
+
+  it("accepts a current Chromium generated artifact", () => {
+    const templates = loadTemplates();
+    assert.equal(generatedManifestFamily(templates.chrome, templates), "chrome");
+    assertManifestClosure("manifest.chrome.json", JSON.parse(templates.chrome.toString("utf8")));
+  });
+
+  it("accepts a current Firefox generated artifact", () => {
+    const templates = loadTemplates();
+    assert.equal(generatedManifestFamily(templates.firefox, templates), "firefox");
+    assertManifestClosure("manifest.firefox.json", JSON.parse(templates.firefox.toString("utf8")));
+  });
+
+  it("rejects the pre-WO-098 stale Chromium artifact", () => {
+    const templates = loadTemplates();
+    const stale = readFileSync(join(here, "fixtures", "manifest.chrome.pre-wo098.json"));
+    assert.ok(!stale.includes("content/live_policy.js"));
+    assert.equal(generatedManifestFamily(stale, templates), null);
+    const { missing } = missingWebAccessible(JSON.parse(stale.toString("utf8")), source);
+    assert.ok(
+      missing.includes("content/live_policy.js"),
+      "the pre-WO-098 artifact must omit content/live_policy.js from WAR",
+    );
+    const message = staleGeneratedManifestMessage();
+    assert.ok(message.includes(PREPARE_CHROME), message);
+    assert.ok(message.includes(PREPARE_FIREFOX), message);
+  });
 
   it("actually fails when an imported file is unlisted", () => {
     // A guard that cannot fail is worse than none: this one silently passed
     // until the getURL roots were added.
     const manifest = JSON.parse(readFileSync(join(extRoot, "manifest.chrome.json"), "utf8"));
-    const listed = new Set(
-      (manifest.web_accessible_resources || []).flatMap((w) => w.resources || []),
+    const broken = structuredClone(manifest);
+    broken.web_accessible_resources[0].resources = broken.web_accessible_resources[0].resources.filter(
+      (r) => r !== "lib/errors.js",
     );
-    const roots = [...listed].filter((f) => f.endsWith(".js"));
-    const reached = closure(roots);
-    assert.ok(reached.has("lib/errors.js"), "closure does not reach lib/errors.js");
-    assert.ok(reached.has("lib/browser.js"), "closure does not reach lib/browser.js");
+    const { missing } = missingWebAccessible(broken, source);
+    assert.ok(missing.includes("lib/errors.js"), "unlisting lib/errors.js must be reported");
+  });
+
+  it("refuses a host wildcard on the observer graph", () => {
+    const manifest = JSON.parse(readFileSync(join(extRoot, "manifest.chrome.json"), "utf8"));
+    manifest.web_accessible_resources[0].matches = ["*://*/*"];
+    const errors = webAccessibleHostErrors(manifest, CONTENT_SCRIPT_HOSTS);
+    assert.ok(errors.some((e) => /wildcard/.test(e)), errors.join("; "));
   });
 });

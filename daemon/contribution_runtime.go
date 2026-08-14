@@ -404,6 +404,12 @@ func (s *swarmSupervisor) launch(
 	}
 	if cfg.Policy.AnnounceProviders {
 		go announceLoop(nodeCtx, n)
+		// The shared discovery key has its own loop, ahead of and independent
+		// of the bulk content round: it is the one measurement of whether
+		// another install can find this node, and it must not be hostage to a
+		// multi-minute announce of records that answer a different question
+		// (WO-093 §1).
+		go n.RunPresence(nodeCtx)
 		// Same gate: a node that may not advertise itself does not go looking
 		// for others either (WO-094).
 		go rendezvousLoop(nodeCtx, n)

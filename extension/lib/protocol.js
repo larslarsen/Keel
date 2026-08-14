@@ -59,6 +59,12 @@ export const CLIENT_OPTIONAL = Object.freeze({
   queue: 1,
   contribution_runtime: 1,
   contribution_impact: 1,
+  // WO-093: GET_STATS carries typed peer-network health (state, reason,
+  // bounded failure count) beside the raw counts. Optional, and its absence is
+  // the signal that matters: a daemon that cannot say *why* keel_peers is zero
+  // must be reported as needing an update, never rendered as the ambiguous
+  // zero this capability exists to abolish.
+  network_status: 1,
   // 2 = titleless LIVE_ROOM is a valid sighting (WO-104). Revision 1 still
   // requires a non-empty title on every surface. Gossip already permitted an
   // omitted `t`; this revision is bridge-only.

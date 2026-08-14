@@ -20,6 +20,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,44 +55,34 @@ func RendezvousCID() (cid.Cid, error) {
 	return cid.NewCidV1(cid.Raw, sum), nil
 }
 
-// rendezvousState is what this node knows about its own discoverability.
+// errAnnounceForbidden means the outbound gate or the contribution policy shut
+// between the presence loop's check and this call. Not a network failure, so it
+// must not be counted as one — see runPresence, which re-checks the gate.
+var errAnnounceForbidden = errors.New("announcing is not permitted")
+
+// publishPresence publishes the rendezvous key, once, bounded.
 //
-// Reported to the interface because zero peers has three unrelated causes —
-// never published, published and nobody there, or not permitted at this level —
-// and they are indistinguishable from the count alone (WO-093).
-type rendezvousState struct {
-	Published  bool  `json:"published"`
-	LastLookAt int64 `json:"last_look_at,omitempty"`
-	LastFound  int   `json:"last_found"`
-	Looks      int   `json:"looks"`
-}
-
-// RendezvousState reports discoverability for the interface.
-func (n *Node) RendezvousState() rendezvousState {
-	n.rvMu.Lock()
-	defer n.rvMu.Unlock()
-	return n.rv
-}
-
-// announceRendezvous publishes the rendezvous key.
+// This is the single measurement the network-health record is built on: it
+// answers "can another Keel node find this one?" and nothing else (WO-093 §1).
+// Content provider records answer a different question and are published by
+// Announce on their own schedule.
 //
 // Gate-aware like every other outbound action: a node that may not announce may
 // not advertise its existence either.
-func (n *Node) announceRendezvous(ctx context.Context) error {
+func (n *Node) publishPresence(ctx context.Context) error {
 	if !n.mayAnnounce() {
-		return nil
+		return errAnnounceForbidden
 	}
 	c, err := RendezvousCID()
 	if err != nil {
 		return err
 	}
-	if err := n.dht.Provide(ctx, c, true); err != nil {
-		return err
-	}
-	n.rvMu.Lock()
-	n.rv.Published = true
-	n.rvMu.Unlock()
-	return nil
+	// Bounded rather than inheriting the node's lifetime: a Provide that never
+	// returns would hold the loop open forever and report `starting` for the
+	// life of the process — a spinner, which is the outcome WO-093 forbids.
+	ctx, cancel := context.WithTimeout(ctx, presenceProvideTimeout)
+	defer cancel()
+	return n.dht.Provide(ctx, c, true)
 }
 
 // FindPeers looks up the rendezvous key and connects to what it finds.
@@ -114,13 +105,10 @@ func (n *Node) FindPeers(ctx context.Context, max int) (int, error) {
 	}
 	self := n.host.ID()
 	connected := 0
-	defer func() {
-		n.rvMu.Lock()
-		n.rv.LastLookAt = time.Now().UnixMilli()
-		n.rv.LastFound = connected
-		n.rv.Looks++
-		n.rvMu.Unlock()
-	}()
+	// Recorded whatever the round found, including nothing: "looked and found
+	// nobody" is the honest quiet-network state, and it is only distinguishable
+	// from "has not looked yet" because this runs (WO-093 §3).
+	defer n.health.lookedUp(time.Now())
 	for p := range n.dht.FindProvidersAsync(ctx, c, max) {
 		if p.ID == self || len(p.Addrs) == 0 {
 			continue

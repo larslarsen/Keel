@@ -24,6 +24,7 @@ import {
 import {
   DEFAULT_SELECTORS,
   pick,
+  selectorConfigError,
   validateSelectorConfig,
 } from "../extension/lib/selectors.js";
 import {
@@ -246,6 +247,18 @@ describe("a second platform runs on the same engine (WO-057)", () => {
 
   it("the shipped TikTok config is valid", () => {
     assert.ok(validateSelectorConfig(tiktok));
+    assert.equal(selectorConfigError(tiktok), null);
+  });
+
+  it("names a pre-WO-098 TikTok config instead of failing silently", () => {
+    const stale = structuredClone(tiktok);
+    delete stale.containers.explore;
+    delete stale.containers.following;
+    delete stale.containers.liveWall;
+    delete stale.containers.liveRoom;
+    delete stale.live;
+    assert.equal(validateSelectorConfig(stale), null);
+    assert.match(selectorConfigError(stale), /missing containers: explore,following,liveWall,liveRoom/);
   });
 
   it("rejects a partial TikTok configuration rather than disabling a surface", () => {

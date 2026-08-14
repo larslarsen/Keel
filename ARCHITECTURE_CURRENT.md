@@ -1,7 +1,7 @@
 # Keel — current normative architecture
 
 **Status:** Authoritative for current engineering decisions.
-**Date:** 2026-08-12.
+**Date:** 2026-08-13.
 **Rationale/history:** `DESIGN_v2.md`.
 **Implementation queue:** `handoff/README.md`.
 
@@ -246,6 +246,18 @@ mutation of a live node:
 4. Bootstrap runs asynchronously after the correctly configured node exists.
    Lack of public peers is degraded reachability, not a failed policy change.
 
+Network reachability is a second, non-persisted state machine, not a
+contribution transition and not a raw peer count (WO-093). At Level 1 it is
+`off` by policy. At Level 2+ the shared, versioned Keel discovery key moves
+through `starting`, `retrying`, `ready` or, after three consecutive publication
+failures, `fault`; retries continue and a later success returns it to `ready`.
+Shared-key publication is independent of bulk graph/catalogue/shard provider
+publication, because only the common key answers whether an unrelated Keel node
+can find this one. The status contains bounded operational reason/timing fields
+and no raw error, address, peer id, query, prefix, bucket or observation data.
+The interface renders this daemon-owned state alongside the Keel-node count and
+never infers health from `0` or from the public DHT connection count.
+
 During node replacement `transition` is `stopping` or `starting`, RPCs that need
 the replaced node return a typed temporary-unavailable result, and state reads
 remain available. Only the runtime supervisor owns the node pointer; callers
@@ -312,6 +324,7 @@ envelope, not every RPC payload revision. Compatibility is negotiated inside
   "optional": { "selectors": 1, "tiktok": 1, "scroll_history": 1,
                 "peer_search": 2, "word_stats": 1, "queue": 1,
                 "contribution_runtime": 1, "contribution_impact": 1,
+                "network_status": 1,
                 "live_sightings": 2 }
 }
 ```
@@ -333,6 +346,11 @@ controls require `contribution_runtime:1`; an older daemon may continue the
 local core but the extension must not claim it can change effective networking.
 `contribution_impact:1` is optional the same way (WO-086): its absence disables
 the Level-2 impact panel with an update reason, never an invented zero.
+`network_status:1` revisions the daemon-owned health object embedded in
+`GET_STATS`; it adds no RPC or network permission. Without it the extension
+shows an update reason instead of interpreting a raw zero. The Config page's
+Network row is the single owner of Keel-node count plus meaning; contribution
+impact does not duplicate the ambiguous count.
 `peer_search:2` carries WO-085's reciprocal contract on the same principle in
 the other direction: a negotiated `1` means the peer daemon has no level rule,
 so the extension leaves the control enabled rather than imposing a restriction

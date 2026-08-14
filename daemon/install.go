@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -174,13 +175,20 @@ const DefaultExtensionID = "agipaaiffkeeomfeialpkgnegndefgan"
 // extracted extension beside it. That is a supported layout, not a failure.
 var errNoExtensionFolder = errors.New("extension folder not found")
 
-// prepareExtensionFolder makes the extracted extension loadable.
+// prepareExtensionFolder makes the extracted Chromium-family extension loadable.
 //
 // extension/manifest.json is generated from manifest.chrome.json, so a fresh
 // clone has no loadable manifest and "Load unpacked" fails saying nothing
 // useful. The npm script that does this would make Node a prerequisite for
 // people who are only trying to run the thing, so the installer does it
 // instead — it already runs, and it already knows where it is.
+//
+// Existence of manifest.json is not freshness (WO-105). If the Chromium
+// template is present, the destination is created or atomically replaced when
+// its bytes differ. A packaged folder that ships only a valid manifest.json
+// is left alone. This path is Chromium-family (Brave, Chrome, Chromium,
+// Edge); Firefox packaging uses its own template copy and is not rewritten
+// here.
 //
 // Both the executable's own directory and its parent are probed, under both
 // names the release layouts use: the repository has daemon/keel-host beside
@@ -193,23 +201,86 @@ func prepareExtensionFolder(exe string) (dir, msg string, err error) {
 			if fi, err := os.Stat(cand); err != nil || !fi.IsDir() {
 				continue
 			}
-			dst := filepath.Join(cand, "manifest.json")
-			// A packaged extension already carries its manifest. Rewriting it
-			// from a template that is not shipped would be the only failure.
-			if _, err := os.Stat(dst); err == nil {
-				return cand, "already prepared: " + dst, nil
-			}
-			data, err := os.ReadFile(filepath.Join(cand, "manifest.chrome.json"))
-			if err != nil {
+			msg, err := syncChromiumManifest(cand)
+			if errors.Is(err, errNoExtensionFolder) {
 				continue
 			}
-			if err := os.WriteFile(dst, data, 0o644); err != nil {
-				return "", "", fmt.Errorf("write %s: %w", dst, err)
+			if err != nil {
+				return "", "", err
 			}
-			return cand, "prepared " + dst, nil
+			return cand, msg, nil
 		}
 	}
 	return "", "", errNoExtensionFolder
+}
+
+// syncChromiumManifest creates or refreshes dest manifest.json from the
+// Chromium template when that template is present. Reports created,
+// refreshed, already current, or already prepared (packaged, no template).
+func syncChromiumManifest(dir string) (string, error) {
+	dst := filepath.Join(dir, "manifest.json")
+	tmplPath := filepath.Join(dir, "manifest.chrome.json")
+	tmpl, err := os.ReadFile(tmplPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if _, statErr := os.Stat(dst); statErr == nil {
+				return "already prepared: " + dst, nil
+			}
+			return "", errNoExtensionFolder
+		}
+		return "", fmt.Errorf("read %s: %w", tmplPath, err)
+	}
+	cur, err := os.ReadFile(dst)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("read %s: %w", dst, err)
+	}
+	if err == nil && bytes.Equal(cur, tmpl) {
+		return "already current: " + dst, nil
+	}
+	if werr := writeFileAtomic(dst, tmpl, 0o644); werr != nil {
+		return "", fmt.Errorf("write %s: %w", dst, werr)
+	}
+	if err == nil {
+		return "refreshed " + dst, nil
+	}
+	return "prepared " + dst, nil
+}
+
+// writeFileAtomic writes data to path via a same-directory temp file and
+// rename so a reader never sees a truncated destination.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".manifest.json.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	removeTmp = false
+	return nil
 }
 
 // clearMarkOfTheWeb removes the "downloaded from the internet" mark from a file.
