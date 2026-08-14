@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
+
 	"github.com/keel-app/keel/daemon/bridge"
 	"github.com/keel-app/keel/daemon/store"
 )
@@ -473,5 +475,122 @@ func TestCatalogueOutcomesAreDistinguishedEndToEnd(t *testing.T) {
 	// a verdict about the peer.
 	if !errors.Is(fmt.Errorf("read: %w", ErrSearchBudget), ErrSearchBudget) {
 		t.Error("the budget sentinel does not survive wrapping")
+	}
+}
+
+// garbageHandler replaces a protocol handler with one that sends bytes that
+// cannot be framed, so the invalid case can be driven through the real
+// transport rather than by calling the classifier directly (WO-102).
+func garbageHandler(s network.Stream) {
+	defer s.Close()
+	_, _ = s.Write([]byte("{{{ this is not a paged response at all\n"))
+}
+
+// silentHandler accepts the stream and closes it without answering.
+func silentHandler(s network.Stream) { _ = s.Close() }
+
+// TestBudgetShortCircuitsTheCatalogueTraversal is WO-102 §1.
+//
+// The previous implementation classified ErrSearchBudget as
+// `catalogueUnavailable`, so a traversal whose job had already spent its
+// allowance carried on through provider discovery and the whole known-peer
+// fallback, reporting the stop as a provider problem. The meter rescued the
+// final job reason, which hid it — but the work still happened.
+func TestBudgetShortCircuitsTheCatalogueTraversal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	server := newStore(t, "budget-cat-server.sqlite")
+	seedTitles(t, server, 400, "recommendation")
+	sNode, err := Start(ctx, server, isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	client := newStore(t, "budget-cat-client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+	// Remembered, so the known-peer fallback has somewhere to go and this test
+	// can prove the fallback is short-circuited too.
+	cNode.remember(sNode.AddrInfo())
+
+	jobCtx, jobCancel := context.WithCancel(ctx)
+	defer jobCancel()
+	// A ceiling far too small for the response, so exhaustion happens mid-read.
+	meter := newBudgetMeter(64, jobCancel)
+	metered := withBudget(jobCtx, meter)
+
+	prefix := store.CataloguePrefix("vid00000003", cNode.prefixBits())
+	_, err = cNode.fetchCataloguePagesFrom(metered, sNode.AddrInfo(), prefix, false)
+	if !errors.Is(err, ErrSearchBudget) {
+		t.Fatalf("page fetch returned %v, want ErrSearchBudget preserved", err)
+	}
+
+	// And through the prefix traversal, which must not rank it as a provider
+	// outcome or keep trying peers.
+	res, err := cNode.fetchCataloguePrefixQuiet(metered, prefix)
+	if !errors.Is(err, ErrSearchBudget) && jobCtx.Err() == nil {
+		t.Errorf("prefix traversal returned (%+v, %v); budget must survive as the cause", res, err)
+	}
+	if res.Outcome == catalogueComplete || res.Outcome == catalogueIncomplete {
+		t.Errorf("budget termination was returned as the provider outcome %v", res.Outcome)
+	}
+	if !meter.isExhausted() {
+		t.Error("the meter did not latch exhausted")
+	}
+	select {
+	case <-jobCtx.Done():
+	default:
+		t.Error("budget exhaustion did not cancel outstanding streams")
+	}
+}
+
+// TestMalformedAndSilentPeersAreDistinguishedThroughTheTransport is WO-102's
+// "do not satisfy this by calling the classifier directly".
+func TestMalformedAndSilentPeersAreDistinguishedThroughTheTransport(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	server := newStore(t, "shape-server.sqlite")
+	seedTitles(t, server, 20, "recommendation")
+	sNode, err := Start(ctx, server, isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	client := newStore(t, "shape-client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+
+	prefix := store.CataloguePrefix("vid00000003", cNode.prefixBits())
+
+	// A peer that sends bytes it cannot back up: invalid, not unavailable. The
+	// difference matters downstream — a peer that answered with garbage was
+	// there, and one that never answered was not.
+	sNode.host.SetStreamHandler(CatalogueProtocol, garbageHandler)
+	res, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), prefix, false)
+	if err == nil {
+		t.Fatal("garbage was accepted as a valid response")
+	}
+	if res.Outcome != catalogueInvalid {
+		t.Errorf("a malformed response classified as %v, want invalid", res.Outcome)
+	}
+
+	// A peer that accepts the stream and says nothing: unavailable.
+	sNode.host.SetStreamHandler(CatalogueProtocol, silentHandler)
+	res, err = cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), prefix, false)
+	if err == nil {
+		t.Fatal("an empty response was accepted")
+	}
+	if res.Outcome != catalogueUnavailable {
+		t.Errorf("a silent peer classified as %v, want unavailable", res.Outcome)
 	}
 }

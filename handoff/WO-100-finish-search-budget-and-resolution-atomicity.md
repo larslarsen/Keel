@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Implemented** 2026-08-13 — architecture review opened required correction WO-101 before merge/live QA |
+| **Status** | **Implemented** 2026-08-13 — WO-101 landed; architecture review opened required correction WO-102 before merge/live QA |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-099 implementation at `f45510c` |
 | **Source** | Architecture review of WO-099's landed concurrency paths |

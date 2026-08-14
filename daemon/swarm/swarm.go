@@ -841,6 +841,12 @@ func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, v
 			continue
 		}
 		res, err := n.fetchCataloguePagesFrom(ctx, p, prefix, verbose)
+		if errors.Is(err, ErrSearchBudget) {
+			// The job's allowance is gone. Walking the rest of the provider
+			// list would spend a budget that no longer exists and would report
+			// the stop as a provider problem (WO-102 §1).
+			return catalogueResult{Outcome: catalogueUnavailable}, err
+		}
 		if err != nil {
 			if verbose {
 				n.logf("catalogue %s from %s rejected: %v", prefix, p.ID, err)
@@ -859,17 +865,28 @@ func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, v
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return best, err
+	}
 	// Same fallback as blocks: titles are no use if only discovery is blocked.
 	known, err := n.st.KnownPeers(0)
 	if err != nil {
 		return best, nil
 	}
 	for _, k := range known {
+		// Checked before and during the fallback: a terminated traversal must
+		// not walk the whole known-peer catalogue (WO-102 §1).
+		if err := ctx.Err(); err != nil {
+			return best, err
+		}
 		info, err := addrInfo(k)
 		if err != nil {
 			continue
 		}
 		res, err := n.fetchCataloguePagesFrom(ctx, info, prefix, verbose)
+		if errors.Is(err, ErrSearchBudget) {
+			return catalogueResult{Outcome: catalogueUnavailable}, err
+		}
 		if err != nil {
 			if res.Outcome > best.Outcome {
 				best = res
@@ -905,6 +922,12 @@ func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, v
 func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, prefix string, verbose bool) (catalogueResult, error) {
 	resp, err := n.requestPaged(ctx, p, fmt.Sprintf("%s %d", prefix, requestNonce()), CatalogueProtocol)
 	if err != nil {
+		// Budget termination is passed straight up, unranked and unclassified
+		// (WO-102 §1). The Outcome field is the floor value purely so it can
+		// never outrank anything; callers must look at the error, not at it.
+		if errors.Is(err, ErrSearchBudget) {
+			return catalogueResult{Outcome: catalogueUnavailable}, err
+		}
 		// Typed, not flattened to "unavailable" (WO-101 §3): a reply that sent
 		// bytes and then failed framing or authentication is an INVALID
 		// response, and the saturation decision downstream depends on knowing

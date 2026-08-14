@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Done** 2026-08-13 — every automated acceptance box is covered by a test; the branch is ready for architecture review and remains unmerged |
+| **Status** | **Implemented** 2026-08-13 — architecture review opened required correction WO-102 before merge/live QA |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-100 implementation at `a59953b` |
 | **Source** | Architecture review of WO-100's landed concurrency paths |
@@ -127,7 +127,7 @@ ceiling true.
 - [x] If the held final reservation is fully consumed, a waiting/follow-up
       read gets `ErrSearchBudget`, outstanding streams are cancelled promptly,
       and total committed bytes never exceed the tested limit under `-race`.
-- [x] Meter waiters wake on page cancellation, downgrade, consent withdrawal,
+- [ ] Meter waiters wake on page cancellation, downgrade, consent withdrawal,
       shutdown, and budget termination without goroutine leakage.
 - [x] An incomplete, unavailable, or invalid catalogue outcome with no gain
       leaves the relevant saturation streak unchanged and the candidate
@@ -139,7 +139,7 @@ ceiling true.
       miss.
 - [x] Two responses joining one candidate observe the published checked,
       absent, or unresolved disposition before either updates saturation.
-- [x] End-to-end paged catalogue tests distinguish no response, malformed
+- [ ] End-to-end paged catalogue tests distinguish no response, malformed
       framing, invalid terminal/authentication, authenticated incomplete,
       complete-empty, and complete-with-rows. The budget sentinel is preserved.
 - [x] `stopAll()` leaves every stopped job in the global registry until the
@@ -202,3 +202,22 @@ Two notes for the reviewer:
 Not done, and not code: WO-095's two-machine live QA, both machines on key
 scheme 2. The whole stack — WO-097, WO-095, WO-099, WO-100, WO-101 — is on
 `wo-097-distributed-search-foundation` and deliberately unmerged.
+
+---
+
+## Architecture review (2026-08-13)
+
+The lease/spend meter, unresolved saturation barrier, invalid/unavailable
+split, and stop-all retirement repair are accepted in principle. WO-102 is
+still required because:
+
+1. `ErrSearchBudget` is explicitly classified as `catalogueUnavailable` and
+   swallowed by the provider loop instead of surviving as the job stop cause;
+2. the purported end-to-end invalid/budget test calls the classifier directly
+   and only tests `errors.Is()` on a synthetic value; a local `TitlesFor` error
+   can still turn every settled candidate into `absent`; and
+3. `reserve()` may lease refunded capacity after its waiter context has already
+   been cancelled.
+
+The suites are green, but they do not exercise those races through the real
+call chain. The branch remains unmerged pending WO-102 and review.

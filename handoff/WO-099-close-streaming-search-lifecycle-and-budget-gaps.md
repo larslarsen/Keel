@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Implemented** 2026-08-13 — WO-100 landed; architecture review opened final correction WO-101 before merge/live QA |
+| **Status** | **Implemented** 2026-08-13 — WO-100/101 landed; architecture review opened correction WO-102 before merge/live QA |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-095 implementation at `4455f76` |
 | **Source** | Architecture review of the completed WO-095 implementation |

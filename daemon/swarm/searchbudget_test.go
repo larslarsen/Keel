@@ -358,9 +358,14 @@ func TestPagedErrorsAreClassified(t *testing.T) {
 		want catalogueOutcome
 	}{
 		{"no response", fmt.Errorf("%w: dial failed", errNoResponse), catalogueUnavailable},
-		{"budget", ErrSearchBudget, catalogueUnavailable},
 		{"malformed framing", errors.New("malformed response frame: bad json"), catalogueInvalid},
 		{"bad terminal", errors.New("terminal frame does not match its digest"), catalogueInvalid},
+		// ErrSearchBudget is deliberately absent. It is not a fact about a
+		// provider, so callers short-circuit on it before classifying anything
+		// — see TestBudgetShortCircuitsTheCatalogueTraversal. An earlier version
+		// of this test REQUIRED classifyPagedError to answer `unavailable` for
+		// it, which contradicted the comment directly above the function and
+		// let a terminated job be treated as one more failed peer (WO-102 §1).
 	} {
 		if got := classifyPagedError(tc.err); got != tc.want {
 			t.Errorf("%s classified as %v, want %v", tc.name, got, tc.want)

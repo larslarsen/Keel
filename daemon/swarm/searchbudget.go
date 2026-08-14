@@ -100,6 +100,15 @@ func (m *budgetMeter) reserve(ctx context.Context, want int) (int, error) {
 		return want, nil
 	}
 	for {
+		// Cancellation is checked BEFORE capacity, and therefore again after
+		// every wake (WO-102 §3). A waiter that took the settlement case of the
+		// select below could otherwise loop straight into leasing refunded
+		// capacity for a job that had already been replaced, downgraded, or
+		// shut down — admitting work after the withdrawal that was supposed to
+		// stop it.
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		m.mu.Lock()
 		if m.exhausted {
 			m.mu.Unlock()

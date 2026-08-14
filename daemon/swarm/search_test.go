@@ -3,6 +3,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -637,3 +638,151 @@ func TestCancelledBarrierWakeIsUnresolved(t *testing.T) {
 		t.Fatal("a joiner did not wake on cancellation")
 	}
 }
+
+// failingTitles is a Store whose local title read fails, so the false-absence
+// path can be driven without corrupting a database.
+type failingTitles struct {
+	Store
+	failTitles   bool
+	failPlanning bool
+}
+
+func (f failingTitles) TitlesFor(ids []string) ([]bridge.SearchHit, error) {
+	if f.failTitles {
+		return nil, errors.New("database is unreadable")
+	}
+	return f.Store.TitlesFor(ids)
+}
+
+func (f failingTitles) MissingCataloguePrefixes(ids []string, bits int) ([]string, error) {
+	if f.failPlanning {
+		return nil, errors.New("database is unreadable")
+	}
+	return f.Store.MissingCataloguePrefixes(ids, bits)
+}
+
+// TestLocalReadFailureCannotProveAbsence is WO-102 §2.
+//
+// A complete network traversal proves what arrived from the bucket. It does not
+// prove a candidate ABSENT when the local database failed before the resolver
+// could look at the imported rows — and marking it absent suppressed it from
+// every later retry in the job, permanently, on a transient local error.
+func TestLocalReadFailureCannotProveAbsence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	base := newStore(t, "localfail.sqlite")
+	node, err := Start(ctx, base, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+
+	for _, tc := range []struct {
+		name                     string
+		failTitles, failPlanning bool
+	}{
+		{"title read fails", true, false},
+		{"planning fails", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := planState(t, "world", map[int]store.WordTarget{})
+			s.n = node
+			node.st = failingTitles{Store: base, failTitles: tc.failTitles, failPlanning: tc.failPlanning}
+			defer func() { node.st = base }()
+
+			credit := s.creditResponse(ctx, tokenFor(s), []string{"vid00000001"})
+
+			s.mu.Lock()
+			absent := s.absent["vid00000001"]
+			checked := s.checked["vid00000001"]
+			s.mu.Unlock()
+
+			if absent {
+				t.Error("a local read failure marked the candidate absent, suppressing " +
+					"it from every later retry in this job")
+			}
+			if checked {
+				t.Error("a candidate was marked checked though no title was ever read")
+			}
+			if !credit.unresolved {
+				t.Error("a local read failure was reported as a decided response, which " +
+					"would advance the saturation streak")
+			}
+		})
+	}
+}
+
+// TestCancellationWinsOverARefundedLease is WO-102 §3.
+//
+// reserve() checked capacity before context. A waiter selecting on both a
+// settlement and cancellation could take the settlement case, loop, and lease
+// refunded capacity for a job that had already been replaced or downgraded —
+// admitting work after the withdrawal that was supposed to stop it.
+func TestCancellationWinsOverARefundedLease(t *testing.T) {
+	m := newBudgetMeter(budgetReadChunk, nil)
+	held, err := m.reserve(context.Background(), budgetReadChunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type res struct {
+		n   int
+		err error
+	}
+	out := make(chan res, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		n, err := m.reserve(ctx, 4096)
+		out <- res{n, err}
+	}()
+	<-started
+	time.Sleep(20 * time.Millisecond) // let it park on the settlement channel
+
+	// Cancel and refund together: whichever the select picks, the next loop
+	// must observe the cancelled context before touching `reserved`.
+	cancel()
+	m.settle(held, 0)
+
+	got := <-out
+	if !errors.Is(got.err, context.Canceled) {
+		t.Errorf("a cancelled waiter returned %v, want context.Canceled", got.err)
+	}
+	if got.n != 0 {
+		t.Errorf("a cancelled waiter acquired a lease of %d bytes", got.n)
+	}
+	// And the invariant holds: nothing is left reserved.
+	m.mu.Lock()
+	reserved := m.reserved
+	m.mu.Unlock()
+	if reserved != 0 {
+		t.Errorf("reserved = %d after the waiter was cancelled", reserved)
+	}
+}
+
+// TestCancelledReaderNeverTouchesTheStream: the reader must not call through
+// when its reservation was refused.
+func TestCancelledReaderNeverTouchesTheStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	touched := false
+	r := &budgetReader{
+		ctx: ctx,
+		r:   readerFunc(func([]byte) (int, error) { touched = true; return 0, nil }),
+		m:   newBudgetMeter(1<<20, nil),
+	}
+	n, err := r.Read(make([]byte, 1024))
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("read returned %v, want context.Canceled", err)
+	}
+	if n != 0 || touched {
+		t.Error("a cancelled reader called through to the underlying stream")
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }

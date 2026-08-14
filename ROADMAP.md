@@ -42,7 +42,7 @@ The current implementation queue is:
   transport layer and exchange nothing.
 
 - **WO-095 — responsive streaming peer search and UI.** **Implemented, with
-  WO-101 correction required before merge or live QA.**
+  WO-102 correction required before merge or live QA.**
   The start RPC acknowledges immediately; four bounded peer responses run
   independently. Candidate sets are unioned, broad string buckets resolve
   missing titles, and the daemon streams a result as soon as local full-query
@@ -62,11 +62,18 @@ The current implementation queue is:
   cancellation retires by identity. Architecture review found the four final
   termination boundaries now isolated in WO-101.
 
-- **WO-101 — close distributed-search termination semantics.** **Ready; merge
-  gate for the stacked search branch.** Distinguish bytes temporarily reserved
-  from bytes spent; do not advance saturation for unresolved catalogue work;
-  preserve invalid versus unavailable paged outcomes; and keep globally
-  stopped jobs against the ceiling until exact retirement. After review, merge
+- **WO-101 — close distributed-search termination semantics.** Implemented.
+  Bytes temporarily reserved are distinct from bytes spent; unresolved
+  catalogue work no longer advances saturation; invalid and unavailable paged
+  outcomes split; globally stopped jobs keep their slots until exact
+  retirement. Review accepted those mechanisms and isolated the remaining
+  cause-propagation gaps in WO-102.
+
+- **WO-102 — preserve distributed-search stop causes end to end.** **Ready;
+  final merge gate for the stacked search branch.** Budget termination must
+  survive the full catalogue traversal instead of becoming unavailable; local
+  title-read failure must leave candidates unresolved instead of absent; and a
+  cancelled meter waiter must not lease refunded capacity. After review, merge
   the whole dependent branch and run WO-095's two-machine key-scheme-2 QA.
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of

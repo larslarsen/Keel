@@ -40,6 +40,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -709,8 +710,12 @@ func (s *searchState) resolveTitles(ctx context.Context, ids []string) (hits []b
 	prefixes, err := s.n.st.MissingCataloguePrefixes(ids, s.n.prefixBits())
 	if err != nil {
 		// Identifier-free (WO-099 §6): a category, never a prefix or an id.
+		//
+		// Nothing is settled. A local planning failure establishes nothing
+		// about any candidate, and returning a populated `settled` here is what
+		// let a database error prove a false absence (WO-102 §2).
 		s.n.logf("search: candidate resolution could not be planned")
-		return nil, settled
+		return nil, map[string]bool{}
 	}
 
 	// Anything already held locally needs no traversal and is settled by
@@ -731,6 +736,11 @@ func (s *searchState) resolveTitles(ctx context.Context, ids []string) (hits []b
 		res, err := s.prefixes.resolve(ctx, p, func() (catalogueResult, error) {
 			return s.n.fetchCataloguePrefixQuiet(ctx, p)
 		})
+		if errors.Is(err, ErrSearchBudget) {
+			// The job's allowance is gone. Remaining prefixes are not
+			// attempted, and nothing already unresolved becomes settled.
+			break
+		}
 		if err == nil && res.Outcome.resolved() {
 			resolvedPrefix[p] = true
 		}
@@ -745,8 +755,14 @@ func (s *searchState) resolveTitles(ctx context.Context, ids []string) (hits []b
 
 	got, err := s.n.st.TitlesFor(ids)
 	if err != nil {
+		// A complete network traversal proves what arrived from the bucket. It
+		// does NOT prove a candidate absent when the local read failed before
+		// anything could be inspected — so every candidate goes back to
+		// unresolved and stays retryable (WO-102 §2). The next eligible peer
+		// response is the bounded retry; there is no database retry loop and no
+		// durable state.
 		s.n.logf("search: reading resolved titles failed")
-		return nil, settled
+		return nil, map[string]bool{}
 	}
 	return got, settled
 }

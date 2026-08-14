@@ -139,19 +139,22 @@ func (n *Node) writeFrame(s network.Stream, frame any) (int, error) {
 // invalid reply be recorded as an absent provider.
 var errNoResponse = errors.New("no response from peer")
 
-// classifyPagedError maps a transport failure onto what it established.
+// classifyPagedError maps a PROVIDER failure onto what it established.
 //
-// Budget termination is neither unavailable nor invalid: the peer may have been
-// answering perfectly well, and this node stopped listening.
+// Budget termination is deliberately not in this switch. It is not a fact about
+// a provider at all — the peer may have been answering perfectly well and this
+// node stopped listening — so callers must test ErrSearchBudget and
+// short-circuit BEFORE asking this function anything (WO-102 §1). The previous
+// version answered `unavailable` for it, which let the traversal treat a
+// terminated job as one more failed peer and carry on down the fallback list.
+//
+// It is left out rather than given a value on purpose: a value would invite
+// exactly the ranking this must not participate in.
 func classifyPagedError(err error) catalogueOutcome {
-	switch {
-	case errors.Is(err, ErrSearchBudget):
+	if errors.Is(err, errNoResponse) {
 		return catalogueUnavailable
-	case errors.Is(err, errNoResponse):
-		return catalogueUnavailable
-	default:
-		return catalogueInvalid
 	}
+	return catalogueInvalid
 }
 
 // requestPaged opens one stream and reads a whole logical response from it.
