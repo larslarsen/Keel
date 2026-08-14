@@ -102,8 +102,8 @@ func TestLiveV2SnapshotDoesNotCountRetiredPeerRecord(t *testing.T) {
 	cold.Live().retire(liveKey(r), time.Now())
 	cold.Live().mu.Unlock()
 	connect(t, cold, warm)
-	if cold.fetchLiveSnapshot(ctx, warm.ID()) {
-		t.Fatal("a refused retired record counted as snapshot admission")
+	if !cold.fetchLiveSnapshot(ctx, warm.ID()) {
+		t.Fatal("a valid snapshot did not complete merely because its retired record was not admitted")
 	}
 	if cold.Live().Size() != 0 {
 		t.Fatal("retired snapshot record was inserted")

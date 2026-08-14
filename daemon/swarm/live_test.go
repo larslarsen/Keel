@@ -416,16 +416,9 @@ func TestLiveSnapshotBackfill(t *testing.T) {
 // itself works, but calls it directly on a node it deliberately starts empty
 // — it never exercises backfillLive's own decision to call it at all.
 //
-// startLive runs seedLiveFromLocal synchronously before backfillLive's
-// goroutine even starts (live.go's startLive), so any node with its own
-// recent live sightings — the ordinary case for anyone who watches live
-// content — has a nonzero index from the moment backfillLive takes its
-// first look. Gating backfill on Size()>0 meant such a node would never
-// once ask a connected peer for its snapshot: two real nodes could report
-// "1 peer connected" to each other forever and never converge on a shared
-// live count, because neither node's own sightings ever satisfied the
-// other's backfill guard, and neither ever legitimately received the
-// other's data.
+// startLive seeds each node before its backfill goroutine begins. Both sides
+// must reconcile: one gossip record or one successful snapshot in the other
+// direction is not proof that either already holds the whole index.
 func TestBackfillLiveRunsForANodeWithOnlyItsOwnSightings(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -450,15 +443,10 @@ func TestBackfillLiveRunsForANodeWithOnlyItsOwnSightings(t *testing.T) {
 	if mine.Live().Size() == 0 {
 		t.Fatal("test setup: mine must start non-empty to exercise the bug")
 	}
-	if mine.Live().ReceivedFromPeer() {
-		t.Fatal("test setup: mine must not already believe it heard from a peer")
-	}
 
 	connect(t, mine, warm)
-	go mine.backfillLive(ctx)
-
-	waitFor(t, "mine to backfill warm's stream despite already having its own", func() bool {
-		return mine.Live().ReceivedFromPeer() && mine.Live().Size() == 2
+	waitFor(t, "both non-empty nodes to converge", func() bool {
+		return mine.Live().Size() == 2 && warm.Live().Size() == 2
 	})
 }
 

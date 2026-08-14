@@ -117,6 +117,12 @@ const (
 
 	liveSweepInterval = 10 * time.Minute
 
+	// liveBackfillInterval keeps reconciliation alive after startup. Keel
+	// rendezvous can take minutes, so a fixed first-minute retry window cannot
+	// be the lifetime of the whole-index snapshot path.
+	liveBackfillInterval = 5 * time.Second
+	liveBackfillMaxRetry = 5 * time.Minute
+
 	// liveTimeGranularity rounds the sighting time in a record.
 	//
 	// This is what makes duplicate reports nearly free. Message ids are the hash
@@ -190,20 +196,12 @@ type LiveIndex struct {
 	sub   *pubsub.Subscription
 	self  peer.ID
 	logf  func(string, ...any)
+}
 
-	// receivedFromPeer is true once gossip or a snapshot backfill has
-	// actually merged a record that came from another node — never set by
-	// seedLiveFromLocal or by folding in this node's own publish. Separate
-	// from Size()>0 on purpose: seedLiveFromLocal runs before backfillLive
-	// even starts, so any node with its own recent sightings — the common
-	// case for anyone who watches live content — has Size()>0 from startup
-	// with zero peer data in it. Gating backfill on Size() meant such a
-	// node would never once ask a connected peer for their index: two
-	// nodes could show "1 Keel node connected" and never converge on a
-	// shared live count, because neither ever backfilled the other's.
-	// Plain bool behind the mutex, same as everything else here — merge and
-	// fetchLiveSnapshot already take the lock, so this rides along for free.
-	receivedFromPeer bool
+type liveBackfillPeerState struct {
+	synced   bool
+	failures int
+	retryAt  time.Time
 }
 
 // startLive joins the topic and begins accumulating.
@@ -333,26 +331,79 @@ func (li *LiveIndex) Snapshot() []LiveRecord {
 	return out
 }
 
-// backfillLive asks connected peers for their index once a mesh exists.
+// backfillLive reconciles once with every exact-protocol peer connection.
 //
-// Peers are asked in turn until one answers, and their records are merged as
-// though they had been gossiped.
+// It lives as long as the node. Rendezvous can connect a Keel peer minutes
+// after startup, and gossip has no replay, so a first-minute-only loop leaves
+// an older node permanently unable to learn a late joiner's seeded records.
 func (n *Node) backfillLive(ctx context.Context) {
-	for attempt := 0; attempt < 12; attempt++ {
+	state := make(map[peer.ID]liveBackfillPeerState)
+	ticker := time.NewTicker(liveBackfillInterval)
+	defer ticker.Stop()
+	for {
+		n.backfillConnectedLive(ctx, state)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(5 * time.Second):
-		}
-		if n.live == nil || n.live.ReceivedFromPeer() {
-			return // gossip or a prior backfill already filled it, or we are shutting down
-		}
-		for _, p := range n.host.Network().Peers() {
-			if n.fetchLiveSnapshot(ctx, p) {
-				return
-			}
+		case <-ticker.C:
 		}
 	}
+}
+
+// backfillConnectedLive performs one reconciliation pass. State is scoped to
+// one backfillLive goroutine: a valid response is fetched once per connection,
+// a disconnected peer is forgotten, and failures retry with bounded backoff.
+func (n *Node) backfillConnectedLive(ctx context.Context, state map[peer.ID]liveBackfillPeerState) {
+	if n.live == nil {
+		return
+	}
+	peers := n.connectedProviders(LiveSnapshotProtocol, store.MaxKnownPeers)
+	reconcileLivePeers(ctx, peers, state, time.Now(), n.fetchLiveSnapshot)
+}
+
+func reconcileLivePeers(
+	ctx context.Context,
+	peers []peer.AddrInfo,
+	state map[peer.ID]liveBackfillPeerState,
+	now time.Time,
+	fetch func(context.Context, peer.ID) bool,
+) {
+	connected := make(map[peer.ID]bool, len(peers))
+	for _, p := range peers {
+		connected[p.ID] = true
+	}
+	for id := range state {
+		if !connected[id] {
+			delete(state, id)
+		}
+	}
+
+	for _, p := range peers {
+		st := state[p.ID]
+		if st.synced || now.Before(st.retryAt) {
+			continue
+		}
+		if fetch(ctx, p.ID) {
+			st.synced = true
+			st.failures = 0
+			st.retryAt = time.Time{}
+		} else {
+			st.failures++
+			st.retryAt = now.Add(liveBackfillRetry(st.failures))
+		}
+		state[p.ID] = st
+	}
+}
+
+func liveBackfillRetry(failures int) time.Duration {
+	d := liveBackfillInterval
+	for i := 1; i < failures && d < liveBackfillMaxRetry; i++ {
+		d *= 2
+	}
+	if d > liveBackfillMaxRetry {
+		return liveBackfillMaxRetry
+	}
+	return d
 }
 
 func (n *Node) fetchLiveSnapshot(ctx context.Context, p peer.ID) bool {
@@ -377,8 +428,13 @@ func (n *Node) fetchLiveSnapshot(ctx context.Context, p peer.ID) bool {
 		return false
 	}
 	admitted := 0
+	validResponse := recs != nil // [] is a valid empty snapshot; null is not.
 	for _, r := range recs {
-		if ValidLiveRecord(r) && n.live.merge(r, true) {
+		if !ValidLiveRecord(r) {
+			validResponse = false
+			continue
+		}
+		if n.live.merge(r, true) {
 			// merge reports actual admission. Map size is not an admission signal:
 			// an existing entry can refresh without growing, while a tombstoned
 			// peer record is valid syntax but must be refused.
@@ -388,7 +444,7 @@ func (n *Node) fetchLiveSnapshot(ctx context.Context, p peer.ID) bool {
 	if admitted > 0 {
 		n.logf("live index backfilled with %d records from %s", admitted, p)
 	}
-	return admitted > 0
+	return validResponse
 }
 
 // validateLiveMessage is the gossipsub validator. It runs before a message is
@@ -567,8 +623,7 @@ func (li *LiveIndex) isRetired(key string, now time.Time) bool {
 // fromPeer marks a report that actually arrived from another node — gossip
 // (consume) or a snapshot backfill (fetchLiveSnapshot) — as opposed to this
 // node's own local sightings (seedLiveFromLocal) or its own announcement
-// folded in locally (Publish, PublishLive). It exists solely to drive
-// receivedFromPeer; nothing about admission or ranking depends on it.
+// folded in locally (Publish, PublishLive).
 func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) bool {
 	if !ValidLiveRecord(r) {
 		return false // unplaceable: see validateLiveMessage
@@ -579,9 +634,6 @@ func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) bool {
 	now := time.Now()
 	li.mu.Lock()
 	defer li.mu.Unlock()
-	if fromPeer {
-		li.receivedFromPeer = true
-	}
 
 	// A livestream cannot have been "seen" longer ago than maxLiveAge and still
 	// be running. A peer reporting SeenAt that old is re-announcing a stream
@@ -766,17 +818,25 @@ func (li *LiveIndex) Publish(ctx context.Context, r LiveRecord) error {
 	if r.SeenAt == 0 {
 		r.SeenAt = time.Now().UnixMilli()
 	}
-	// Round so two nodes reporting the same stream in the same hour emit
-	// byte-identical messages, which the network then carries only once.
-	r.SeenAt = time.UnixMilli(r.SeenAt).Truncate(liveTimeGranularity).UnixMilli()
-	raw, err := json.Marshal(r)
+	// Fold the exact local observation before making the coarse wire copy.
+	// Local display must not depend on whether pubsub delivers an origin's own
+	// message, or lose nearly an hour of SeenAt merely to deduplicate the wire.
+	li.merge(r, false)
+
+	wire := r
+	// Round both timestamps. Rounding SeenAt alone makes an originally equal
+	// StartedAt later than SeenAt, which our own validator correctly rejects.
+	wire.SeenAt = time.UnixMilli(wire.SeenAt).Truncate(liveTimeGranularity).UnixMilli()
+	if wire.StartedAt > 0 {
+		wire.StartedAt = time.UnixMilli(wire.StartedAt).Truncate(liveTimeGranularity).UnixMilli()
+	}
+	if !ValidLiveRecord(wire) {
+		return fmt.Errorf("live record invalid after wire timestamp normalization")
+	}
+	raw, err := json.Marshal(wire)
 	if err != nil {
 		return err
 	}
-	// Fold our own announcement in locally: gossipsub does not deliver a node
-	// its own messages, and a user should see their own discovery in the feed.
-	// Not a peer report — this is our own, so it must not satisfy backfill.
-	li.merge(r, false)
 	return li.topic.Publish(ctx, raw)
 }
 
@@ -862,15 +922,6 @@ func (li *LiveIndex) Size() int {
 	li.mu.RLock()
 	defer li.mu.RUnlock()
 	return len(li.entries)
-}
-
-// ReceivedFromPeer reports whether gossip or a snapshot backfill has ever
-// merged a record that actually came from another node — see the field's
-// own doc comment for why this must not be inferred from Size().
-func (li *LiveIndex) ReceivedFromPeer() bool {
-	li.mu.RLock()
-	defer li.mu.RUnlock()
-	return li.receivedFromPeer
 }
 
 // setLocalSeenAt records this node's own local observation time for a video.

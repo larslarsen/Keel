@@ -231,6 +231,9 @@ func TestConnectedProviderMustAdvertiseTheExactProtocol(t *testing.T) {
 	if got := client.connectedProviders(CatalogueProtocol, maxCatalogueDHTProviders); len(got) != 0 {
 		t.Errorf("unrelated connected peer nominated for catalogue requests: %+v", got)
 	}
+	if got := client.connectedProviders(LiveSnapshotProtocol, store.MaxKnownPeers); len(got) != 0 {
+		t.Errorf("unrelated connected peer nominated for Live snapshots: %+v", got)
+	}
 }
 
 // TestProviderSourcesAreDeduplicatedPerToken puts one server in every source:

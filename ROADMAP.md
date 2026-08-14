@@ -62,6 +62,14 @@ The current implementation queue is:
   Level-2 reciprocity, broad request units, search budgets and network-health
   meanings remain unchanged.
 
+- **WO-112 — the Live index must converge across late peer connections.**
+  **Implemented; two-machine count rerun pending.** Wire publication now rounds
+  both Live timestamps together and revalidates the result. Lifetime,
+  once-per-connection snapshots of exact-protocol peers replace the first-minute
+  backfill and global peer-record latch, with disconnect resync and bounded
+  failure backoff. The whole-index, Level-2, authorless and bounded-expiry
+  contract is unchanged.
+
 - **WO-099 — streaming-search lifecycle and resource correction.** Implemented.
   Independent page jobs, early-event preservation and prompt downgrade
   cancellation landed; WO-100 closed its first review findings.
@@ -166,6 +174,8 @@ shared Keel discovery key, not content-provider counts or raw DHT connections,
 owns the bounded network-health state.
 
 WO-111 is accepted and live-verified; its two-machine rerun passed.
+WO-112 is implemented; matching Live counts after both nodes reconcile is the
+immediate two-machine check.
 WO-110 is code accepted; its deliberately stale revision-1 live check remains.
 There is no implementation order behind either result: the next correction, if
 one is needed, comes from the remaining live-QA evidence rather than from an
