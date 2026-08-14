@@ -174,9 +174,12 @@ func TestNegotiateSelectsLowerOfTheTwoRevisions(t *testing.T) {
 // boundary — so it must not present the control as level-gated, because that
 // daemon would have answered.
 func TestPeerSearchRevisionNegotiatesTheReciprocalContract(t *testing.T) {
-	if got := DaemonCaps()[CapPeerSearch]; got != PeerSearchRevReciprocal {
-		t.Fatalf("daemon offers peer_search:%d, want %d — the reciprocal contract is what this revision means",
-			got, PeerSearchRevReciprocal)
+	// The daemon offers its highest revision; negotiation is what brings a
+	// client down to the contract it can actually honour. WO-095 raised the
+	// ceiling to the streaming revision without changing what revision 2
+	// means, which is the property the rest of this test pins.
+	if got := DaemonCaps()[CapPeerSearch]; got != PeerSearchRevStreaming {
+		t.Fatalf("daemon offers peer_search:%d, want %d", got, PeerSearchRevStreaming)
 	}
 
 	current := NegotiateHello(HelloPayload{
@@ -186,7 +189,10 @@ func TestPeerSearchRevisionNegotiatesTheReciprocalContract(t *testing.T) {
 		Optional:      map[string]int{CapPeerSearch: PeerSearchRevReciprocal},
 	}, "0.1.0")
 	if got := current.Capabilities[CapPeerSearch]; got != PeerSearchRevReciprocal {
-		t.Errorf("a current extension negotiated peer_search:%d, want %d", got, PeerSearchRevReciprocal)
+		t.Errorf("an extension whose ceiling is the reciprocal revision negotiated "+
+			"peer_search:%d, want %d — a daemon that streamed at a client which "+
+			"only asked for the atomic reply would send it unsolicited envelopes",
+			got, PeerSearchRevReciprocal)
 	}
 
 	// An extension from before WO-085 still connects and still gets peer

@@ -118,6 +118,12 @@ func run(in io.Reader, out io.Writer, st *store.Store) {
 type bridgeSession struct {
 	helloOK bool
 	caps    map[string]int
+	// jobs are this session's running streaming searches (WO-095 §3). Scoped
+	// to the session on purpose: a job's events go to the connection that
+	// started it and to no other, so two browsers on one machine never see
+	// each other's search activity. Keyed by the client-minted search id.
+	jobMu sync.Mutex
+	jobs  map[string]*searchJob
 	// onReady fires once, when negotiation succeeds. The owner uses it to join
 	// a session to the broadcast hub only after both sides have agreed an API
 	// and capability set — see serveOwner.
@@ -134,6 +140,10 @@ func runSession(
 	ctx context.Context, in io.Reader, out io.Writer, st *store.Store, onReady func(),
 ) {
 	sess := &bridgeSession{onReady: onReady}
+	// A session that goes away takes its searches with it (WO-095 §4). Work
+	// whose results nobody can receive must not keep spending other people's
+	// serving budget.
+	defer sess.cancelAllJobs()
 	for {
 		raw, err := bridge.ReadMessage(in)
 		if err != nil {
@@ -217,7 +227,20 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 	case "SEARCH":
 		return handleSearch(env, out, st)
 	case "PEER_SEARCH":
+		// Revision 3 turns this into a job start; revision 2 keeps its atomic
+		// reply and receives no events (WO-095 §3). The client's own revision
+		// selects the path — it sends a search_id only when it negotiated 3 and
+		// is prepared to consume events, so a revision-2 client can never be
+		// handed a stream it would log as a series of unsolicited envelopes.
+		if sess.caps[bridge.CapPeerSearch] >= bridge.PeerSearchRevStreaming {
+			var probe bridge.SearchPayload
+			if json.Unmarshal(env.Payload, &probe) == nil && probe.SearchID != "" {
+				return handlePeerSearchStart(ctx, env, out, st, sess)
+			}
+		}
 		return handlePeerSearchContext(ctx, env, out, st)
+	case "PEER_SEARCH_CANCEL":
+		return handlePeerSearchCancel(env, out, sess)
 	case "WORD_STATS":
 		return handleWordStatsContext(ctx, env, out, st)
 	case "SUGGEST":
@@ -777,6 +800,12 @@ func handleSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 	if err != nil {
 		return replyErr(out, env.ID, err)
 	}
+	// Every local search carries the canonical render plan, including when peer
+	// search is off, unavailable or unentitled (WO-095 §1). The extension never
+	// retokenizes a query: one tokenizer, in the daemon, is what stops the
+	// interface drawing bars that disagree with the work being done — which is
+	// exactly what the page's own three-character chopping used to do.
+	res.Plan = planWire(store.BuildQueryPlan(p.Query))
 	return reply(out, env.ID, "SEARCH_RESULT", res)
 }
 
@@ -789,6 +818,14 @@ func handleSearch(env *bridge.Envelope, out io.Writer, st *store.Store) error {
 // synchronous-on-the-bridge-thread shape this fix gives handlePeerSearch,
 // but restructuring it is out of this ticket's scope.
 const peerSearchTimeout = 6 * time.Second
+
+// contributionRequiredMessage is the one refusal wording both PEER_SEARCH
+// entry points use (WO-085). Shared so the atomic path and the streaming job
+// cannot drift into telling the user two different things about one setting.
+const contributionRequiredMessage = "searching other people's recommendations needs broad sharing: " +
+	"distributed search runs on the machines that also answer it, so it is " +
+	"available to the levels that serve. Local search, suggestions, " +
+	"pre-walk, Live and word statistics are unaffected."
 
 // handlePeerSearch searches the swarm's token shards for a query (WO-059),
 // distinct from handleSearch's purely local catalogue lookup.
@@ -821,11 +858,8 @@ func handlePeerSearchContext(requestCtx context.Context, env *bridge.Envelope, o
 	// in terms the interface can act on.
 	if allowed, level := distributedSearchLevel(st); !allowed {
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
-			Message: "searching other people's recommendations needs broad sharing: " +
-				"distributed search runs on the machines that also answer it, so it is " +
-				"available to the levels that serve. Local search, suggestions, " +
-				"pre-walk, Live and word statistics are unaffected.",
-			Code: bridge.CodeContributionRequired,
+			Message: contributionRequiredMessage,
+			Code:    bridge.CodeContributionRequired,
 			Detail: bridge.ContributionRequiredDetail{
 				Capability:     bridge.CapDistributedSearch,
 				RequiredLevel:  store.LevelBroad,
