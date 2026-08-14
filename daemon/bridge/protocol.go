@@ -346,6 +346,87 @@ type SearchResultPayload struct {
 	Hits      []SearchHit `json:"hits"`
 	Total     int64       `json:"total"`
 	Truncated bool        `json:"truncated"`
+	// Plan is the daemon's canonical render plan for this query (WO-097 §1).
+	// Present on every local search, including when peer search is disabled or
+	// unavailable, because it is how the interface knows what the words and
+	// tokens *are* — the extension never retokenizes a query.
+	Plan *QueryPlanWire `json:"plan,omitempty"`
+}
+
+// QueryPlanWire is the render plan the daemon hands the interface (WO-097 §1,
+// consumed by WO-095).
+//
+// It carries normalized display words — the query, in other words — because
+// there is no way to draw a search box's word bars without them. That crossing
+// is the local native bridge only: the words must not be logged, persisted,
+// broadcast to another page, or placed in browser storage (DESIGN_v2 §2.1).
+//
+// What it deliberately does not carry is token *text*. A token is an opaque id
+// plus a character range and a color slot, which is everything a renderer needs
+// and nothing a log or a screenshot could turn back into a three-gram. The
+// ranges index Normalized, so a fragment is drawn by slicing the string the
+// plan already contains rather than by re-deriving anything.
+type QueryPlanWire struct {
+	Normalized string          `json:"normalized"`
+	Words      []PlanWordWire  `json:"words"`
+	Tokens     []PlanTokenWire `json:"tokens"`
+}
+
+// PlanWordWire is one display-word occurrence. WordID identifies the word
+// *value*, so repeated occurrences share one id, one target and one count.
+type PlanWordWire struct {
+	WordID   int    `json:"word_id"`
+	Word     string `json:"word"`
+	Start    int    `json:"start"`
+	End      int    `json:"end"`
+	Stopword bool   `json:"stopword"`
+}
+
+// PlanTokenWire is one token occurrence of the fixed query grid: an opaque id,
+// the characters it covers, the word fragments it colors, and the word its one
+// bar sits under.
+type PlanTokenWire struct {
+	TokenID   int `json:"token_id"`
+	ColorSlot int `json:"color_slot"`
+	Start     int `json:"start"`
+	End       int `json:"end"`
+	// Discovery is whether this token will be fetched from peers. False for a
+	// token whose letters are all stopword — it still renders, so a person can
+	// see that it is deliberately not network work.
+	Discovery bool `json:"discovery"`
+	// BarWordID is the deterministic placement of this token's bar: the first
+	// word whose letters it covers. -1 when it covers none.
+	BarWordID int                `json:"bar_word_id"`
+	Fragments []PlanFragmentWire `json:"fragments"`
+}
+
+// PlanFragmentWire is the part of one word a token covers — the intersection
+// that lets a cross-space token color both of the words it touches.
+type PlanFragmentWire struct {
+	WordID int `json:"word_id"`
+	Start  int `json:"start"`
+	End    int `json:"end"`
+}
+
+// WordTargetWire is one word's frozen search target from the retained
+// telemetry snapshot (WO-097 §7, §8).
+type WordTargetWire struct {
+	WordID int    `json:"word_id"`
+	Word   string `json:"word"`
+	// Target is the overlap-adjusted estimate — the denominator a word bar
+	// draws against. Actual counts are allowed to exceed it (WO-095 §7): it is
+	// an estimate, not a ceiling.
+	Target uint64 `json:"target"`
+	// Raw is the unadjusted summed estimate, for diagnostics and corpus stats.
+	// Never the search target: on mirrored corpora it can be unreachable.
+	Raw uint64 `json:"raw"`
+	// Known false means show the found count and "target unknown" — never a
+	// fabricated marker.
+	Known bool `json:"known"`
+	// Uncertain marks a target whose overlap correction could not be measured.
+	Uncertain bool `json:"uncertain"`
+	// SnapshotAgeMS is how old the retained round behind this target is.
+	SnapshotAgeMS int64 `json:"snapshot_age_ms"`
 }
 
 // PeerSearchResultPayload is PEER_SEARCH_RESULT body (WO-059).

@@ -28,14 +28,14 @@ func TestLocalYieldVectorAboveAndBelowThreshold(t *testing.T) {
 		t.Fatalf("LocalYieldVector returned %d bytes, want %d", len(vec), YieldVectorBytes)
 	}
 
-	toks := tokenize("recommendation systems explained", ShardK)
+	toks := TitleTokens("recommendation systems explained")
 	if len(toks) == 0 {
 		t.Fatal("test setup produced no tokens")
 	}
 	for _, tok := range toks {
 		idx, ok := TokenDictIndex(tok)
 		if !ok {
-			t.Fatalf("TokenDictIndex(%q) rejected a real tokenize() output", tok)
+			t.Fatalf("TokenDictIndex(%q) rejected a real TitleTokens() output", tok)
 		}
 		if !YieldBitSet(vec, idx) {
 			t.Errorf("token %q covers 100%% of its shard (only video present) but its bit is not set", tok)
@@ -44,7 +44,7 @@ func TestLocalYieldVectorAboveAndBelowThreshold(t *testing.T) {
 
 	// A token this node has never seen must not be set.
 	unseen := "recommendation ai video"
-	for _, tok := range tokenize(unseen, ShardK) {
+	for _, tok := range TitleTokens(unseen) {
 		found := false
 		for _, t2 := range toks {
 			if t2 == tok {
@@ -79,7 +79,7 @@ func TestLocalYieldVectorFollowsItsSourceSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tok := range tokenize("owner watched this exact video", ShardK) {
+	for _, tok := range TitleTokens("owner watched this exact video") {
 		idx, ok := TokenDictIndex(tok)
 		if ok && YieldBitSet(vec, idx) {
 			t.Errorf("LocalYieldVector(PeerSources) set a bit for a token derived from this node's own impressions")
@@ -95,7 +95,7 @@ func TestLocalYieldVectorFollowsItsSourceSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	anySet := false
-	for _, tok := range tokenize("owner watched this exact video", ShardK) {
+	for _, tok := range TitleTokens("owner watched this exact video") {
 		idx, ok := TokenDictIndex(tok)
 		if ok && YieldBitSet(vec, idx) {
 			anySet = true
@@ -115,7 +115,7 @@ func TestLocalYieldVectorFollowsItsSourceSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	anySet = false
-	for _, tok := range tokenize("owner watched this exact video", ShardK) {
+	for _, tok := range TitleTokens("owner watched this exact video") {
 		idx, ok := TokenDictIndex(tok)
 		if ok && YieldBitSet(vec, idx) {
 			anySet = true

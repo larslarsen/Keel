@@ -7,13 +7,18 @@ package swarm
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	mh "github.com/multiformats/go-multihash"
 
 	"github.com/keel-app/keel/daemon/store"
@@ -26,6 +31,10 @@ import (
 // for those two, applied to the third dataset.
 func shardCID(shard int) (cid.Cid, error) {
 	sum, err := mh.Sum([]byte(fmt.Sprintf("keel/shard/1/ks%d/%d", store.KeySchemeVersion, shard)), mh.SHA2_256, -1)
+	// The literal "1" is this key's own domain string and is not the key
+	// scheme; store.KeySchemeVersion is what fences scheme 1 from scheme 2
+	// here (WO-097 §5), so a scheme-2 node never finds a scheme-1 provider
+	// record and never fetches token data generated under the other rule.
 	if err != nil {
 		return cid.Undef, err
 	}
@@ -60,35 +69,60 @@ func (n *Node) handleShardRequest(s network.Stream) {
 	defer release()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
-	line, err := bufio.NewReader(io.LimitReader(s, 32)).ReadString('\n')
+	line, err := bufio.NewReader(io.LimitReader(s, 64)).ReadString('\n')
 	if err != nil && err != io.EOF {
 		return
 	}
-	shard, ok := parseShard(trimLine(line))
+	shard, nonce, ok := parseShardRequest(trimLine(line))
 	if !ok {
 		return
 	}
-	pack, err := n.st.BuildShardPack(shard, n.cfg.Policy.CatalogueSources(), 0)
+	rows, offset, err := n.st.ShardRows(shard, n.cfg.Policy.CatalogueSources(), nonce)
 	if err != nil {
 		n.logf("shard %d: %v", shard, err)
 		return
 	}
-	raw, err := json.Marshal(pack)
+	written, err := n.servePagedResponse(s, fmt.Sprintf("%d", shard), len(rows), offset,
+		func(index, start, count int) (any, string, error) {
+			pack, err := n.st.SignShardPage(shard, index, offset, rows[start:start+count])
+			if err != nil {
+				return nil, "", err
+			}
+			return pack, pack.ContentSHA256, nil
+		})
 	if err != nil {
+		n.logf("shard %d: %v", shard, err)
 		return
 	}
-	if !n.serve.chargeBytes(len(raw)) {
-		n.logf("shard %d: over the serving byte budget, dropping the reply", shard)
-		return
-	}
-	_, _ = s.Write(raw)
 	// Logged on success, not only on failure. Without a positive signal there is
 	// no way to tell "no one asked" from "asked and refused" — which is exactly
 	// what made intermittent search coverage undiagnosable from this side.
-	n.logf("shard %d: served %d bytes to %s", shard, len(raw), s.Conn().RemotePeer())
-	if err := n.st.RecordContributionServe(len(raw)); err != nil {
+	n.logf("shard %d: served %d rows in %d bytes to %s", shard, len(rows), written, s.Conn().RemotePeer())
+	if err := n.st.RecordContributionServe(written); err != nil {
 		n.logf("shard %d: recording contribution activity: %v", shard, err)
 	}
+}
+
+// parseShardRequest reads "<shard>" or "<shard> <nonce>".
+//
+// The nonce is optional so a malformed or absent one degrades to offset zero
+// rather than refusing the request. It carries no token, title or id — it only
+// moves where a partial traversal begins (store.PageStart).
+func parseShardRequest(line string) (shard int, nonce uint64, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 || len(fields) > 2 {
+		return 0, 0, false
+	}
+	shard, ok = parseShard(fields[0])
+	if !ok {
+		return 0, 0, false
+	}
+	if len(fields) == 2 {
+		// A nonce that does not parse is ignored, not fatal: it is a hint
+		// about traversal order, never part of what is being asked for.
+		nonce, _ = strconv.ParseUint(fields[1], 10, 64)
+	}
+	return shard, nonce, true
 }
 
 func parseShard(s string) (int, bool) {
@@ -106,6 +140,22 @@ func parseShard(s string) (int, bool) {
 		}
 	}
 	return n, true
+}
+
+// requestNonce is a fresh random traversal offset seed for one shard or
+// catalogue request.
+//
+// crypto/rand rather than math/rand: the value is observable by the peer
+// answering, and a predictable sequence would let it correlate a node's
+// successive requests with each other. On the vanishingly unlikely read
+// failure this falls back to zero, which costs traversal spread and nothing
+// else.
+func requestNonce() uint64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	return binary.BigEndian.Uint64(b[:])
 }
 
 // shardClaim is what one peer said about one video within a shard reply:
@@ -284,23 +334,28 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 		if yield, known := n.yieldGet(p.ID, token); known && !yield {
 			continue
 		}
-		raw, err := n.requestOn(ctx, p, fmt.Sprintf("%d", shard), ShardProtocol)
+		entries, signed, complete, err := n.fetchShardPages(ctx, p, shard)
 		if err != nil {
-			continue
-		}
-		var pack store.ShardPack
-		if err := json.Unmarshal(raw, &pack); err != nil {
-			continue
-		}
-		if err := store.VerifyShardPack(&pack); err != nil {
 			n.logf("shard %d from %s: %v", shard, p.ID, err)
 			continue
 		}
-		signed := pack.Signature != ""
 		tried++
-		gained := resolveShardEntries(pack.Entries, token, signed, claims, poisoned, out)
+		gained := resolveShardEntries(entries, token, signed, claims, poisoned, out)
 		n.remember(p)
-		if gained == 0 {
+		if !complete {
+			// An explicitly incomplete traversal is not evidence that the
+			// network is exhausted — the peer stopped on its own budget and
+			// still holds rows it did not send (WO-097 §6). Letting it feed the
+			// saturation streak would turn "this peer is rate-limited" into
+			// "stop searching", which is the silent-truncation failure wearing
+			// a different hat. It resets the streak only when it actually
+			// gained something; a partial answer that added nothing simply
+			// leaves the streak where it was.
+			n.logf("shard %d from %s: peer ended the traversal incomplete", shard, p.ID)
+			if gained > 0 {
+				misses = 0
+			}
+		} else if gained == 0 {
 			misses++
 			if shouldStopOnSaturation(misses, saturationStreak, haveTarget, len(out), target) {
 				break
@@ -318,6 +373,112 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 		}
 	}
 	return out, nil
+}
+
+// fetchShardPages retrieves one peer's whole logical response for a shard and
+// combines its pages into one answer (WO-097 §6).
+//
+// Every page is verified on its own and then checked against the signed
+// terminal's ordered digest list, so a dropped, duplicated or reordered frame
+// is rejected rather than silently reassembled into a plausible-looking shard.
+// `signed` describes the response as a whole and is true only when every page
+// carried a signature — resolveShardEntries uses it to decide whose claim wins
+// when two peers contradict each other, and a response that is signed in parts
+// is not a signed response.
+//
+// Entries from all pages are returned as one peer answer. Page boundaries are
+// an artifact of how the answer travelled; nothing above this function knows
+// or cares that there was more than one frame, which is what keeps a page from
+// surfacing as a new query token or a second bar (WO-095 §5).
+func (n *Node) fetchShardPages(ctx context.Context, p peer.AddrInfo, shard int) (entries []store.ShardEntry, signed, complete bool, err error) {
+	resp, err := n.requestPaged(ctx, p, fmt.Sprintf("%d %d", shard, requestNonce()), ShardProtocol)
+	if err != nil {
+		return nil, false, false, err
+	}
+
+	digests := make([]string, 0, len(resp.Pages))
+	entries = []store.ShardEntry{}
+	signed = true
+	seen := map[string]bool{}
+	for i, raw := range resp.Pages {
+		var pack store.ShardPack
+		if err := json.Unmarshal(raw, &pack); err != nil {
+			return nil, false, false, err
+		}
+		if pack.Shard != shard {
+			return nil, false, false, fmt.Errorf("page %d answers shard %d, not %d", i, pack.Shard, shard)
+		}
+		if pack.Index != i {
+			return nil, false, false, fmt.Errorf("page arrived at position %d claiming index %d", i, pack.Index)
+		}
+		if err := store.VerifyShardPack(&pack); err != nil {
+			return nil, false, false, err
+		}
+		if pack.Signature == "" {
+			signed = false
+		}
+		digests = append(digests, pack.ContentSHA256)
+		for _, e := range pack.Entries {
+			// A row repeated across pages would double-count into the caller's
+			// gain accounting. The traversal is a rotation over a deduplicated
+			// ordering, so a duplicate means a misbehaving provider, not a
+			// large bucket.
+			if seen[e.VideoID] {
+				continue
+			}
+			seen[e.VideoID] = true
+			entries = append(entries, e)
+		}
+	}
+	if err := pageDigestsMatch(digests, resp.Terminal); err != nil {
+		return nil, false, false, err
+	}
+	return entries, signed, resp.Complete(), nil
+}
+
+// ResolveCandidateTitles downloads the complete broad catalogue/string prefix
+// buckets needed to label a set of candidate ids, coalescing candidates that
+// share a prefix (WO-097 §9).
+//
+// Two properties are load-bearing and neither is an optimization:
+//
+//   - the request names a prefix bucket, never a candidate id, and the whole
+//     bucket comes back. Fetching only the rows a search matched would bind the
+//     fetch pattern to the query — the correlation catalogue.go rule 1 exists
+//     to prevent — and it is why the return value is a count of rows imported
+//     rather than the titles themselves. The caller reads titles back out of
+//     the store afterwards, where cover rows and wanted rows are
+//     indistinguishable.
+//   - candidates sharing a prefix produce one traversal, not one each.
+//     MissingCataloguePrefixes already collapses ids to buckets and drops ids
+//     already held, so the set of buckets requested depends on this node's
+//     cache at bucket granularity and on nothing finer.
+//
+// Rows arriving here may be cached under the existing public-catalogue rules.
+// Only the ids a search actually produced may enter its matcher or counters —
+// that boundary belongs to the caller (WO-095 §2), not to this function.
+func (n *Node) ResolveCandidateTitles(ctx context.Context, ids []string) (int, error) {
+	if !n.cfg.Policy.Fetch || len(ids) == 0 {
+		return 0, nil
+	}
+	prefixes, err := n.st.MissingCataloguePrefixes(ids, n.prefixBits())
+	if err != nil || len(prefixes) == 0 {
+		return 0, err
+	}
+	rows := 0
+	for _, p := range prefixes {
+		select {
+		case <-ctx.Done():
+			return rows, ctx.Err()
+		default:
+		}
+		got, err := n.fetchCataloguePrefix(ctx, p)
+		if err != nil {
+			continue
+		}
+		rows += got
+	}
+	return rows, nil
 }
 
 // TokenProgress is one query token's coverage against its gossiped target,

@@ -50,7 +50,7 @@ func (s *Store) LocalYieldVector(sources SourceSet) ([]byte, error) {
 			continue
 		}
 		seen := map[string]bool{}
-		for _, t := range tokenize(c.Title, ShardK) {
+		for _, t := range TitleTokens(c.Title) {
 			seen[t] = true
 		}
 		for t := range seen {

@@ -27,7 +27,12 @@ import (
 
 // SketchTopic carries per-token cardinality sketches, one {index, sketch}
 // pair per message.
-const SketchTopic = "keel/sketch/1"
+//
+// Key-scheme versioned for the same reason as YieldTopic (WO-097 §5): a
+// dictionary index means a token, and a token means whatever the tokenizer
+// that produced it meant. Merging a scheme-1 sketch into a scheme-2 slot would
+// silently corrupt the target a search stops against.
+var SketchTopic = keelTopic("sketch", store.KeySchemeVersion)
 
 const (
 	// sketchTickInterval governs both sides of the rate limit: how often

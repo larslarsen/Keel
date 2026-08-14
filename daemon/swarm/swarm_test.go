@@ -380,11 +380,7 @@ func TestLevelTwoServesItsOwnCatalogue(t *testing.T) {
 	defer cNode.Close()
 
 	prefix := store.CataloguePrefix("localvid001", store.DefaultPrefixBits)
-	raw, err := cNode.requestOn(ctx, sNode.AddrInfo(), prefix, CatalogueProtocol)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := client.ImportCataloguePack(raw)
+	rows, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), prefix)
 	if err != nil {
 		t.Fatal(err)
 	}

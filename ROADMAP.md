@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 2026-08-12.
+Updated 2026-08-13.
 
 ## Current stabilization queue
 
@@ -22,13 +22,38 @@ open from this review.
 
 The current implementation queue is:
 
-- **WO-091 — Windows native-host installation.** Release-test blocker. The
-  current `install -all` lets Firefox overwrite the Chromium manifest used by
-  Brave, and installation cannot be diagnosed on the affected no-keyboard
-  machine. Fix and live-verify this first.
+- **WO-097 — complete distributed-search foundation.** **Implemented**
+  2026-08-13. Scheme 2 uses one continuous fixed query grid and every title
+  alignment. Inverted-index generation drops only stopword-only occurrences,
+  while meaningful and boundary windows remain. Token and catalogue/string
+  buckets are completely pageable instead of silently ending at 4,096 rows.
+  Retained HLL/CMS refresh snapshots supply immediate overlap-adjusted word
+  targets without a word dictionary.
+
+  **Rollout note — this release partitions the swarm.** `KeySchemeVersion` is
+  one swarm-wide fence, so bumping it to 2 makes scheme-1 and scheme-2 builds
+  mutually unreachable on *every* scheme-versioned protocol, graph and
+  catalogue included, even though only the tokenizer changed. That is the
+  deliberate cost of refusing silently incompatible shard data (WO-097 §5) and
+  it lasts until installs have updated. `swarm.VersionView` reports
+  `key_scheme`, `incompatible` and `update_required` so the state is
+  diagnosable rather than looking like an empty network (WO-058). Live QA must
+  put **both** machines on the new build; a mixed pair will connect at the
+  transport layer and exchange nothing.
+
+- **WO-095 — responsive streaming peer search and UI.** Depends on WO-097.
+  The start RPC acknowledges immediately; four bounded peer responses run
+  independently. Candidate sets are unioned, broad string buckets resolve
+  missing titles, and the daemon streams a result as soon as local full-query
+  matching proves it. Schematic colored token bars show response cycles; live
+  word bars count distinct confirmed candidates against frozen targets. Work
+  stops on target plus saturation or a hard resource bound, never target or
+  saturation alone. WO-096 is folded into these two orders and must not be
+  implemented separately.
+
 - **WO-092 — contribution-impact accounting correctness.** Follow-up to
   implemented WO-086: count only complete replies and enforce/propagate the
-  cumulative counter's database invariant. This follows WO-091.
+  cumulative counter's database invariant. WO-091, its prerequisite, is done.
 
 The remaining operational checks are:
 

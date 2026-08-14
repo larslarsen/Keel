@@ -367,18 +367,29 @@ func FilterStopwords(words []string) []string {
 }
 
 // CharTokensForWord returns the ShardK character n-grams of an isolated
-// word, using the same tokenize path titles use — fixed, non-overlapping
-// pieces cut from the front, tail padded. CharTokensInOrder is every piece
-// of a word, in the order they occur.
+// word under the query grid — fixed, non-overlapping pieces cut from the
+// front, tail padded. CharTokensInOrder is every piece of a word, in the
+// order they occur.
 //
 // CharTokensForWord sorts and de-duplicates, which is right for looking things
 // up and wrong for describing a word to a person: the nth token should be the
 // nth three-gram, so an interface can line the bars up with the letters without
 // reimplementing this function to undo the sort.
+//
+// For a single word the scheme-2 query grid is exactly what scheme 1's
+// per-word cut produced, so these keep their WO-068 meaning unchanged. They
+// describe one isolated word and are not the query tokenizer: a real query is
+// planned as a whole continuous string (BuildQueryPlan), where a chunk may
+// span a space and belong to two words at once.
 func CharTokensInOrder(word string) []string {
-	return tokenize(word, ShardK)
+	spans := queryGrid(NormalizeSearchText(word))
+	out := make([]string, 0, len(spans))
+	for _, s := range spans {
+		out = append(out, s.Token)
+	}
+	return out
 }
 
 func CharTokensForWord(word string) []string {
-	return uniqueSorted(tokenize(word, ShardK))
+	return uniqueSorted(CharTokensInOrder(word))
 }

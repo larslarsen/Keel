@@ -10,6 +10,7 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"sort"
@@ -122,6 +123,10 @@ type WordStat struct {
 	Word string `json:"word"`
 	// Pct is graphs-containing-word / graphs-total * 100. Nil when unknown.
 	Pct *float64 `json:"pct"`
+	// Count is the same CMS estimate Pct is derived from (WordGraphCount),
+	// exposed raw so the UI can show the actual numbers alongside the
+	// percentage rather than only the derived ratio.
+	Count uint64 `json:"count"`
 	// Tokens are ShardK char n-grams of this word (existing tokenize).
 	Tokens []TokenCoverage `json:"tokens"`
 }
@@ -187,7 +192,7 @@ func (n *Node) FetchWordStats(ctx context.Context, query string) (WordStats, err
 
 	words := store.FilterStopwords(store.QueryWords(query))
 	for _, w := range words {
-		ws := WordStat{Word: w, Tokens: []TokenCoverage{}}
+		ws := WordStat{Word: w, Count: merged.WordGraphCount(w), Tokens: []TokenCoverage{}}
 		if pct, ok := merged.WordPct(w); ok {
 			r := math.Round(pct*10) / 10
 			ws.Pct = &r
@@ -205,6 +210,98 @@ func (n *Node) FetchWordStats(ctx context.Context, query string) (WordStats, err
 		out.Words = append(out.Words, ws)
 	}
 	return out, nil
+}
+
+// wordRefreshInterval is how often a node rebuilds its retained snapshot in
+// the background. Corpus statistics move slowly and a round costs one stream
+// per connected peer, so this is deliberately unhurried — the snapshot's job
+// is to be *available instantly*, not to be current to the minute. Searches
+// read whatever the last valid round produced and never wait for the next one.
+const wordRefreshInterval = 30 * time.Minute
+
+// RefreshWordSnapshot runs one refresh round and, if it is valid, atomically
+// replaces the retained snapshot (WO-097 §7).
+//
+// The round is built from a fresh local pack plus one accepted pack per
+// responding peer, aggregated from zero — never folded into what was already
+// retained, because Count-Min addition is not idempotent and a node that
+// refreshed on a timer would inflate every counter forever. See
+// daemon/store/wordsnapshot.go.
+//
+// The local pack is built and used here and sent nowhere. That is what lets
+// Level 1 hold a snapshot at all: it fetches and retains public aggregates,
+// contributing its own corpus only to the number it shows its own user. Only
+// handleWordTelemetry sends a pack, and only Level 2+ registers that handler
+// (WO-089), so nothing here relays or re-serves a cached peer pack.
+func (n *Node) RefreshWordSnapshot(ctx context.Context) (*store.WordSnapshot, error) {
+	if !n.cfg.Policy.FetchWordTelemetry {
+		return nil, fmt.Errorf("word telemetry fetching is not permitted by this policy")
+	}
+	local, err := n.st.LocalWordTelemetry(wordTelemetryCorpus)
+	if err != nil {
+		return nil, err
+	}
+
+	var packs []wordPeerPack
+	for _, pid := range n.host.Network().Peers() {
+		if len(packs) >= maxWordTelemetryPeers {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		p, err := n.fetchWordTelemetry(ctx, pid)
+		if err != nil || p == nil {
+			continue
+		}
+		packs = append(packs, wordPeerPack{words: p.DistinctWords(), pack: p})
+	}
+
+	survivors := medianFilterWordPacks(packs)
+	accepted := make([]*store.WordTelemetry, 0, len(survivors))
+	for _, sp := range survivors {
+		accepted = append(accepted, sp.pack)
+	}
+
+	snap, err := store.BuildWordSnapshot(local, accepted, time.Now())
+	if err != nil {
+		// An invalid round leaves the previous snapshot in place. A search with
+		// a stale target is working; a search with a half-built one is not.
+		return nil, err
+	}
+	if err := n.st.SaveWordSnapshot(snap); err != nil {
+		return nil, err
+	}
+	n.logf("word telemetry: refreshed from %d sources (%d peers), duplication %.2f",
+		snap.Sources, snap.Peers, snap.DuplicationFactor)
+	return snap, nil
+}
+
+// refreshWordLoop keeps the retained snapshot warm in the background.
+//
+// Runs at every level, because retaining a public aggregate is consumption
+// (Policy.FetchWordTelemetry). Nothing it does is triggered by or correlated
+// with a search: a refresh timed against a query would leak that a query
+// happened, which is why searches read the retained snapshot and never
+// provoke a round.
+func (n *Node) refreshWordLoop(ctx context.Context) {
+	// One early round so a fresh install has a target before the first
+	// half-hour elapses, after a pause for peers to actually connect.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(20 * time.Second):
+	}
+	for {
+		if _, err := n.RefreshWordSnapshot(ctx); err != nil && ctx.Err() == nil {
+			n.logf("word telemetry: refresh round failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wordRefreshInterval):
+		}
+	}
 }
 
 func (n *Node) fetchWordTelemetry(ctx context.Context, pid peer.ID) (*store.WordTelemetry, error) {

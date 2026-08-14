@@ -75,7 +75,33 @@ package store
 //	    WO-059 added the shard tokenizer/grouping constants below without
 //	    bumping this: they are a new domain, not a change to an existing one,
 //	    so nothing that already agreed on scheme 1 stops agreeing.
-const KeySchemeVersion = 1
+//	2 — WO-097. Scheme 1 shipped a tokenizer that did not do what this file
+//	    said it did: the comment on ShardK described a sliding window over
+//	    space-including text, while shard.go cut fixed k-grams per word. So
+//	    deployed nodes generate token data under a rule the scheme number does
+//	    not describe, and the rule they use cannot find a query substring that
+//	    starts anywhere but a word boundary. Scheme 2 replaces it with the
+//	    continuous query grid and every-alignment title windows in
+//	    queryplan.go, and adds the stopword-occurrence filter on index
+//	    generation.
+//
+// # What the scheme-2 bump costs during rollout
+//
+// KeySchemeVersion is one swarm-wide fence, not a per-dataset one. Bumping it
+// for the tokenizer therefore also makes scheme-1 and scheme-2 binaries report
+// themselves incompatible for every other scheme-versioned protocol — graph
+// blocks and catalogue buckets included — even though those derivations did not
+// change. That is a real, temporary network partition and it is the deliberate
+// price of refusing silently incompatible shard data (WO-097 §5): the
+// alternative, quietly serving token data under the old scheme number, mixes
+// two different rules into one namespace and produces searches that find part
+// of what exists with nothing to say so.
+//
+// Graph and catalogue *source rows* are unaffected and need no migration —
+// nothing persists a derived bucket key (see above), so a scheme bump re-keys a
+// node's whole view on the next advertisement. Do not add dual token service
+// under the old scheme number to soften this.
+const KeySchemeVersion = 2
 
 // Domain separators. Each hash input is prefixed with a string naming what is
 // being hashed, so a video id can never produce the same digest in two
@@ -93,12 +119,18 @@ const (
 	shardDomain = "keel/shard/1/"
 )
 
-// ShardK is the tokenizer's fixed window width: every text is normalized
-// (lowercased, non-letters collapsed to single spaces, padded with a leading
-// and trailing space) and then sliced into every consecutive ShardK-character
-// run, e.g. " re" from " recommendation " — a plain fixed-size sliding
-// window over space-including text, not a per-word scheme. See
-// daemon/store/shard.go's tokenize doc comment for the exact algorithm.
+// ShardK is the tokenizer's fixed window width, on both sides of a scheme-2
+// search — but the two sides use it differently, deliberately:
+//
+//   - a query is normalized as a whole, padded at its tail to a multiple of
+//     ShardK, and cut into fixed non-overlapping chunks at 0, 3, 6, …; and
+//   - a title generates every overlapping ShardK window whose start lies in
+//     the normalized title, so a query chunk is findable at any alignment.
+//
+// See daemon/store/queryplan.go for the exact algorithm and why the asymmetry
+// is the point. This comment described a sliding window on both sides while
+// scheme 1's code cut per word on both sides; the mismatch is what WO-097
+// repaired and what forced the KeySchemeVersion bump above.
 //
 // Fixed at 3 — WO-059's measurement found it the bandwidth/privacy knee:
 // smaller k keeps per-token buckets more private but multiplies per-query

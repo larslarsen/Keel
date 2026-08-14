@@ -44,7 +44,13 @@ import (
 	"github.com/keel-app/keel/daemon/bridge"
 )
 
-const catalogueSchemaVersion = 1
+// catalogueSchemaVersion is bumped when CataloguePack's wire shape changes
+// incompatibly.
+//
+// 2 (WO-097): a pack is now one bounded page of a logical prefix response
+// rather than the whole bucket capped at 4,096 rows, so it carries its index
+// and offset and its digest covers them.
+const catalogueSchemaVersion = 2
 
 // CataloguePrefix buckets a video for catalogue lookup.
 //
@@ -66,11 +72,18 @@ func CataloguePrefix(videoID string, bits int) string {
 	return fmt.Sprintf("%d:%s", bits, hex.EncodeToString(buf))
 }
 
-// CataloguePack is one bucket of catalogue rows, signed as a unit.
+// CataloguePack is one bounded page of a logical prefix response, signed as a
+// unit. See paging.go for the framing it belongs to.
 type CataloguePack struct {
-	SchemaVersion int                     `json:"schema_version"`
-	Prefix        string                  `json:"prefix"`
-	Entries       []bridge.CatalogueEntry `json:"entries"`
+	Kind          string `json:"t"`
+	SchemaVersion int    `json:"schema_version"`
+	Prefix        string `json:"prefix"`
+	// Index is this page's position in the logical response, and Offset is
+	// where it starts in the provider's rotated ordering. Both are covered by
+	// the digest, so a reordered or duplicated frame cannot pass as another.
+	Index   int                     `json:"index"`
+	Offset  int                     `json:"offset"`
+	Entries []bridge.CatalogueEntry `json:"entries"`
 
 	ContentSHA256 string `json:"content_sha256"`
 	Signature     string `json:"signature,omitempty"`
@@ -170,50 +183,104 @@ func (s *Store) LocalCataloguePrefixes(bits int, sources SourceSet) ([]string, e
 	return out, nil
 }
 
-// BuildCataloguePack assembles every row this node holds in one bucket.
-func (s *Store) BuildCataloguePack(prefix string, sources SourceSet, limit int) (*CataloguePack, error) {
+// CatalogueRows returns every row this node holds in one prefix bucket, in the
+// canonical video-id order, rotated to the traversal offset a request nonce
+// selects.
+//
+// There is no row cap (WO-097 §6). BuildCataloguePack used to stop at 4,096
+// with no continuation, so a busy prefix had rows nothing could ever fetch. The
+// bound now lives on the reply — bounded pages of one logical response, see
+// paging.go — never on the dataset, and a traversal cut short by the serving
+// budget says so on its terminal frame instead of returning a silent prefix.
+func (s *Store) CatalogueRows(prefix string, sources SourceSet, nonce uint64) ([]bridge.CatalogueEntry, int, error) {
 	bits, ok := PrefixOf(prefix)
 	if !ok {
-		return nil, fmt.Errorf("malformed prefix %q", prefix)
-	}
-	if limit <= 0 {
-		limit = 4096
+		return nil, 0, fmt.Errorf("malformed prefix %q", prefix)
 	}
 	all, err := s.heldCatalogue(sources)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-
-	pack := &CataloguePack{
-		SchemaVersion: catalogueSchemaVersion,
-		Prefix:        prefix,
-		Entries:       []bridge.CatalogueEntry{},
-	}
+	rows := []bridge.CatalogueEntry{}
 	for _, c := range all {
 		if CataloguePrefix(c.VideoID, bits) != prefix {
 			continue
 		}
-		pack.Entries = append(pack.Entries, c)
-		if len(pack.Entries) >= limit {
-			break
-		}
+		rows = append(rows, c)
 	}
-	sort.Slice(pack.Entries, func(a, b int) bool {
-		return pack.Entries[a].VideoID < pack.Entries[b].VideoID
-	})
+	sort.Slice(rows, func(a, b int) bool { return rows[a].VideoID < rows[b].VideoID })
 
-	if pack.ContentSHA256, err = contentDigest(pack.Entries, nil); err != nil {
-		return nil, err
+	offset := PageStart(len(rows), nonce)
+	out := make([]bridge.CatalogueEntry, 0, len(rows))
+	for _, i := range rotate(len(rows), offset) {
+		out = append(out, rows[i])
 	}
-	payload, err := canonicalPayload(pack.Entries, nil)
+	return out, offset, nil
+}
+
+// canonicalCataloguePagePayload is what a page's digest and signature cover.
+// Prefix and index are inside it so a page cannot be replayed at another
+// position in the response — same reasoning as canonicalShardPayload.
+func canonicalCataloguePagePayload(prefix string, index int, entries []bridge.CatalogueEntry) ([]byte, error) {
+	body, err := canonicalPayload(entries, nil)
 	if err != nil {
 		return nil, err
 	}
+	return json.Marshal(struct {
+		Prefix string          `json:"prefix"`
+		Index  int             `json:"index"`
+		Body   json.RawMessage `json:"body"`
+	}{prefix, index, body})
+}
+
+// SignCataloguePage assembles and signs one bounded page of a logical prefix
+// response. Mirrors SignShardPage (shard.go) exactly.
+func (s *Store) SignCataloguePage(prefix string, index, offset int, entries []bridge.CatalogueEntry) (*CataloguePack, error) {
+	if entries == nil {
+		entries = []bridge.CatalogueEntry{}
+	}
+	pack := &CataloguePack{
+		Kind:          "page",
+		SchemaVersion: catalogueSchemaVersion,
+		Prefix:        prefix,
+		Index:         index,
+		Offset:        offset,
+		Entries:       entries,
+	}
+	payload, err := canonicalCataloguePagePayload(prefix, index, entries)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(payload)
+	pack.ContentSHA256 = hex.EncodeToString(sum[:])
 	if pack.Signature, pack.PublicKey, err = s.signPayload(payload); err != nil {
 		return nil, err
 	}
 	pack.Algorithm = signAlgorithm
 	return pack, nil
+}
+
+// VerifyCataloguePack checks a page's digest and, when present, its signature,
+// without importing anything. ImportCataloguePack calls it and then merges.
+func VerifyCataloguePack(pack *CataloguePack) error {
+	if pack.SchemaVersion > catalogueSchemaVersion {
+		return fmt.Errorf("catalogue schema %d is newer than this build understands (%d)",
+			pack.SchemaVersion, catalogueSchemaVersion)
+	}
+	payload, err := canonicalCataloguePagePayload(pack.Prefix, pack.Index, pack.Entries)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(payload)
+	if hex.EncodeToString(sum[:]) != pack.ContentSHA256 {
+		return fmt.Errorf("catalogue pack contents do not match its digest")
+	}
+	if pack.Signature != "" || pack.PublicKey != "" {
+		if err := verifyPayload(payload, pack.Signature, pack.PublicKey); err != nil {
+			return fmt.Errorf("catalogue pack: %w", err)
+		}
+	}
+	return nil
 }
 
 // Encode renders a pack for transport.
@@ -229,31 +296,23 @@ func (s *Store) ImportCataloguePack(raw []byte) (int, error) {
 	if err := json.Unmarshal(raw, &pack); err != nil {
 		return 0, fmt.Errorf("catalogue pack is not valid JSON: %w", err)
 	}
-	if pack.SchemaVersion > catalogueSchemaVersion {
-		return 0, fmt.Errorf("catalogue schema %d is newer than this build understands (%d)",
-			pack.SchemaVersion, catalogueSchemaVersion)
-	}
-	digest, err := contentDigest(pack.Entries, nil)
-	if err != nil {
+	if err := VerifyCataloguePack(&pack); err != nil {
 		return 0, err
 	}
-	if digest != pack.ContentSHA256 {
-		return 0, fmt.Errorf("catalogue pack contents do not match its digest")
-	}
-	if pack.Signature != "" || pack.PublicKey != "" {
-		payload, err := canonicalPayload(pack.Entries, nil)
-		if err != nil {
-			return 0, err
-		}
-		if err := verifyPayload(payload, pack.Signature, pack.PublicKey); err != nil {
-			return 0, fmt.Errorf("catalogue pack: %w", err)
-		}
-	}
-	if len(pack.Entries) == 0 {
+	return s.ImportCatalogueEntries(pack.Entries, pack.PublicKey)
+}
+
+// ImportCatalogueEntries merges already-verified rows.
+//
+// Split out from ImportCataloguePack because a paged response is verified
+// frame by frame and combined into one peer answer before anything is written
+// (WO-097 §6) — the requester must be able to reject a response whose terminal
+// does not match its pages, and that decision happens above the row merge.
+func (s *Store) ImportCatalogueEntries(entries []bridge.CatalogueEntry, publicKey string) (int, error) {
+	if len(entries) == 0 {
 		return 0, nil
 	}
-
-	source := pack.PublicKey
+	source := publicKey
 	if source == "" {
 		source = "unsigned"
 	}
@@ -278,7 +337,7 @@ ON CONFLICT(video_id) DO UPDATE SET
 	defer stmt.Close()
 
 	n := 0
-	for _, c := range pack.Entries {
+	for _, c := range entries {
 		if c.VideoID == "" {
 			continue
 		}

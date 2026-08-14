@@ -34,6 +34,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +54,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	mh "github.com/multiformats/go-multihash"
 
+	"github.com/keel-app/keel/daemon/bridge"
 	"github.com/keel-app/keel/daemon/store"
 )
 
@@ -68,11 +71,18 @@ import (
 var BlockProtocol = keelProtocol("block", "3.0.0", store.KeySchemeVersion)
 
 // CatalogueProtocol carries titles, which travel separately from the graph.
-var CatalogueProtocol = keelProtocol("catalogue", "1.0.0", store.KeySchemeVersion)
+//
+// 2.0.0 (WO-097 §6): the reply is a framed logical response — header, bounded
+// signed pages, authenticated terminal — rather than one pack silently capped
+// at 4,096 rows.
+var CatalogueProtocol = keelProtocol("catalogue", "2.0.0", store.KeySchemeVersion)
 
 // ShardProtocol carries token shards for distributed search (WO-059). See
 // shard.go in this package for the request/fetch side.
-var ShardProtocol = keelProtocol("shard", "1.0.0", store.KeySchemeVersion)
+//
+// 2.0.0 (WO-097 §6): framed logical response, same as CatalogueProtocol, and
+// the request line now carries a traversal nonce alongside the shard number.
+var ShardProtocol = keelProtocol("shard", "2.0.0", store.KeySchemeVersion)
 
 // WordTelemetryProtocol is declared in words.go (WO-068): on-demand pack
 // fetch for display-only corpus word stats — not a gossip topic.
@@ -87,8 +97,12 @@ const maxBlockBytes = 64 << 20 // 64 MiB
 // a way for a single request to consume a node's upstream.
 const maxBlocksPerReply = 256
 
-// maxCatalogueRows bounds one catalogue bucket reply.
-const maxCatalogueRows = 4096
+// maxCatalogueRows is gone (WO-097 §6). It bounded one catalogue bucket reply
+// at 4,096 rows with no continuation, so a busy prefix had rows no peer could
+// ever fetch and the reply said nothing about it. The bound now lives on the
+// reply rather than the dataset: bounded pages of one logical response, with an
+// explicit incomplete terminal when a budget cuts a traversal short. See
+// store.MaxPageEntries and paging.go.
 
 // requestTimeout bounds a single block fetch. Prewarm runs ahead of the user,
 // so a slow peer must not hold a slot indefinitely.
@@ -99,8 +113,13 @@ const requestTimeout = 20 * time.Second
 type Store interface {
 	BlocksInPrefix(prefix, cohort string, sources store.SourceSet, limit int) (*store.BlockBucket, error)
 	LocalPrefixes(bits int, sources store.SourceSet) ([]string, error)
-	BuildCataloguePack(prefix string, sources store.SourceSet, limit int) (*store.CataloguePack, error)
-	ImportCataloguePack(raw []byte) (int, error)
+	// CatalogueRows/SignCataloguePage/SignTerminal build one logical
+	// broad-bucket response as bounded, signed, authenticated frames
+	// (WO-097 §6) — see daemon/store/paging.go and paging.go in this package.
+	CatalogueRows(prefix string, sources store.SourceSet, nonce uint64) ([]bridge.CatalogueEntry, int, error)
+	SignCataloguePage(prefix string, index, offset int, entries []bridge.CatalogueEntry) (*store.CataloguePack, error)
+	SignTerminal(bucket string, total, pages int, complete bool, reason string, pageDigests []string) (*store.PageTerminal, error)
+	ImportCatalogueEntries(entries []bridge.CatalogueEntry, publicKey string) (int, error)
 	RememberPeer(id string, addrs []string) error
 	KnownPeers(limit int) ([]store.KnownPeer, error)
 	LocalCataloguePrefixes(bits int, sources store.SourceSet) ([]string, error)
@@ -114,8 +133,9 @@ type Store interface {
 	// token-shard search (WO-059) and its signing layer (WO-067) — see
 	// shard.go in this package for the request/fetch side.
 	ShardSlice(shard int, sources store.SourceSet) ([]store.ShardEntry, error)
+	ShardRows(shard int, sources store.SourceSet, nonce uint64) ([]store.ShardEntry, int, error)
 	LocalShards(sources store.SourceSet) ([]int, error)
-	BuildShardPack(shard int, sources store.SourceSet, limit int) (*store.ShardPack, error)
+	SignShardPage(shard, index, offset int, entries []store.ShardEntry) (*store.ShardPack, error)
 	// LocalYieldVector backs yield-vector gossip (WO-067) — see
 	// daemon/swarm/yield.go.
 	LocalYieldVector(sources store.SourceSet) ([]byte, error)
@@ -129,7 +149,11 @@ type Store interface {
 	TokenEstimate(token string) (uint64, bool)
 	RecordTokenSearch(token string, foundVideoIDs []string) error
 	// LocalWordTelemetry backs on-demand word corpus stats (WO-068).
+	// SaveWordSnapshot/LoadWordSnapshot retain one refresh round so a search
+	// reads its per-word target instantly and offline (WO-097 §7).
 	LocalWordTelemetry(sources store.SourceSet) (*store.WordTelemetry, error)
+	SaveWordSnapshot(snap *store.WordSnapshot) error
+	LoadWordSnapshot() (*store.WordSnapshot, bool, error)
 	// RecordContributionServe and ContributionImpactSnapshot back the WO-086
 	// contribution-impact panel — see contribution_impact.go in this package
 	// and daemon/store/contribution_impact.go.
@@ -489,6 +513,14 @@ func Start(ctx context.Context, st Store, cfg Config) (*Node, error) {
 			n.logf("sketch gossip unavailable: %v", err)
 		}
 	}
+	// The retained word snapshot is what supplies a search its per-word target
+	// without any network I/O at search time (WO-097 §7). Consumption, so it
+	// runs at every level — a Level-1 node retains the public aggregate and
+	// still serves nobody, because only handleWordTelemetry sends a pack and
+	// only Level 2+ registers it.
+	if cfg.Policy.FetchWordTelemetry {
+		go n.refreshWordLoop(ctx)
+	}
 
 	n.logf("swarm up as %s (serving=%v)", h.ID(), cfg.Policy.ServeBroadBuckets)
 	for _, a := range h.Addrs() {
@@ -552,6 +584,18 @@ func (n *Node) Close() error {
 // reasons and would otherwise be conflated.
 func keelProtocol(name, version string, scheme int) protocol.ID {
 	return protocol.ID(fmt.Sprintf("/keel/%s/%s/ks%d", name, version, scheme))
+}
+
+// keelTopic is keelProtocol's gossipsub twin (WO-097 §5).
+//
+// A pubsub topic has no negotiation step, so the fence has to be the name: two
+// nodes on different key schemes must land on different topics rather than
+// meet on one and misinterpret each other's payloads. Unlike a stream protocol
+// there is no version component — a topic's payload shape is validated on
+// arrival by its own validator, while the key scheme decides whether the
+// payload means anything at all.
+func keelTopic(name string, scheme int) string {
+	return fmt.Sprintf("keel/%s/ks%d", name, scheme)
 }
 
 func prefixCID(prefix string) (cid.Cid, error) {
@@ -660,27 +704,47 @@ func (n *Node) handleCatalogueRequest(s network.Stream) {
 	if err != nil && err != io.EOF {
 		return
 	}
-	prefix := trimLine(line)
-	if prefix == "" {
+	prefix, nonce, ok := parsePrefixRequest(trimLine(line))
+	if !ok {
 		return
 	}
-	pack, err := n.st.BuildCataloguePack(prefix, n.cfg.Policy.CatalogueSources(), maxCatalogueRows)
+	rows, offset, err := n.st.CatalogueRows(prefix, n.cfg.Policy.CatalogueSources(), nonce)
 	if err != nil {
 		n.logf("catalogue %s: %v", prefix, err)
 		return
 	}
-	raw, err := pack.Encode()
+	written, err := n.servePagedResponse(s, prefix, len(rows), offset,
+		func(index, start, count int) (any, string, error) {
+			pack, err := n.st.SignCataloguePage(prefix, index, offset, rows[start:start+count])
+			if err != nil {
+				return nil, "", err
+			}
+			return pack, pack.ContentSHA256, nil
+		})
 	if err != nil {
+		n.logf("catalogue %s: %v", prefix, err)
 		return
 	}
-	if !n.serve.chargeBytes(len(raw)) {
-		n.logf("catalogue %s: over the serving byte budget, dropping the reply", prefix)
-		return
-	}
-	_, _ = s.Write(raw)
-	if err := n.st.RecordContributionServe(len(raw)); err != nil {
+	if err := n.st.RecordContributionServe(written); err != nil {
 		n.logf("catalogue %s: recording contribution activity: %v", prefix, err)
 	}
+}
+
+// parsePrefixRequest reads "<prefix>" or "<prefix> <nonce>", mirroring
+// parseShardRequest. The nonce moves where a partial traversal starts and
+// nothing else; it never narrows the bucket being asked for.
+func parsePrefixRequest(line string) (prefix string, nonce uint64, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 || len(fields) > 2 {
+		return "", 0, false
+	}
+	if _, valid := store.PrefixOf(fields[0]); !valid {
+		return "", 0, false
+	}
+	if len(fields) == 2 {
+		nonce, _ = strconv.ParseUint(fields[1], 10, 64)
+	}
+	return fields[0], nonce, true
 }
 
 // syncCatalogue fetches titles for every target in a graph bucket reply.
@@ -730,11 +794,7 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
 			continue
 		}
-		raw, err := n.requestOn(ctx, p, prefix, CatalogueProtocol)
-		if err != nil {
-			continue
-		}
-		rows, err := n.st.ImportCataloguePack(raw)
+		rows, err := n.fetchCataloguePagesFrom(ctx, p, prefix)
 		if err != nil {
 			n.logf("catalogue %s from %s rejected: %v", prefix, p.ID, err)
 			continue
@@ -753,15 +813,66 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 		if err != nil {
 			continue
 		}
-		raw, err := n.requestOn(ctx, info, prefix, CatalogueProtocol)
-		if err != nil {
-			continue
-		}
-		if rows, err := n.st.ImportCataloguePack(raw); err == nil && rows > 0 {
+		if rows, err := n.fetchCataloguePagesFrom(ctx, info, prefix); err == nil && rows > 0 {
 			return rows, nil
 		}
 	}
 	return 0, nil
+}
+
+// fetchCataloguePagesFrom retrieves one peer's whole logical response for a
+// catalogue prefix and imports it as one answer (WO-097 §6).
+//
+// The traversal completes across the whole broad bucket even once the row the
+// caller actually wanted has arrived. Stopping on the wanted row would turn
+// pagination into a narrower observable request — the provider would learn
+// which member of the bucket was of interest from where the stream stopped,
+// which is exactly the disclosure whole-bucket fetching pays for (catalogue.go
+// rule 1). Coalescing candidates by prefix happens above this, in the caller.
+//
+// Rows are imported only after every page has been verified against the signed
+// terminal, so a response with a dropped or reordered frame writes nothing.
+func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, prefix string) (int, error) {
+	resp, err := n.requestPaged(ctx, p, fmt.Sprintf("%s %d", prefix, requestNonce()), CatalogueProtocol)
+	if err != nil {
+		return 0, err
+	}
+
+	digests := make([]string, 0, len(resp.Pages))
+	entries := []bridge.CatalogueEntry{}
+	publicKey := ""
+	seen := map[string]bool{}
+	for i, raw := range resp.Pages {
+		var pack store.CataloguePack
+		if err := json.Unmarshal(raw, &pack); err != nil {
+			return 0, err
+		}
+		if pack.Prefix != prefix {
+			return 0, fmt.Errorf("page %d answers prefix %q, not %q", i, pack.Prefix, prefix)
+		}
+		if pack.Index != i {
+			return 0, fmt.Errorf("page arrived at position %d claiming index %d", i, pack.Index)
+		}
+		if err := store.VerifyCataloguePack(&pack); err != nil {
+			return 0, err
+		}
+		digests = append(digests, pack.ContentSHA256)
+		publicKey = pack.PublicKey
+		for _, e := range pack.Entries {
+			if e.VideoID == "" || seen[e.VideoID] {
+				continue
+			}
+			seen[e.VideoID] = true
+			entries = append(entries, e)
+		}
+	}
+	if err := pageDigestsMatch(digests, resp.Terminal); err != nil {
+		return 0, err
+	}
+	if !resp.Complete() {
+		n.logf("catalogue %s from %s: peer ended the traversal incomplete", prefix, p.ID)
+	}
+	return n.st.ImportCatalogueEntries(entries, publicKey)
 }
 
 // provideAll publishes a set of CIDs with bounded concurrency.

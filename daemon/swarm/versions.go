@@ -114,7 +114,25 @@ func compareVersions(a, b string) int {
 }
 
 // VersionView is what this node has observed about the versions around it.
+//
+// # The WO-097 rollout, which this view has to make legible
+//
+// Key scheme 2 changed the tokenizer, and KeySchemeVersion is one swarm-wide
+// fence rather than a per-dataset one. So during the rollout a scheme-1 node
+// and a scheme-2 node are mutually unreachable on *every* scheme-versioned
+// protocol — graph and catalogue included, even though those derivations did
+// not change. That partition is deliberate (WO-097 §5: the alternative is
+// silently mixing two different tokenizers in one namespace) and it is
+// temporary, but while it lasts it looks exactly like the empty network WO-058
+// was about.
+//
+// Incompatible and UpdateRequired below are what stop it looking that way, and
+// KeyScheme is what lets a person or a bug report say which side they are on.
 type VersionView struct {
+	// KeyScheme is the scheme this node derives keys under. Reported whether or
+	// not any peer disagrees, so a diagnostic taken from one machine is
+	// self-describing.
+	KeyScheme int `json:"key_scheme"`
 	// Keel peers on our key scheme: the ones we can actually exchange with.
 	Compatible int `json:"compatible"`
 	// Keel peers on a different key scheme. They are running Keel and they are
@@ -138,8 +156,8 @@ type VersionView struct {
 // peer met last week says nothing about whether this node is behind *now*, and
 // stale entries would make the banner sticky long after everyone updated.
 func (n *Node) Versions(app string) VersionView {
-	v := VersionView{}
 	ours := keySchemeVersion()
+	v := VersionView{KeyScheme: ours}
 	for _, p := range n.host.Network().Peers() {
 		other, scheme, ok := n.peerAgent(p)
 		if !ok {

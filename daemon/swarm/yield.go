@@ -24,7 +24,14 @@ import (
 // fetching from me". Only policies serving mirrored searchable blocks join,
 // relay and publish this topic; Level 1 deliberately does none of the three
 // (WO-077/078). LiveTopic has a separate every-level disclosure decision.
-const YieldTopic = "keel/yield/1"
+//
+// Key-scheme versioned (WO-097 §5). A yield bit names a token under the
+// tokenizer that produced it, so a scheme-1 vector read as a scheme-2 one is
+// not merely stale — it points at different tokens, and the screen it drives
+// would skip peers that do hold what was wanted. Topic names are the pubsub
+// equivalent of the protocol id fence: nodes on different schemes never share
+// a mesh rather than sharing one and misreading each other.
+var YieldTopic = keelTopic("yield", store.KeySchemeVersion)
 
 // yieldPublishInterval bounds how often this node re-publishes its own
 // vector. A vector changes only when the local corpus does, which is slow
