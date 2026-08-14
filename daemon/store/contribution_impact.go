@@ -20,7 +20,12 @@
 // local, unaudited feedback and may reset at any time.
 package store
 
-import "time"
+import (
+	"database/sql"
+	"errors"
+	"strings"
+	"time"
+)
 
 // ImpactSnapshot is the live-computed half of WO-086's panel: current corpus
 // state, not history, so none of it is persisted.
@@ -97,39 +102,36 @@ func (s *Store) ContributionImpactSnapshot(prefixBits int, graphSources, catalog
 // from a refusal (mayServeX/serveLimiter.admit failing) and never when
 // serveLimiter.chargeBytes drops an already-built reply, so a request refused
 // by policy or by the serving budget is never counted as answered.
+//
+// One atomic upsert against the singleton unique index (WO-092). Concurrent
+// first increments cannot both INSERT; the second updates the same row.
 func (s *Store) RecordContributionServe(bytesWritten int) error {
-	res, err := s.db.Exec(
-		`UPDATE contribution_activity
-		 SET requests_answered = requests_answered + 1, bytes_served = bytes_served + ?`,
-		bytesWritten)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	// Empty table: the one-time seed row.
-	_, err = s.db.Exec(
-		`INSERT INTO contribution_activity(requests_answered, bytes_served, since_day) VALUES(1, ?, ?)`,
+	_, err := s.db.Exec(
+		`INSERT INTO contribution_activity(singleton, requests_answered, bytes_served, since_day)
+		 VALUES(1, 1, ?, ?)
+		 ON CONFLICT(singleton) DO UPDATE SET
+		   requests_answered = requests_answered + 1,
+		   bytes_served = bytes_served + excluded.bytes_served,
+		   since_day = CASE WHEN since_day = '' THEN excluded.since_day ELSE since_day END`,
 		bytesWritten, dayBucket(time.Now().UnixMilli()))
 	return err
 }
 
 // ContributionActivity reads the persisted counters.
 //
-// No row yet — nothing has ever been served — reports zeroes rather than an
-// error; a fresh Level-2 node with no traffic is not a failure state.
+// sql.ErrNoRows — nothing has ever been served — reports zeroes rather than
+// an error; a fresh Level-2 node with no traffic is not a failure state.
+// Every other database error is returned so the UI cannot invent a valid zero
+// (WO-092).
 func (s *Store) ContributionActivity() (answered, bytesServed int64, sinceDay string, err error) {
 	err = s.db.QueryRow(
 		`SELECT requests_answered, bytes_served, since_day FROM contribution_activity`,
 	).Scan(&answered, &bytesServed, &sinceDay)
-	if err != nil {
-		// sql.ErrNoRows means nothing has ever been served yet, not a failure.
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, "", nil
+	}
+	if err != nil {
+		return 0, 0, "", err
 	}
 	return answered, bytesServed, sinceDay, nil
 }
@@ -140,22 +142,92 @@ func (s *Store) ContributionActivity() (answered, bytesServed int64, sinceDay st
 // Deliberately does not touch impressions, peer_blocks or any other corpus
 // table — same rule Wipe follows in reverse: a data-scoped action and a
 // counter-scoped action must not be conflated into a single button.
+//
+// Concurrent with RecordContributionServe, SQLite serializes the two upserts.
+// The last statement to commit wins: a reset that commits last leaves zeros
+// and a new since_day; an increment that commits last is kept in full. Both
+// leave exactly one row (WO-092).
 func (s *Store) ResetContributionActivity() error {
-	res, err := s.db.Exec(
-		`UPDATE contribution_activity SET requests_answered = 0, bytes_served = 0, since_day = ?`,
+	_, err := s.db.Exec(
+		`INSERT INTO contribution_activity(singleton, requests_answered, bytes_served, since_day)
+		 VALUES(1, 0, 0, ?)
+		 ON CONFLICT(singleton) DO UPDATE SET
+		   requests_answered = 0,
+		   bytes_served = 0,
+		   since_day = excluded.since_day`,
 		dayBucket(time.Now().UnixMilli()))
+	return err
+}
+
+// contributionActivityCreateSQL is the WO-092 singleton table. singleton is
+// always 1 — a schema constant that makes the upsert targetable, not an
+// identity of a user, peer, query or request.
+const contributionActivityCreateSQL = `CREATE TABLE contribution_activity (
+  singleton INTEGER PRIMARY KEY NOT NULL DEFAULT 1 CHECK (singleton = 1),
+  requests_answered INTEGER NOT NULL DEFAULT 0,
+  bytes_served INTEGER NOT NULL DEFAULT 0,
+  since_day TEXT NOT NULL DEFAULT ''
+)`
+
+// ensureContributionActivitySingleton rebuilds a pre-WO-092 table (no
+// singleton column, or more than one row) into one summed counter row.
+func (s *Store) ensureContributionActivitySingleton() error {
+	hasSingleton, err := s.contributionActivityHasSingleton()
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM contribution_activity`).Scan(&n); err != nil {
+		return err
+	}
+	if hasSingleton && n <= 1 {
+		return nil
+	}
+	tx, err := s.db.Begin()
 	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS contribution_activity_merge`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(strings.Replace(contributionActivityCreateSQL, "contribution_activity", "contribution_activity_merge", 1)); err != nil {
 		return err
 	}
 	if n > 0 {
-		return nil
+		if _, err := tx.Exec(
+			`INSERT INTO contribution_activity_merge(singleton, requests_answered, bytes_served, since_day)
+			 SELECT 1, SUM(requests_answered), SUM(bytes_served),
+			        COALESCE(MIN(NULLIF(since_day, '')), '')
+			 FROM contribution_activity`); err != nil {
+			return err
+		}
 	}
-	_, err = s.db.Exec(
-		`INSERT INTO contribution_activity(requests_answered, bytes_served, since_day) VALUES(0, 0, ?)`,
-		dayBucket(time.Now().UnixMilli()))
-	return err
+	if _, err := tx.Exec(`DROP TABLE contribution_activity`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE contribution_activity_merge RENAME TO contribution_activity`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) contributionActivityHasSingleton() (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(contribution_activity)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == "singleton" {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }

@@ -705,10 +705,7 @@ func (n *Node) handleBlockRequest(s network.Stream) {
 		n.logf("prefix %s: over the serving byte budget, dropping the reply", prefix)
 		return
 	}
-	_, _ = s.Write(raw)
-	if err := n.st.RecordContributionServe(len(raw)); err != nil {
-		n.logf("prefix %s: recording contribution activity: %v", prefix, err)
-	}
+	n.replyAndRecord(s, raw, "prefix "+prefix)
 }
 
 func trimLine(s string) string {
@@ -759,13 +756,7 @@ func (n *Node) handleCatalogueRequest(s network.Stream) {
 			}
 			return pack, pack.ContentSHA256, nil
 		})
-	if err != nil {
-		n.logf("catalogue %s: %v", prefix, err)
-		return
-	}
-	if err := n.st.RecordContributionServe(written); err != nil {
-		n.logf("catalogue %s: recording contribution activity: %v", prefix, err)
-	}
+	n.commitPagedServe(written, err, "catalogue "+prefix)
 }
 
 // parsePrefixRequest reads "<prefix>" or "<prefix> <nonce>", mirroring

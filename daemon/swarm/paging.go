@@ -18,7 +18,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
@@ -55,7 +54,7 @@ func (r *pagedResponse) Complete() bool { return r.Terminal != nil && r.Terminal
 // with complete=false and a reason — the whole point of the exercise is that
 // running out of budget is visible rather than indistinguishable from a small
 // bucket.
-func (n *Node) servePagedResponse(s network.Stream, bucket string, total, offset int,
+func (n *Node) servePagedResponse(s io.Writer, bucket string, total, offset int,
 	page func(index, start, count int) (any, string, error)) (int, error) {
 
 	header := store.PageHeader{
@@ -67,7 +66,9 @@ func (n *Node) servePagedResponse(s network.Stream, bucket string, total, offset
 	}
 	written, err := n.writeFrame(s, header)
 	if err != nil {
-		return written, err
+		// A refused or failed header is not a logical response. Do not start
+		// pages or a terminal, and do not count anything (WO-092).
+		return 0, err
 	}
 
 	digests := []string{}
@@ -88,16 +89,14 @@ func (n *Node) servePagedResponse(s network.Stream, bucket string, total, offset
 			return written, err
 		}
 		nbytes, err := n.writeFrame(s, frame)
-		written += nbytes
-		if err != nil {
-			return written, err
-		}
-		if nbytes < 0 {
-			// Budget refusal: the frame was not written, so it must not be
-			// counted in the terminal either.
+		if errors.Is(err, errFrameBudget) {
 			complete, reason = false, store.ReasonBudget
 			break
 		}
+		if err != nil {
+			return written, err
+		}
+		written += nbytes
 		digests = append(digests, digest)
 		index++
 	}
@@ -107,28 +106,51 @@ func (n *Node) servePagedResponse(s network.Stream, bucket string, total, offset
 		return written, err
 	}
 	nbytes, err := n.writeFrame(s, terminal)
-	if nbytes > 0 {
-		written += nbytes
+	if err != nil {
+		// Earlier frames may have left the machine, but without a fully
+		// written signed terminal there is no valid logical response.
+		return written, err
 	}
-	return written, err
+	written += nbytes
+	return written, nil
 }
 
+// errFrameBudget is a serving-budget refusal of one frame. The frame was not
+// written. A page refusal can still become a valid incomplete response if the
+// signed terminal is then fully written; a header or terminal refusal cannot.
+var errFrameBudget = errors.New("serving budget refused the frame")
+
 // writeFrame marshals and writes one newline-delimited frame, charging the
-// serving byte budget first. It returns -1 bytes (and no error) when the
-// budget refuses the frame, so the caller can terminate the response honestly
-// instead of dropping the whole reply the way the pre-WO-097 paths did.
-func (n *Node) writeFrame(s network.Stream, frame any) (int, error) {
+// serving byte budget first. A budget refusal returns errFrameBudget and zero
+// bytes so callers never add a sentinel into a wire total.
+func (n *Node) writeFrame(s io.Writer, frame any) (int, error) {
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		return 0, err
 	}
 	if !n.serve.chargeBytes(len(raw) + 1) {
-		return -1, nil
+		return 0, errFrameBudget
 	}
-	if _, err := s.Write(append(raw, '\n')); err != nil {
+	frameBytes := append(raw, '\n')
+	if err := writeFull(s, frameBytes); err != nil {
 		return 0, err
 	}
-	return len(raw) + 1, nil
+	return len(frameBytes), nil
+}
+
+// commitPagedServe records one answered request only when servePagedResponse
+// wrote a complete logical response, including its terminal.
+func (n *Node) commitPagedServe(written int, err error, logPrefix string) {
+	if err != nil {
+		n.logf("%s: %v", logPrefix, err)
+		return
+	}
+	if written <= 0 {
+		return
+	}
+	if recErr := n.st.RecordContributionServe(written); recErr != nil {
+		n.logf("%s: recording contribution activity: %v", logPrefix, recErr)
+	}
 }
 
 // errNoResponse marks a failure that happened before any bytes came back —

@@ -98,10 +98,7 @@ func (n *Node) handleWordTelemetry(s network.Stream) {
 		n.logf("word telemetry: over the serving byte budget, dropping the reply")
 		return
 	}
-	_, _ = s.Write(raw)
-	if err := n.st.RecordContributionServe(len(raw)); err != nil {
-		n.logf("word telemetry: recording contribution activity: %v", err)
-	}
+	n.replyAndRecord(s, raw, "word telemetry")
 }
 
 // WordStats is the daemon→extension answer for one query's corpus bars.

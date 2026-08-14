@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Sonnet) |
-| **Status** | **Implemented — WO-092 correctness follow-up open** |
+| **Status** | **Implemented — accounting correctness closed by WO-092** |
 | **Date** | 2026-08-11 |
 | **Source** | Lars contribution-level incentive discussion, 2026-08-11 |
 

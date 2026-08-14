@@ -525,11 +525,12 @@ CREATE TABLE IF NOT EXISTS local_claims (
 );
 CREATE INDEX IF NOT EXISTS idx_local_claims_pub ON local_claims(public_key);
 
--- Cumulative serving activity (WO-086). Exactly one row, counters only: no
--- peer id, query, prefix/bucket identifier or per-request timestamp — see
--- contribution_impact.go. Bounded by construction, not by a sweep: the code
--- path only ever UPDATEs this row or INSERTs once into an empty table.
+-- Cumulative serving activity (WO-086 / WO-092). Exactly one row, counters
+-- only: no peer id, query, prefix/bucket identifier or per-request timestamp
+-- — see contribution_impact.go. singleton is a schema constant (always 1)
+-- that enforces the one-row invariant; it is not an identity.
 CREATE TABLE IF NOT EXISTS contribution_activity (
+  singleton INTEGER PRIMARY KEY NOT NULL DEFAULT 1 CHECK (singleton = 1),
   requests_answered INTEGER NOT NULL DEFAULT 0,
   bytes_served INTEGER NOT NULL DEFAULT 0,
   since_day TEXT NOT NULL DEFAULT ''
@@ -550,6 +551,9 @@ CREATE TABLE IF NOT EXISTS contribution_activity (
 	s.addColumnIfMissing("impressions", "engagement", "TEXT")
 	// WO-016: apply known channel_ids across page loads for the same video_id.
 	if _, err := s.BackfillChannelsFromCatalogue(); err != nil {
+		return err
+	}
+	if err := s.ensureContributionActivitySingleton(); err != nil {
 		return err
 	}
 	return nil

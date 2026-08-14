@@ -105,9 +105,11 @@ The current implementation queue is:
   empty so replacement-card badges cannot attach. `live_sightings:2` is
   unchanged.
 
-- **WO-092 — contribution-impact accounting correctness.** Follow-up to
-  implemented WO-086: count only complete replies and enforce/propagate the
-  cumulative counter's database invariant. WO-091, its prerequisite, is done.
+- **WO-092 — contribution-impact accounting correctness.** **Accepted
+  2026-08-13; awaiting commit.** A paged catalogue/shard reply is counted
+  only when its signed terminal was fully written. Header or terminal budget
+  refusal records nothing; a refused page may still count if the incomplete
+  terminal lands. The `-1` budget sentinel is no longer added to wire totals.
 
 The remaining operational checks are:
 

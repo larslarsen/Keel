@@ -319,10 +319,7 @@ func (n *Node) handleLiveSnapshot(s network.Stream) {
 		n.logf("live snapshot: over the serving byte budget, dropping the reply")
 		return
 	}
-	_, _ = s.Write(raw)
-	if err := n.st.RecordContributionServe(len(raw)); err != nil {
-		n.logf("live snapshot: recording contribution activity: %v", err)
-	}
+	n.replyAndRecord(s, raw, "live snapshot")
 }
 
 // Snapshot returns the live records this node holds.

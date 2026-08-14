@@ -90,17 +90,13 @@ func (n *Node) handleShardRequest(s network.Stream) {
 			}
 			return pack, pack.ContentSHA256, nil
 		})
-	if err != nil {
-		n.logf("shard %d: %v", shard, err)
-		return
+	if err == nil {
+		// Logged on success, not only on failure. Without a positive signal there is
+		// no way to tell "no one asked" from "asked and refused" — which is exactly
+		// what made intermittent search coverage undiagnosable from this side.
+		n.logf("shard %d: served %d rows in %d bytes to %s", shard, len(rows), written, s.Conn().RemotePeer())
 	}
-	// Logged on success, not only on failure. Without a positive signal there is
-	// no way to tell "no one asked" from "asked and refused" — which is exactly
-	// what made intermittent search coverage undiagnosable from this side.
-	n.logf("shard %d: served %d rows in %d bytes to %s", shard, len(rows), written, s.Conn().RemotePeer())
-	if err := n.st.RecordContributionServe(written); err != nil {
-		n.logf("shard %d: recording contribution activity: %v", shard, err)
-	}
+	n.commitPagedServe(written, err, fmt.Sprintf("shard %d", shard))
 }
 
 // parseShardRequest reads "<shard>" or "<shard> <nonce>".

@@ -6,6 +6,7 @@ package store
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,7 +51,10 @@ func TestContributionActivitySchemaHasNoIdentifiers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := map[string]bool{"requests_answered": true, "bytes_served": true, "since_day": true}
+	// singleton is a schema constant (always 1) that makes the one-row
+	// upsert targetable. It is not a user, peer, query, prefix or request
+	// identity (WO-092).
+	want := map[string]bool{"singleton": true, "requests_answered": true, "bytes_served": true, "since_day": true}
 	if len(got) != len(want) {
 		t.Fatalf("contribution_activity columns = %v, want exactly %v", got, want)
 	}
@@ -58,6 +62,19 @@ func TestContributionActivitySchemaHasNoIdentifiers(t *testing.T) {
 		if !got[name] {
 			t.Errorf("contribution_activity is missing column %q", name)
 		}
+	}
+
+	var singleton, pk int
+	if err := st.db.QueryRow(
+		`SELECT "notnull", pk FROM pragma_table_info('contribution_activity') WHERE name = 'singleton'`,
+	).Scan(&singleton, &pk); err != nil {
+		t.Fatalf("singleton column: %v", err)
+	}
+	if pk != 1 {
+		t.Errorf("singleton pk = %d, want 1 (schema constant, not an identity)", pk)
+	}
+	if _, err := st.db.Exec(`INSERT INTO contribution_activity(singleton, requests_answered, bytes_served, since_day) VALUES(2, 0, 0, '')`); err == nil {
+		t.Fatal("singleton CHECK must reject any value other than 1")
 	}
 }
 
@@ -269,5 +286,156 @@ func TestContributionImpactSnapshotNeverInventsAnUnselectedSource(t *testing.T) 
 	}
 	if snap.GraphClaimsLocal == 0 {
 		t.Error("expected the seeded local impression to be counted for the selected source")
+	}
+}
+
+// TestConcurrentFirstIncrementsLeaveOneRow is the race WO-092 names: two
+// first calls must not both INSERT. Every successful increment and its
+// bytes are preserved on the single remaining row.
+func TestConcurrentFirstIncrementsLeaveOneRow(t *testing.T) {
+	st := openTestStore(t)
+	const n = 40
+	var wg sync.WaitGroup
+	errc := make(chan error, n)
+	for i := 1; i <= n; i++ {
+		wg.Add(1)
+		go func(bytes int) {
+			defer wg.Done()
+			errc <- st.RecordContributionServe(bytes)
+		}(i)
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM contribution_activity`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("concurrent first increments left %d rows, want 1", rows)
+	}
+	answered, bytesServed, _, err := st.ContributionActivity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered != n {
+		t.Errorf("requests_answered = %d, want %d", answered, n)
+	}
+	wantBytes := int64(n * (n + 1) / 2)
+	if bytesServed != wantBytes {
+		t.Errorf("bytes_served = %d, want %d", bytesServed, wantBytes)
+	}
+}
+
+// TestConcurrentResetAndIncrement documents the last-commit-wins result of
+// two atomic upserts on the singleton row. Every increment writes 100 bytes,
+// so bytes_served == 100 * requests_answered always holds; the table never
+// has more than one row.
+func TestConcurrentResetAndIncrement(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.RecordContributionServe(100); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 30
+	var wg sync.WaitGroup
+	errc := make(chan error, n*2)
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			errc <- st.RecordContributionServe(100)
+		}()
+		go func() {
+			defer wg.Done()
+			errc <- st.ResetContributionActivity()
+		}()
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var rows int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM contribution_activity`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("concurrent reset/increment left %d rows, want 1", rows)
+	}
+	answered, bytesServed, since, err := st.ContributionActivity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if since == "" {
+		t.Error("a reset or first increment must set since_day")
+	}
+	if bytesServed != answered*100 {
+		t.Fatalf("counters drifted under concurrent reset/increment: answered=%d bytes=%d", answered, bytesServed)
+	}
+}
+
+func TestContributionActivityPropagatesNonNoRowsErrors(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.db.Exec(`DROP TABLE contribution_activity`); err != nil {
+		t.Fatal(err)
+	}
+	answered, bytesServed, since, err := st.ContributionActivity()
+	if err == nil {
+		t.Fatal("a missing table must not be reported as zero activity")
+	}
+	if answered != 0 || bytesServed != 0 || since != "" {
+		t.Fatalf("error path leaked values: answered=%d bytes=%d since=%q", answered, bytesServed, since)
+	}
+}
+
+// TestContributionActivityRepairsDuplicateRows collapses pre-WO-092 rows
+// without discarding the summed counters, keeping the earliest since_day.
+func TestContributionActivityRepairsDuplicateRows(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.db.Exec(`DROP TABLE contribution_activity`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`CREATE TABLE contribution_activity (
+		requests_answered INTEGER NOT NULL DEFAULT 0,
+		bytes_served INTEGER NOT NULL DEFAULT 0,
+		since_day TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(
+		`INSERT INTO contribution_activity(requests_answered, bytes_served, since_day) VALUES(3, 300, '2026-08-01')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(
+		`INSERT INTO contribution_activity(requests_answered, bytes_served, since_day) VALUES(2, 200, '2026-08-03')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ensureContributionActivitySingleton(); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM contribution_activity`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("repair left %d rows, want 1", rows)
+	}
+	answered, bytesServed, since, err := st.ContributionActivity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered != 5 || bytesServed != 500 {
+		t.Fatalf("repair discarded counters: answered=%d bytes=%d", answered, bytesServed)
+	}
+	if since != "2026-08-01" {
+		t.Errorf("since_day = %q, want the earliest day 2026-08-01", since)
 	}
 }
