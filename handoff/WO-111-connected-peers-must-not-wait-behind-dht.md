@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (GPT-5.6 Sol, xhigh) |
-| **Status** | **Implemented** 2026-08-14 — automated acceptance passes; two-machine rerun pending |
+| **Status** | **Implemented and accepted** 2026-08-14 — automated acceptance passes; two-machine key-scheme-2 rerun passed |
 | **Date** | 2026-08-14 |
 | **Depends on** | WO-095 and accepted follow-ups WO-097/099/100/101/102 |
 | **Source** | WO-095 two-machine key-scheme-2 live QA failure |
@@ -119,8 +119,32 @@ discoverability-health authority.
       id or peer id.
 - [x] Existing DHT-only discovery, remembered-peer fallback, pagination,
       poison, saturation, race, Go and extension tests remain green.
-- [ ] Repeat WO-095's two-machine key-scheme-2 QA after both machines run the
+- [x] Repeat WO-095's two-machine key-scheme-2 QA after both machines run the
       corrected binary.
+
+## Two-machine rerun record (2026-08-14)
+
+Both machines on the corrected binary (`269dc87`). The Windows requester
+searched first, then the Linux requester searched; this machine served shards
+62, 75, 143, 121, 224 and 92 directly to the Windows node
+(`12D3KooWMgsA…`) with no DHT wait and no `exhausted-in-484s` stall.
+
+- Windows-requester search: **worked** — network results returned; bars advanced
+  incrementally, not in one final snapshot.
+- Linux-requester search: `peer search 085c9664-…: exhausted in 73431ms,
+  1 results` — 73 s end-to-end (was 484 s with 0 results), 1 network result
+  reached the streaming matcher.
+- Completion summary: "Ran out of peers with 1 network result — less than the
+  estimate suggests exists." `reason=exhausted` is the honest answer: the
+  connected + remembered + DHT-discovered provider set was asked, the public
+  DHT was degraded and surfaced no further providers, so no more peers existed
+  to ask. Not a stall, and not a claim about network health.
+- Windows node's DHT presence publish failed three times before succeeding
+  (`context deadline exceeded`); it did not block the direct-peer search,
+  which is exactly the failure mode this order repairs.
+
+WO-095's failed acceptance (0 results after 484 s while a serving peer was
+connected) is closed by this rerun.
 
 ## Do not
 
@@ -170,4 +194,5 @@ New regressions in `daemon/swarm/connected_provider_test.go` prove:
 
 Verification: `go test ./...`, `go test -race ./...`, `go vet ./...`, the
 focused regressions repeated ten times, and all 24 extension test files pass.
-The two-machine rerun remains the only unchecked acceptance line.
+All acceptance lines are checked; the two-machine rerun passed on the released
+build.

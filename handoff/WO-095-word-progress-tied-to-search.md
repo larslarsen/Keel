@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Accepted** 2026-08-13 — WO-099/100/101/102 closed review findings; two-machine key-scheme-2 live QA **ran 2026-08-14 and failed** (0 results, 484 s exhausted; see Two-machine live QA record) |
+| **Status** | **Accepted and live-verified** 2026-08-14 — WO-099/100/101/102 closed review findings; WO-111 repaired the failed provider ordering and the two-machine key-scheme-2 rerun passed |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-097 — complete distributed-search index, pagination, and retained word targets |
 | **Source** | Lars's distributed-search design, clarified against live `world` / `wor` / `ld ` QA |
@@ -356,10 +356,10 @@ count.
 - [ ] Search diagnostics contain no peer, shard, catalogue-prefix, title, or
       result identifiers. **WO-099 removes inherited identifier-rich catalogue
       logging from this path.**
-- [ ] Two-machine live QA visibly advances token-response cycles and word counts
+- [x] Two-machine live QA visibly advances token-response cycles and word counts
       while results arrive, rather than painting one final snapshot.
-      **Ran 2026-08-14 — failed: 0 results, 484 s, terminal `exhausted`; see the
-      Two-machine live QA record below.**
+      **The first run failed; the corrected WO-111 rerun passed on both
+      machines. See the records in this order and WO-111.**
 
 ## Do not
 
@@ -445,8 +445,9 @@ impossible to keep (a scheme-2 token can straddle a space and belong to two
 words), so the successor property is that the page paints exactly what the plan
 says — including the cross-word case the old chopping could not express.
 
-Two-machine live QA remains the only open acceptance line, and it needs both
-machines on the new build for WO-097's key-scheme reason.
+Two-machine live QA passed after WO-111 put connected exact-protocol peers
+ahead of DHT discovery. The original failed run remains below as the evidence
+that produced that correction.
 
 ## Two-machine live QA record (2026-08-14)
 
