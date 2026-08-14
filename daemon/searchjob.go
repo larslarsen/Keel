@@ -73,20 +73,26 @@ type searchJob struct {
 	streamed int
 }
 
+// emit assigns a sequence number and writes the event as one step.
+//
+// Both halves are under the same lock deliberately. The client discards any
+// event whose sequence is not ahead of the last one it applied — that is what
+// makes a replaced job's late events harmless — so an event that reaches the
+// wire out of sequence order is not merely reordered, it is *dropped*. Two
+// goroutines assigning under one lock and writing outside it would do exactly
+// that under load, and the symptom would be a bar that silently stops moving.
+//
+// Nothing called here re-enters the job, so holding the lock across the write
+// cannot deadlock; a slow consumer blocks this job's other emitters, which is
+// the intended backpressure.
 func (j *searchJob) emit(typ string, build func(seq uint64) any) {
 	j.mu.Lock()
+	defer j.mu.Unlock()
 	j.seq++
-	payload := build(j.seq)
-	j.mu.Unlock()
-
-	env, err := bridge.NewEnvelope(bridge.EventIDPrefix+j.id, typ, payload)
+	env, err := bridge.NewEnvelope(bridge.EventIDPrefix+j.id, typ, build(j.seq))
 	if err != nil {
 		return
 	}
-	// Written under the same lock as the sequence assignment would deadlock
-	// against a slow writer; the underlying writer is a syncWriter, so ordering
-	// on the wire follows the order writes are issued. Sequence numbers are
-	// what make that checkable from the other side.
 	if err := writeEnv(j.out, env); err != nil {
 		log.Printf("search event write failed: %v", err)
 	}

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Ready after WO-097 — architecture settled** |
+| **Status** | **Done** 2026-08-13 — every acceptance box below is covered by a test; see the implementation note at the end |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-097 — complete distributed-search index, pagination, and retained word targets |
 | **Source** | Lars's distributed-search design, clarified against live `world` / `wor` / `ld ` QA |
@@ -317,32 +317,32 @@ count.
 
 ## Acceptance
 
-- [ ] `world` starts independent work for `wor` and `ld `; neither inherits the
+- [x] `world` starts independent work for `wor` and `ld `; neither inherits the
       other's elapsed deadline and no more than four responses run at once.
-- [ ] Candidate sets are unioned. A title discovered through any one token can
+- [x] Candidate sets are unioned. A title discovered through any one token can
       stream once the local matcher proves the whole query.
-- [ ] Missing titles arrive only through complete broad catalogue/string
+- [x] Missing titles arrive only through complete broad catalogue/string
       buckets; cover rows never enter this search's counters or result matcher.
-- [ ] A verified network result appears before unrelated token work ends and is
+- [x] A verified network result appears before unrelated token work ends and is
       never retracted.
-- [ ] Token bars animate/reset once per logical peer response and do not claim
+- [x] Token bars animate/reset once per logical peer response and do not claim
       count, bytes, or target coverage.
-- [ ] A cross-word token colors both word fragments and has one deterministic
+- [x] A cross-word token colors both word fragments and has one deterministic
       bar placement. Repeated token values share color and live state.
-- [ ] Word bars count distinct locally checked candidates, update live, can
+- [x] Word bars count distinct locally checked candidates, update live, can
       exceed 100%, and show `target unknown` without a fake marker.
-- [ ] Tests prove the stop matrix: below+saturated continues; above+productive
+- [x] Tests prove the stop matrix: below+saturated continues; above+productive
       continues; above+saturated stops; hard budget and exhaustion end visibly
       incomplete.
-- [ ] Saturation cannot be declared before candidate string resolution finishes.
-- [ ] Peer diversity is preferred within the eligible yield set but lack of a
+- [x] Saturation cannot be declared before candidate string resolution finishes.
+- [x] Peer diversity is preferred within the eligible yield set but lack of a
       second peer never breaks correctness.
-- [ ] Start acknowledgement is prompt; two sessions never receive one another's
+- [x] Start acknowledgement is prompt; two sessions never receive one another's
       events; replacement and every listed lifecycle transition cancel the
       correct job.
-- [ ] Local results survive visible peer unavailability, cancellation, empty
+- [x] Local results survive visible peer unavailability, cancellation, empty
       response, budget exhaustion, and failure.
-- [ ] Raw query/token text reaches no browser storage, persistence, progress
+- [x] Raw query/token text reaches no browser storage, persistence, progress
       envelope, or log line.
 - [ ] Two-machine live QA visibly advances token-response cycles and word counts
       while results arrive, rather than painting one final snapshot.
@@ -373,3 +373,63 @@ Return to architecture review if implementation appears to require:
 - a MAIN-world script, new permission, framework, bundler, or runtime dependency;
 - contribution entitlement changes; or
 - a change to WO-097's key scheme, pagination, targets, or query semantics.
+
+---
+
+## Implementation note (Sr Dev, 2026-08-13)
+
+Landed as specified. No stop condition was hit. Where the work is:
+
+| Requirement | Where |
+|---|---|
+| §1 render plan on every local search | `planWire` in `daemon/searchjob.go`, `SEARCH_RESULT.plan` |
+| §2 union, broad string resolution, local matcher | `daemon/swarm/search.go` `creditResponse` |
+| §3 job lifecycle, `peer_search:3`, event payloads | `daemon/searchjob.go`, `daemon/bridge/` |
+| §4 page orchestration, Port routing, cancellation | `extension/background/search_sessions.js`, `extension/page/search_stream.js` |
+| §5 bounded parallel work, peer diversity | `StreamingSearch`, `runTokenWork`, `orderPeers` |
+| §6 token bars | `PeerSearchProgressPayload` phases + `paintToken` |
+| §7 word bars | `PeerSearchWordProgressPayload` + `paintWord` |
+| §8 saturation and stopping | `wordDone`, `tokenSatisfied`, `recordSaturation` |
+| §9 results and visible states | `appendResult`, `completionText` |
+
+Four things worth flagging to the architect:
+
+1. **A latent framing bug had to be fixed first, and it was not in this
+   order's scope.** `bridge.WriteMessage` wrote the 4-byte length prefix and
+   the payload as two separate `Write` calls. With one writer that is
+   invisible; a streaming job emits from concurrent token workers, and
+   `main.go`'s `syncWriter` only serializes each call — so `lenA, lenB,
+   payloadA, payloadB` was reachable, which corrupts the stream *permanently*
+   rather than losing one message, because every later frame is then read at
+   the wrong offset. `WriteMessage` now builds the frame and writes it once.
+   `TestEventSequenceIsMonotonicUnderConcurrency` found it; it was a real
+   pre-existing hazard on the WO-070 goroutine path too, just much harder to
+   hit.
+
+2. **`emit` holds one lock across sequence assignment *and* the write.** The
+   client discards any event not ahead of the last sequence it applied — that
+   is what makes a replaced job's late events harmless — so an event that
+   reaches the wire out of sequence order is not reordered, it is *dropped*,
+   and the symptom is a bar that silently stops. Assigning under one lock and
+   writing outside it would do exactly that under load.
+
+3. **The presentation cap bounds streaming, not discovery.** §8 says the result
+   cap must not terminate discovery or word counting, so the job keeps two
+   counters (`matched`, `streamed`) and only the second respects `limit`. Word
+   bars therefore keep moving after the visible list is full, which is the
+   intended behaviour and will look odd to anyone expecting them to stop.
+
+4. **An explicitly incomplete peer response does not feed the saturation
+   streak** (carried over from WO-097's equivalent decision). A peer that
+   stopped on its own budget still holds rows, so counting it as a miss would
+   let rate-limiting read as "the network is exhausted".
+
+The extension no longer tokenizes, colours or counts anything.
+`test/word-corpus-coloring.test.js` was rewritten rather than deleted: its old
+assertion pinned the page's own three-character chopping, which WO-097 made
+impossible to keep (a scheme-2 token can straddle a space and belong to two
+words), so the successor property is that the page paints exactly what the plan
+says — including the cross-word case the old chopping could not express.
+
+Two-machine live QA remains the only open acceptance line, and it needs both
+machines on the new build for WO-097's key-scheme reason.

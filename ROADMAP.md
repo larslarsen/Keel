@@ -41,7 +41,8 @@ The current implementation queue is:
   put **both** machines on the new build; a mixed pair will connect at the
   transport layer and exchange nothing.
 
-- **WO-095 — responsive streaming peer search and UI.** Depends on WO-097.
+- **WO-095 — responsive streaming peer search and UI.** **Implemented**
+  2026-08-13; two-machine live QA pending.
   The start RPC acknowledges immediately; four bounded peer responses run
   independently. Candidate sets are unioned, broad string buckets resolve
   missing titles, and the daemon streams a result as soon as local full-query

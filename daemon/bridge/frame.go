@@ -37,11 +37,19 @@ func WriteMessage(w io.Writer, payload []byte) error {
 	if len(payload) > MaxHostToBrowser {
 		return fmt.Errorf("response too large: %d", len(payload))
 	}
-	var lenBuf [4]byte
-	binary.NativeEndian.PutUint32(lenBuf[:], uint32(len(payload)))
-	if _, err := w.Write(lenBuf[:]); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	// One Write, not two (WO-095).
+	//
+	// The length prefix used to be written separately from the payload. With a
+	// single writer that is invisible; with two goroutines sharing the stream —
+	// which a streaming search's concurrent token workers are — the interleaving
+	// `lenA, lenB, payloadA, payloadB` is possible, and it corrupts the stream
+	// permanently rather than losing one message: every subsequent frame is read
+	// at the wrong offset. main.go's syncWriter serializes each Write call, so
+	// building the frame first is what makes that guarantee cover a whole
+	// message instead of half of one.
+	frame := make([]byte, 4+len(payload))
+	binary.NativeEndian.PutUint32(frame[:4], uint32(len(payload)))
+	copy(frame[4:], payload)
+	_, err := w.Write(frame)
 	return err
 }
