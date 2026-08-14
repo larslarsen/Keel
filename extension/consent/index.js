@@ -54,13 +54,27 @@ async function choose(value) {
   } catch (err) {
     setBusy(false);
     const msg = errText(err);
-    // The most likely failure by far is that the desktop app is not running or
-    // is out of date, and neither is fixed by pressing the button again — so
-    // say which one it is rather than reporting a generic save error.
-    el.status.textContent = /not connected|update required|consent unavailable/i.test(msg)
-      ? `Keel's desktop app has to be running and up to date before it can ` +
-        `accept this. (${msg})`
-      : `Could not save that: ${msg}`;
+    // WO-110: a stale extension and a current daemon (or the reverse)
+    // disagree about which disclosure was shown. Pressing Accept again sends
+    // the same mismatched revision, so the copy has to say that plainly
+    // instead of inviting another click, and must not claim recording or
+    // networking turned on either way.
+    if (/update the browser extension/i.test(msg)) {
+      el.status.textContent =
+        `The browser extension and Keel's desktop app do not agree on the ` +
+        `disclosure version. Update the extension — clicking Accept again ` +
+        `will not fix this. Nothing has been turned on. (${msg})`;
+    } else if (/not connected|update required|consent unavailable/i.test(msg)) {
+      // The other likely failure is that the desktop app is not running or is
+      // itself out of date, and neither is fixed by pressing the button
+      // again — so say which one it is rather than reporting a generic save
+      // error.
+      el.status.textContent =
+        `Keel's desktop app has to be running and up to date before it can ` +
+        `accept this. (${msg})`;
+    } else {
+      el.status.textContent = `Could not save that: ${msg}`;
+    }
   }
 }
 

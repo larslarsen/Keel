@@ -207,15 +207,75 @@ func TestConsentRevisionMustMatchWhatWasShown(t *testing.T) {
 		t.Error("no acceptance timestamp was recorded")
 	}
 
-	// Re-showing an older screen must not walk a user backwards into being
-	// re-asked by a build they already satisfied.
+	// An old client re-sending a stale revision must be refused even once the
+	// gate is already current (WO-110): the client still displayed obsolete
+	// wording, and a silent "no-op success" is exactly the reply that let a
+	// stale extension believe it had consented when it never named revision 2.
 	if store.NetworkConsentRevision > 1 {
-		if _, err := st.GrantNetworkConsent(1); err != nil {
-			t.Fatal(err)
+		if _, err := st.GrantNetworkConsent(1); err == nil {
+			t.Error("an obsolete revision was accepted against an already-current gate")
 		}
 		if got := st.NetworkConsent().Revision; got != store.NetworkConsentRevision {
-			t.Errorf("an older grant lowered the stored revision to %d", got)
+			t.Errorf("a refused stale grant changed the stored revision to %d", got)
 		}
+	}
+}
+
+// TestStaleConsentGrantFailsClosedAtTheBridge is WO-110's live defect,
+// reproduced end to end through handleRaw rather than the Store directly: a
+// browser still rendering an old disclosure sends an affirmative grant naming
+// a revision behind what this daemon requires, and must get an explicit
+// refusal carrying the authoritative gate state — never a reply an extension
+// reading "not an ERROR" would treat as acceptance — and the network must not
+// start behind it.
+func TestStaleConsentGrantFailsClosedAtTheBridge(t *testing.T) {
+	if store.NetworkConsentRevision < 2 {
+		t.Skip("no revision below the current one exists to test against")
+	}
+	s := freshSupervisor(t)
+	old := supervisor
+	supervisor = s
+	t.Cleanup(func() { supervisor = old })
+
+	st := testStoreAwaitingConsent(t, "stale-bridge.sqlite")
+	s.start(t.Context(), st)
+
+	got := callConsent(t, st, map[string]any{
+		"accepted": true, "revision": store.NetworkConsentRevision - 1,
+	})
+	if got.Type != "ERROR" {
+		t.Fatalf("stale grant answered %s: %s", got.Type, got.Payload)
+	}
+	var p bridge.ErrorPayload
+	if err := json.Unmarshal(got.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Code != "consent_rejected" {
+		t.Errorf("error code = %q, want consent_rejected", p.Code)
+	}
+	detail, ok := p.Detail.(map[string]any)
+	if !ok {
+		t.Fatalf("detail is not a structured object: %#v", p.Detail)
+	}
+	if detail["consent_required"] != true {
+		t.Errorf("detail does not report consent still required: %#v", detail)
+	}
+	nc, ok := detail["network_consent"].(map[string]any)
+	if !ok {
+		t.Fatalf("detail has no network_consent state: %#v", detail)
+	}
+	if nc["current"] != false {
+		t.Errorf("detail claims consent is current: %#v", nc)
+	}
+	if got := nc["required"]; got != float64(store.NetworkConsentRevision) {
+		t.Errorf("detail required revision = %v, want %d", got, store.NetworkConsentRevision)
+	}
+
+	if s.currentNode() != nil {
+		t.Fatal("a stale grant started the network")
+	}
+	if st.NetworkConsent().Current {
+		t.Fatal("a stale grant was persisted as consent")
 	}
 }
 

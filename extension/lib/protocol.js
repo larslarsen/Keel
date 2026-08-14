@@ -39,6 +39,18 @@ export const CLIENT_REQUIRED = Object.freeze({ core: 1, network_consent: 1 });
  * change as the screen's text.
  */
 export const CONSENT_REVISION = 2;
+/**
+ * WO-110: shown when the daemon's returned gate state says consent is still
+ * required after an affirmative grant — whether because the daemon itself
+ * refused a stale revision (consent_rejected) or, defensively, because a
+ * structurally valid reply simply did not say the gate opened. Kept as one
+ * exported string so the consent screen's mismatch copy and the check that
+ * triggers it cannot drift apart the way a re-typed message would.
+ */
+export const STALE_CONSENT_MESSAGE =
+  "the browser extension and desktop app do not agree on the disclosure " +
+  "version — update the browser extension; pressing Accept again will not " +
+  "fix it.";
 /** Optional capability ceilings; negotiated map may omit any of these. */
 export const CLIENT_OPTIONAL = Object.freeze({
   selectors: 1,

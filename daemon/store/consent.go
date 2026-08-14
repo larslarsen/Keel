@@ -118,6 +118,14 @@ func (s *Store) NetworkConsent() NetworkConsent {
 // Revisions ahead of this build are refused: a browser claiming to have shown
 // disclosure 7 to a daemon that only knows 1 is a version mismatch, and
 // storing it would permanently satisfy every future gate on this database.
+//
+// Revisions behind this build's requirement are refused too (WO-110). A
+// browser still rendering an old disclosure sending {accepted:true,
+// revision:1} against a daemon that requires 2 is the same mixed-version case
+// in the other direction, and accepting it would record agreement to words the
+// browser never displayed, then report success while the gate stays closed —
+// the defect this fixes. The caller must not write the meta rows, touch
+// network_consent_at, or treat this as anything but a refusal.
 func (s *Store) GrantNetworkConsent(revision int) (NetworkConsent, error) {
 	if revision < 1 {
 		return s.NetworkConsent(), fmt.Errorf("consent revision must be positive")
@@ -127,9 +135,15 @@ func (s *Store) GrantNetworkConsent(revision int) (NetworkConsent, error) {
 			"consent revision %d is newer than this desktop app understands (%d); update it",
 			revision, NetworkConsentRevision)
 	}
-	// Never lower an existing acceptance. Re-showing an older screen must not
-	// walk a user backwards into being re-asked by a build they already
-	// satisfied.
+	if revision < NetworkConsentRevision {
+		return s.NetworkConsent(), fmt.Errorf(
+			"consent revision %d predates the current disclosure (%d); update the browser extension",
+			revision, NetworkConsentRevision)
+	}
+	// Never lower an existing acceptance. This is now only reachable when the
+	// stored revision is *ahead* of this build's own NetworkConsentRevision — a
+	// downgraded daemon reading a newer database (see NetworkConsent.Current) —
+	// since any revision behind the requirement was already refused above.
 	if cur := s.NetworkConsent(); cur.Revision > revision {
 		return cur, nil
 	}

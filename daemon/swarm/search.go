@@ -74,7 +74,8 @@ const (
 	// as saturation for a word. Same value FetchShard has used since WO-067.
 	searchSaturationStreak = 3
 
-	// maxProvidersPerToken bounds the DHT walk for one token.
+	// maxProvidersPerToken bounds all connected, remembered and DHT provider
+	// attempts for one token (WO-111).
 	maxProvidersPerToken = 20
 )
 
@@ -304,95 +305,132 @@ func (n *Node) runTokenWork(ctx context.Context, st *searchState, token string, 
 		st.ev.TokenPhase(tokenID, cycle, bridge.PhaseDone, reason)
 	}()
 
-	providers, err := n.shardProviderList(ctx, token, shard)
-	if err != nil || len(providers) == 0 {
-		reason = bridge.JobReasonNoPeers
-		return
+	seen := map[peer.ID]bool{}
+	hadProvider := false
+
+	// eligible deduplicates connected, remembered and DHT candidates under one
+	// cap. Yield screening applies identically whichever directory nominated a
+	// peer: direct reachability is not evidence that this shard is worthwhile.
+	eligible := func(in []peer.AddrInfo) []peer.AddrInfo {
+		out := make([]peer.AddrInfo, 0, len(in))
+		for _, p := range in {
+			if len(seen) >= maxProvidersPerToken {
+				break
+			}
+			if p.ID == n.host.ID() || len(p.Addrs) == 0 || seen[p.ID] {
+				continue
+			}
+			if yield, known := n.yieldGet(p.ID, token); known && !yield {
+				continue
+			}
+			seen[p.ID] = true
+			out = append(out, p)
+		}
+		return out
 	}
 
-	for _, p := range st.orderPeers(providers) {
-		if ctx.Err() != nil {
-			reason = bridge.JobReasonComplete
-			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseCancelled, "")
-			return
-		}
-		if st.tokenSatisfied(token) {
-			// Every word this token could advance is done. Work useful only to
-			// a finished word stops; a token relevant to two words stays
-			// eligible while either is incomplete (WO-095 §8).
-			reason = bridge.JobReasonSaturated
-			return
-		}
-		if st.overBudget() {
-			reason = bridge.JobReasonBudget
-			return
-		}
-		if !n.MayDistributedSearch() {
-			// A contribution downgrade mid-search (WO-095 §4). Checked in the
-			// loop rather than only at the start, because the gate shuts before
-			// the node is torn down and a job started at Level 2 must not keep
-			// reaching peers after the user has said stop.
-			// Marked on the shared state, not only locally: the terminal frame
-			// is decided from the job's outcome, and a downgrade that stayed a
-			// token-local variable let the job report COMPLETE (WO-099 §3).
-			// This is a backstop — the coordinator cancels promptly on the
-			// downgrade itself rather than waiting for a worker to notice.
-			st.markStopped(bridge.JobReasonCancelled)
-			reason = bridge.JobReasonCancelled
-			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseCancelled, "contribution_downgrade")
-			return
-		}
+	// try keeps every existing response boundary intact. The only new behavior
+	// is which bounded directory supplies p, and in which order (WO-111).
+	try := func(providers []peer.AddrInfo) bool {
+		for _, p := range st.orderPeers(eligible(providers)) {
+			hadProvider = true
+			if ctx.Err() != nil {
+				reason = bridge.JobReasonComplete
+				st.ev.TokenPhase(tokenID, cycle, bridge.PhaseCancelled, "")
+				return true
+			}
+			if st.tokenSatisfied(token) {
+				// Every word this token could advance is done. Work useful only to
+				// a finished word stops; a token relevant to two words stays
+				// eligible while either is incomplete (WO-095 §8).
+				reason = bridge.JobReasonSaturated
+				return true
+			}
+			if st.overBudget() {
+				reason = bridge.JobReasonBudget
+				return true
+			}
+			if !n.MayDistributedSearch() {
+				// A contribution downgrade mid-search (WO-095 §4). Checked in the
+				// loop rather than only at the start, because the gate shuts before
+				// the node is torn down and a job started at Level 2 must not keep
+				// reaching peers after the user has said stop.
+				st.markStopped(bridge.JobReasonCancelled)
+				reason = bridge.JobReasonCancelled
+				st.ev.TokenPhase(tokenID, cycle, bridge.PhaseCancelled, "contribution_downgrade")
+				return true
+			}
 
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseCancelled, "")
-			return
-		}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				st.ev.TokenPhase(tokenID, cycle, bridge.PhaseCancelled, "")
+				return true
+			}
 
-		cycle++
-		st.claimPeer(p.ID)
-		st.ev.TokenPhase(tokenID, cycle, bridge.PhaseActive, "")
+			cycle++
+			st.claimPeer(p.ID)
+			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseActive, "")
 
-		// This response's own deadline. Nothing here inherits elapsed time from
-		// another token, and there is no clock over the query as a whole.
-		rctx, cancel := context.WithTimeout(ctx, searchResponseDeadline)
-		entries, signed, complete, _, err := n.fetchShardPagesCounted(rctx, p, shard)
-		cancel()
+			// This response's own deadline. Nothing here inherits elapsed time
+			// from another token, and there is no clock over the whole query.
+			rctx, cancel := context.WithTimeout(ctx, searchResponseDeadline)
+			entries, signed, complete, _, err := n.fetchShardPagesCounted(rctx, p, shard)
+			cancel()
 
-		if err != nil {
+			if err != nil {
+				<-sem
+				// Another peer may still answer for this token, which starts a new
+				// cycle and resets the bar. The event carries no identifier.
+				st.ev.TokenPhase(tokenID, cycle, bridge.PhaseFailed, "unavailable")
+				continue
+			}
+
+			// A structurally valid logical shard reply is verified service even
+			// when it is empty or explicitly incomplete. Remember it so later
+			// broad requests do not depend on the DHT either (WO-111).
+			n.remember(p)
+			acc.add(entries, signed)
+
+			// Resolve and check BEFORE the cycle completes, and BEFORE the permit
+			// is released. The permit covers both shard and catalogue work.
+			credit := st.creditResponse(ctx, token, acc.ids())
 			<-sem
-			// Another peer may still answer for this token, which starts a new
-			// cycle and resets the bar. A failed response is visible rather
-			// than silently skipped, and carries no identifier (WO-099 §6).
-			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseFailed, "unavailable")
-			continue
+
+			terminal := ""
+			if !complete {
+				terminal = "incomplete"
+			}
+			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseComplete, terminal)
+			st.recordSaturation(token, credit)
 		}
+		return false
+	}
 
-		acc.add(entries, signed)
-
-		// Resolve and check BEFORE the cycle completes, and BEFORE the permit is
-		// released. Two rules meet here:
-		//
-		//   - a token-shard response is not zero-gain merely because its strings
-		//     are still in flight (WO-095 §8), so the response is not finished
-		//     until they are not; and
-		//   - the four-response ceiling counts every search-caused network
-		//     response, so releasing the permit before catalogue resolution
-		//     would let every token worker start bucket downloads outside the
-		//     advertised bound (WO-099 §4).
-		//
-		// acc.ids() rather than only what this response added: a candidate whose
-		// earlier resolution failed is retryable and gets another chance here.
-		credit := st.creditResponse(ctx, token, acc.ids())
-		<-sem
-
-		terminal := ""
-		if !complete {
-			terminal = "incomplete"
-		}
-		st.ev.TokenPhase(tokenID, cycle, bridge.PhaseComplete, terminal)
-		st.recordSaturation(token, credit)
+	// Reachable exact-protocol peers go first. Remembered verified peers are
+	// next. Only after both direct sets have had a chance does public-DHT
+	// discovery expand the search to new providers.
+	if try(n.connectedProviders(ShardProtocol, maxProvidersPerToken)) {
+		return
+	}
+	if try(n.rememberedProviders(seen, maxProvidersPerToken-len(seen))) {
+		return
+	}
+	if st.tokenSatisfied(token) {
+		reason = bridge.JobReasonSaturated
+		return
+	}
+	if st.overBudget() {
+		reason = bridge.JobReasonBudget
+		return
+	}
+	providers, err := n.shardProviderList(ctx, token, shard, seen, maxProvidersPerToken-len(seen))
+	if err == nil && try(providers) {
+		return
+	}
+	if !hadProvider && len(providers) == 0 {
+		reason = bridge.JobReasonNoPeers
+		return
 	}
 	// The provider list ran out. Whether that is "complete" or "exhausted"
 	// depends on whether the words this token feeds actually reached their
@@ -410,7 +448,16 @@ func (n *Node) runTokenWork(ctx context.Context, st *searchState, token string, 
 // Yield screening (WO-067) still applies and still only ever removes peers
 // there is positive evidence against: a peer that has gossiped nothing is
 // unknown, and unknown is tried.
-func (n *Node) shardProviderList(ctx context.Context, token string, shard int) ([]peer.AddrInfo, error) {
+func (n *Node) shardProviderList(
+	ctx context.Context,
+	token string,
+	shard int,
+	exclude map[peer.ID]bool,
+	max int,
+) ([]peer.AddrInfo, error) {
+	if max <= 0 {
+		return nil, nil
+	}
 	c, err := shardCID(shard)
 	if err != nil {
 		return nil, err
@@ -418,16 +465,16 @@ func (n *Node) shardProviderList(ctx context.Context, token string, shard int) (
 	lookupCtx, cancel := context.WithTimeout(ctx, searchResponseDeadline)
 	defer cancel()
 
-	out := make([]peer.AddrInfo, 0, maxProvidersPerToken)
-	for p := range n.dht.FindProvidersAsync(lookupCtx, c, maxProvidersPerToken) {
-		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
+	out := make([]peer.AddrInfo, 0, max)
+	for p := range n.findProviders(lookupCtx, c, max) {
+		if p.ID == n.host.ID() || len(p.Addrs) == 0 || exclude[p.ID] {
 			continue
 		}
 		if yield, known := n.yieldGet(p.ID, token); known && !yield {
 			continue
 		}
 		out = append(out, p)
-		if len(out) >= maxProvidersPerToken {
+		if len(out) >= max {
 			break
 		}
 	}

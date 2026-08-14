@@ -39,6 +39,7 @@ import {
   validateLiveSighting,
   validateLiveSightingList,
   CONSENT_REVISION,
+  STALE_CONSENT_MESSAGE,
   PEER_SEARCH_REV_STREAMING,
   LIVE_SIGHTINGS_REV_TITLELESS_ROOM,
 } from "../lib/protocol.js";
@@ -753,11 +754,22 @@ export function createRpcRouter({
         if (want === "granted") {
           requireDaemon();
           requireCap("network_consent", "consent");
-          await relay(
+          const daemon = await relay(
             "SET_NETWORK_CONSENT",
             { accepted: true, revision: CONSENT_REVISION },
             "the desktop app did not accept the disclosure"
           );
+          // Belt-and-braces beyond the daemon's own refusal (WO-110): a
+          // structurally valid reply that is not an ERROR is not the same
+          // thing as a reply that says the gate is open. Trusting "no error"
+          // alone is exactly how a stale revision-1 acceptance once turned
+          // into a false "recording is on" — another daemon regression or a
+          // partial reply must not repeat that by a different path, so the
+          // returned authoritative state is checked before anything local is
+          // written.
+          if (!daemon?.network_consent?.current) {
+            throw new Error(STALE_CONSENT_MESSAGE);
+          }
         }
         const v = await prefs.writeConsent(want);
         // Content scripts gate on this; tell them without waiting for a reload.

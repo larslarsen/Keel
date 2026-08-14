@@ -42,7 +42,10 @@ The current implementation queue is:
   transport layer and exchange nothing.
 
 - **WO-095 — responsive streaming peer search and UI.** **Accepted; two-machine
-  live QA remains.**
+  live QA ran 2026-08-14 and failed (0 results, 484 s exhausted).**
+  Streaming UI, session routing and terminal events worked; shard provider
+  discovery is DHT-only with no fallback to connected peers, so a degraded DHT
+  starved the search despite a live peer. Details and evidence in the ticket.
   The start RPC acknowledges immediately; four bounded peer responses run
   independently. Candidate sets are unioned, broad string buckets resolve
   missing titles, and the daemon streams a result as soon as local full-query
@@ -51,6 +54,15 @@ The current implementation queue is:
   stops on target plus saturation or a hard resource bound, never target or
   saturation alone. WO-096 is folded into these two orders and must not be
   implemented separately.
+
+- **WO-111 — connected peers must not wait behind DHT discovery.**
+  **Implemented; two-machine rerun pending.** This is the immediate
+  release-blocking response to WO-095's
+  failed live QA. Distributed search must try connected exact-protocol Keel
+  peers and verified remembered peers before public-DHT expansion for both
+  shard candidates and broad catalogue title resolution. DHT discovery,
+  Level-2 reciprocity, broad request units, search budgets and network-health
+  meanings remain unchanged.
 
 - **WO-099 — streaming-search lifecycle and resource correction.** Implemented.
   Independent page jobs, early-event preservation and prompt downgrade
@@ -75,7 +87,8 @@ The current implementation queue is:
   candidates unresolved; cancelled meter waiters cannot lease refunded
   capacity; and malformed versus silent peers are distinguished through the
   real transport. Merge the whole dependent branch as one unit, then run
-  WO-095's two-machine key-scheme-2 QA.
+  WO-095's two-machine key-scheme-2 QA. **QA ran 2026-08-14 and failed — see
+  the WO-095 entry above; follow-up tickets are with the reviewer.**
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.**
   **Code accepted 2026-08-13; interactive QA completed in WO-103 and exposed
@@ -153,6 +166,12 @@ The remaining operational checks are:
 WO-107's remaining check is manual browser QA, not more implementation. The
 shared Keel discovery key, not content-provider counts or raw DHT connections,
 owns the bounded network-health state.
+
+WO-111 is implemented; its two-machine rerun is the immediate release check.
+WO-110 is code accepted; its deliberately stale revision-1 live check remains.
+There is no implementation order behind either result: the next correction, if
+one is needed, comes from the remaining live-QA evidence rather than from an
+already assigned ticket.
 
 Nothing here should be read as "ready to publish": the live QA above is the
 gate, and the release rule below it still stands.

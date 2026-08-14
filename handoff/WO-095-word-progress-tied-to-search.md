@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Accepted** 2026-08-13 — WO-099/100/101/102 closed review findings; two-machine key-scheme-2 live QA pending |
+| **Status** | **Accepted** 2026-08-13 — WO-099/100/101/102 closed review findings; two-machine key-scheme-2 live QA **ran 2026-08-14 and failed** (0 results, 484 s exhausted; see Two-machine live QA record) |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-097 — complete distributed-search index, pagination, and retained word targets |
 | **Source** | Lars's distributed-search design, clarified against live `world` / `wor` / `ld ` QA |
@@ -358,6 +358,8 @@ count.
       logging from this path.**
 - [ ] Two-machine live QA visibly advances token-response cycles and word counts
       while results arrive, rather than painting one final snapshot.
+      **Ran 2026-08-14 — failed: 0 results, 484 s, terminal `exhausted`; see the
+      Two-machine live QA record below.**
 
 ## Do not
 
@@ -445,3 +447,41 @@ says — including the cross-word case the old chopping could not express.
 
 Two-machine live QA remains the only open acceptance line, and it needs both
 machines on the new build for WO-097's key-scheme reason.
+
+## Two-machine live QA record (2026-08-14)
+
+Both machines confirmed on the key-scheme-2 build; the Windows daemon was
+rebuilt and restarted after WO-097. Ran one distributed network search from
+the Linux machine against the Windows peer.
+
+| Signal | Result |
+|---|---|
+| `rendezvous connected to 1 Keel node(s)` | peer link up |
+| `word telemetry: refreshed from 2 sources (1 peers)` | peer serves data |
+| Token bars drew, cycled, three snapped solid | streaming pipeline works; terminal event eventually painted |
+| `peer search 3a5ff593-…: exhausted in 484284ms, 0 results` | **0 network results, 0 word counts, 8 minutes** |
+
+**What the daemon log showed during the run:**
+
+- `announce published NOTHING; this node is not discoverable: failed to find
+  any peer in table`
+- `presence: this node is NOT discoverable (publish_failed): context deadline
+  exceeded; retrying in 1m0s / 2m0s` (intermittent: presence later succeeded)
+
+**Working diagnosis (for the reviewer to turn into tickets):** shard provider
+discovery is DHT-only. `shardProviderList()` (`daemon/swarm/search.go`) finds
+providers exclusively via `FindProvidersAsync` with a 20 s per-token deadline
+and has no fallback to already-connected Keel peers, whereas the catalogue
+path (`daemon/swarm/swarm.go` `fetchCataloguePrefixLogging`) falls back to
+`KnownPeers` when discovery fails. With this node's DHT timing out (`context
+deadline exceeded`), the only shard nomination path found nothing to ask, so
+the search ended `exhausted` with 0 results despite the peer being connected
+and serving. The 484-second duration is not explained by `24 × 20-second`
+lookups: revision 3 accepts at most 16 distinct tokens and launches their
+provider walks concurrently. WO-111 must prove the ordering failure directly
+with a deliberately stalled lookup.
+
+**Secondary observation:** a `broken pipe` on the daemon↔extension owner
+socket (log line preceding the search terminal) delayed the terminal event,
+leaving the token segments pulsing (`.active`) long after the job had
+completed.

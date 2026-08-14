@@ -108,6 +108,14 @@ const maxBlocksPerReply = 256
 // so a slow peer must not hold a slot indefinitely.
 const requestTimeout = 20 * time.Second
 
+// Catalogue traversal historically asked up to eight DHT providers and then
+// the bounded 64-peer verified-service table. WO-111 changes their ordering,
+// not the maximum amount of work one traversal can nominate.
+const (
+	maxCatalogueDHTProviders = 8
+	maxCatalogueProviders    = maxCatalogueDHTProviders + store.MaxKnownPeers
+)
+
 // Store is the slice of the store this package needs. An interface rather than
 // the concrete type so the transport can be tested without a database.
 type Store interface {
@@ -216,6 +224,11 @@ type Node struct {
 	dht  *dht.IpfsDHT
 	st   Store
 	cfg  Config
+	// providerLookup is the public-DHT directory seam. Production nodes use
+	// IpfsDHT.FindProvidersAsync; keeping the call behind this field lets the
+	// degraded-DHT ordering tests hold discovery open while proving an already
+	// connected Keel peer remains usable (WO-111).
+	providerLookup func(context.Context, cid.Cid, int) <-chan peer.AddrInfo
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{} // dedupes concurrent fetches of one key
@@ -355,9 +368,10 @@ func (n *Node) ContributionImpact() (store.ImpactSnapshot, error) {
 func newNode(h host.Host, kdht *dht.IpfsDHT, st Store, cfg Config) *Node {
 	n := &Node{
 		host: h, dht: kdht, st: st, cfg: cfg,
-		searchSem: newSearchPermits(),
-		inflight:  map[string]chan struct{}{},
-		serve:     newServeLimiter(),
+		providerLookup: kdht.FindProvidersAsync,
+		searchSem:      newSearchPermits(),
+		inflight:       map[string]chan struct{}{},
+		serve:          newServeLimiter(),
 		// Derived from the policy at construction: at Level 1 the answer to
 		// "why zero?" is settled before any loop starts, and there is nothing
 		// that could change it without replacing the node (WO-093 §2).
@@ -571,6 +585,72 @@ func (n *Node) KeelPeers() int {
 		}
 	}
 	return count
+}
+
+// findProviders asks the public DHT who advertised one broad bucket. It is a
+// method rather than a direct IpfsDHT call so WO-111's regression tests can
+// deliberately stall discovery without replacing the transport itself.
+func (n *Node) findProviders(ctx context.Context, c cid.Cid, max int) <-chan peer.AddrInfo {
+	if n.providerLookup != nil {
+		return n.providerLookup(ctx, c, max)
+	}
+	return n.dht.FindProvidersAsync(ctx, c, max)
+}
+
+// connectedProviders returns currently reachable peers whose identify record
+// advertises the exact scheme-versioned protocol requested.
+//
+// A public-IPFS routing peer is connected too, but it is not thereby a Keel
+// shard or catalogue server. Exact protocol filtering is what keeps direct
+// fallback from spraying broad Keel requests at unrelated DHT participants.
+func (n *Node) connectedProviders(proto protocol.ID, max int) []peer.AddrInfo {
+	if max <= 0 {
+		return nil
+	}
+	out := make([]peer.AddrInfo, 0, max)
+	for _, id := range n.host.Network().Peers() {
+		if id == n.host.ID() {
+			continue
+		}
+		supported, err := n.host.Peerstore().SupportsProtocols(id, proto)
+		if err != nil || len(supported) == 0 {
+			continue
+		}
+		info := n.host.Peerstore().PeerInfo(id)
+		if len(info.Addrs) == 0 {
+			continue
+		}
+		out = append(out, info)
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+// rememberedProviders returns peers which previously served verified data.
+// They need not be connected now: requestPaged will dial them, and exact
+// protocol negotiation fails closed if an old address speaks another scheme.
+func (n *Node) rememberedProviders(exclude map[peer.ID]bool, max int) []peer.AddrInfo {
+	if max <= 0 {
+		return nil
+	}
+	known, err := n.st.KnownPeers(max)
+	if err != nil {
+		return nil
+	}
+	out := make([]peer.AddrInfo, 0, len(known))
+	for _, k := range known {
+		info, err := addrInfo(k)
+		if err != nil || info.ID == n.host.ID() || exclude[info.ID] {
+			continue
+		}
+		out = append(out, info)
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
 }
 
 // Close shuts the node down.
@@ -835,16 +915,27 @@ func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, v
 	// while still not resolving the prefix, so it must not be discarded merely
 	// because a later provider failed outright (WO-100 §2).
 	best := unavailable
-	for p := range n.dht.FindProvidersAsync(ctx, c, 8) {
-		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
-			continue
+	seen := map[peer.ID]bool{}
+	attempts := 0
+	try := func(p peer.AddrInfo) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return false, err
 		}
+		if attempts >= maxCatalogueProviders || p.ID == n.host.ID() ||
+			len(p.Addrs) == 0 || seen[p.ID] {
+			return false, nil
+		}
+		seen[p.ID] = true
+		attempts++
 		res, err := n.fetchCataloguePagesFrom(ctx, p, prefix, verbose)
 		if errors.Is(err, ErrSearchBudget) {
 			// The job's allowance is gone. Walking the rest of the provider
 			// list would spend a budget that no longer exists and would report
 			// the stop as a provider problem (WO-102 §1).
-			return catalogueResult{Outcome: catalogueUnavailable}, err
+			return false, err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
 		}
 		if err != nil {
 			if verbose {
@@ -853,51 +944,72 @@ func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, v
 			if res.Outcome > best.Outcome {
 				best = res
 			}
-			continue
+			return false, nil
 		}
 		n.remember(p)
 		if res.Outcome.resolved() {
-			return res, nil
+			best = res
+			return true, nil
 		}
 		if res.Outcome > best.Outcome {
 			best = res
+		}
+		return false, nil
+	}
+
+	// A connected peer already advertises the exact catalogue protocol through
+	// identify, so it can answer this broad prefix without a second public-DHT
+	// round trip. Verified remembered peers follow; DHT discovery expands to
+	// new providers only if neither direct set resolves the prefix (WO-111).
+	for _, p := range n.connectedProviders(CatalogueProtocol, maxCatalogueDHTProviders) {
+		done, err := try(p)
+		if err != nil {
+			if errors.Is(err, ErrSearchBudget) {
+				return catalogueResult{Outcome: catalogueUnavailable}, err
+			}
+			return best, err
+		}
+		if done {
+			return best, nil
+		}
+	}
+	for _, p := range n.rememberedProviders(seen, maxCatalogueProviders-attempts) {
+		done, err := try(p)
+		if err != nil {
+			if errors.Is(err, ErrSearchBudget) {
+				return catalogueResult{Outcome: catalogueUnavailable}, err
+			}
+			return best, err
+		}
+		if done {
+			return best, nil
 		}
 	}
 
 	if err := ctx.Err(); err != nil {
 		return best, err
 	}
-	// Same fallback as blocks: titles are no use if only discovery is blocked.
-	known, err := n.st.KnownPeers(0)
-	if err != nil {
+	lookupMax := maxCatalogueDHTProviders
+	if remaining := maxCatalogueProviders - attempts; lookupMax > remaining {
+		lookupMax = remaining
+	}
+	if lookupMax <= 0 {
 		return best, nil
 	}
-	for _, k := range known {
-		// Checked before and during the fallback: a terminated traversal must
-		// not walk the whole known-peer catalogue (WO-102 §1).
-		if err := ctx.Err(); err != nil {
+	for p := range n.findProviders(ctx, c, lookupMax) {
+		done, err := try(p)
+		if err != nil {
+			if errors.Is(err, ErrSearchBudget) {
+				return catalogueResult{Outcome: catalogueUnavailable}, err
+			}
 			return best, err
 		}
-		info, err := addrInfo(k)
-		if err != nil {
-			continue
+		if done {
+			return best, nil
 		}
-		res, err := n.fetchCataloguePagesFrom(ctx, info, prefix, verbose)
-		if errors.Is(err, ErrSearchBudget) {
-			return catalogueResult{Outcome: catalogueUnavailable}, err
-		}
-		if err != nil {
-			if res.Outcome > best.Outcome {
-				best = res
-			}
-			continue
-		}
-		if res.Outcome.resolved() {
-			return res, nil
-		}
-		if res.Outcome > best.Outcome {
-			best = res
-		}
+	}
+	if err := ctx.Err(); err != nil {
+		return best, err
 	}
 	// Falling through every provider is `unavailable`, never a complete empty
 	// bucket. The two are opposite claims — "nobody answered" against "the

@@ -493,6 +493,13 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
   it("grants the daemon's disclosure before enabling local recording (WO-089)", async () => {
     const { router, sent, siteBroadcasts } = makeRouter({
       caps: { network_consent: 1 },
+      reply: (type) =>
+        type === "SET_NETWORK_CONSENT"
+          ? {
+              type: "NETWORK_CONSENT_RESULT",
+              payload: { network_consent: { current: true, required: 2, revision: 2 } },
+            }
+          : { type: "OK", payload: {} },
     });
     const r = await router.handle(
       { type: "SET_CONSENT", payload: { consent: "granted" } },
@@ -527,6 +534,33 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
       siteBroadcasts,
       [],
       "a refused grant must not switch the observer on anyway"
+    );
+  });
+
+  // WO-110: a stale extension can receive a structurally valid reply — not an
+  // ERROR — that still says the gate did not open (a stale revision the
+  // daemon rejected without erroring, or another daemon regression). Trusting
+  // "not an ERROR" alone is the exact defect that let a revision-1 browser
+  // believe it had consented. The router must check the returned gate itself.
+  it("does not enable recording when the daemon's reply says consent is still required", async () => {
+    const { router, siteBroadcasts } = makeRouter({
+      caps: { network_consent: 1 },
+      reply: (type) =>
+        type === "SET_NETWORK_CONSENT"
+          ? {
+              type: "NETWORK_CONSENT_RESULT",
+              payload: { network_consent: { current: false, required: 2, revision: 1 } },
+            }
+          : { type: "OK", payload: {} },
+    });
+    await assert.rejects(
+      () => router.handle({ type: "SET_CONSENT", payload: { consent: "granted" } }, {}),
+      /update the browser extension/
+    );
+    assert.deepEqual(
+      siteBroadcasts,
+      [],
+      "a non-current gate must not switch the observer on, even without an ERROR reply"
     );
   });
 
