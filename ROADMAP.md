@@ -77,12 +77,15 @@ The current implementation queue is:
   real transport. Merge the whole dependent branch as one unit, then run
   WO-095's two-machine key-scheme-2 QA.
 
-- **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of
-  WO-095. Preserve the three real feed surfaces instead of mapping them to
-  `HOME`; ordinary Explore/Following cards enter the TikTok observation path,
-  while `/live` cards enter Keel's ephemeral Live index through canonical
-  `@creator/live` locators and gossip at Level 2+. This supersedes WO-076 and
-  also repairs the dropped TikTok platform and idle `/@creator/live` path.
+- **WO-098 — TikTok Explore, Following, and Live discovery.**
+  **Architecture-reviewed; ready for GPT-5.6 Terra High on merged `main`.**
+  Preserve the three real feed surfaces instead of mapping them to `HOME`.
+  Explore/Following are durable ordinary observations; `LIVE`/`LIVE_ROOM` are
+  a disjoint ephemeral sighting schema and can never enter SQLite. Canonical
+  `@creator/live` identity requires Live topic/snapshot v2. Static bridge
+  support and dynamic Level-2 entitlement are separate gates, with one shared
+  200-record browser reconnect bound. This supersedes WO-076 and repairs the
+  dropped TikTok platform, idle live-room and 11-character snapshot bugs.
 
 - **WO-092 — contribution-impact accounting correctness.** Follow-up to
   implemented WO-086: count only complete replies and enforce/propagate the
