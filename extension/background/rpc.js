@@ -36,6 +36,7 @@
  */
 import {
   validateImpressionList,
+  validateLiveSightingList,
   CONSENT_REVISION,
   PEER_SEARCH_REV_STREAMING,
 } from "../lib/protocol.js";
@@ -146,11 +147,32 @@ export function createRpcRouter({
     return env.payload || {};
   }
 
+  async function sendLiveSightings(sightings) {
+    if (!sightings.length) return { accepted: 0, rejected: 0 };
+    if (!getBridge().helloOk) return { accepted: 0, queued: sightings.length };
+    if (!hasCap("live_sightings")) return { accepted: 0, dropped: sightings.length };
+    const state = await relay("GET_CONTRIBUTION");
+    if (state?.live !== true || state?.transition !== "idle") return { accepted: 0, dropped: sightings.length };
+    const env = await getBridge().request("LIVE_SIGHTINGS", { sightings });
+    return env.payload || {};
+  }
+
   function flushBuffer() {
     if (!buffer.length || !getBridge().helloOk) return;
     const batch = buffer;
     buffer = [];
-    sendImpressions(batch)
+    // Preserve original order while grouping adjacent message kinds. Live
+    // items are re-gated at flush, so a downgrade cannot leak a queued sighting.
+    (async () => {
+      let result = { inserted: 0 };
+      for (let i = 0; i < batch.length;) {
+        const kind = batch[i].kind; const group = [];
+        while (i < batch.length && batch[i].kind === kind) group.push(batch[i++].value);
+        const r = kind === "live" ? await sendLiveSightings(group) : await sendImpressions(group);
+        result = { ...result, ...r };
+      }
+      return result;
+    })()
       .then((result) => {
         // The disconnected buffer is NOT page-proof state (WO-080): a flush is
         // a multi-tab batch that no longer carries tab ownership, so it
@@ -196,7 +218,7 @@ export function createRpcRouter({
     } else if (!ok) {
       bridgeCaps = Object.create(null);
     }
-    broadcast({
+    const status = {
       type: "DAEMON_STATUS",
       payload: {
         connected: ok,
@@ -205,12 +227,20 @@ export function createRpcRouter({
         incompatible: Boolean(meta?.incompatible),
         capabilities: { ...bridgeCaps },
       },
-    });
+    };
+    broadcast(status);
+    broadcastToSiteTabs(status).catch(() => {});
     // Keep bounded in-memory buffer across disconnect; flush on reconnect.
     if (ok) {
       flushBuffer();
       reportCohort().catch(() => {});
       maybePromptNetworkConsent().catch(() => {});
+      // Content scripts fail closed until this explicit effective-state answer.
+      // It also re-arms an already open Live wall after reconnect.
+      relay("GET_CONTRIBUTION").then((payload) => {
+        broadcast({ type: "CONTRIBUTION_STATUS", payload });
+        return broadcastToSiteTabs({ type: "CONTRIBUTION_STATUS", payload });
+      }).catch(() => {});
     }
   }
 
@@ -232,7 +262,13 @@ export function createRpcRouter({
     } catch {
       return;
     }
-    broadcast({ type: "CONTRIBUTION_STATUS", payload });
+    // This is disclosure-migration state, not effective contribution state.
+    // In particular it does not carry `live` or `transition`; presenting it as
+    // CONTRIBUTION_STATUS made an entitled open Live page disarm until its
+    // later contribution reply happened to win the race. Extension pages may
+    // still use this notification for their consent UI, but content scripts
+    // must receive only the daemon's effective policy state.
+    broadcast({ type: "NETWORK_CONSENT_STATUS", payload });
     if (payload?.consent_required !== true) return;
     const local = await prefs.readConsent().catch(() => null);
     if (local !== "granted") return;
@@ -263,6 +299,10 @@ export function createRpcRouter({
     if (env?.type === "CONTRIBUTION_STATUS") {
       const payload = env.payload || {};
       broadcast({ type: "CONTRIBUTION_STATUS", payload });
+      broadcastToSiteTabs({ type: "CONTRIBUTION_STATUS", payload }).catch(() => {});
+      if (payload.live !== true || payload.transition !== "idle") {
+        buffer = buffer.filter((item) => item.kind !== "live");
+      }
       if (payload.consent_required === true) {
         maybePromptNetworkConsent().catch(() => {});
       }
@@ -287,7 +327,7 @@ export function createRpcRouter({
           // Platform/surface/focus are derived from the sender's URL, not
           // believed from the payload — a page cannot label itself as another
           // platform or claim focus it does not have.
-          platform: message.payload?.platform || "yt",
+          platform: surfaceFromUrl(url).platform,
           surface: surfaceFromUrl(url).surface,
           focus: panel.panelAllowedFor(url),
           railGeneration:
@@ -320,7 +360,7 @@ export function createRpcRouter({
         const pageSnap = proof;
 
         if (!getBridge().helloOk) {
-          buffer.push(...accepted);
+          buffer.push(...accepted.map((value) => ({ kind: "impression", value })));
           if (buffer.length > BUFFER_MAX) buffer = buffer.slice(-BUFFER_MAX);
           return { queued: accepted.length, connected: false };
         }
@@ -335,6 +375,27 @@ export function createRpcRouter({
           },
         });
         return { result, connected: true };
+      }
+
+      case "LIVE_SIGHTINGS": {
+        const tabId = sender?.tab?.id;
+        const url = sender?.tab?.url || "";
+        const route = surfaceFromUrl(url);
+        const { values, errors } = validateLiveSightingList(message.payload?.sightings || []);
+        if (errors.length) log("invalid live sightings", errors);
+        // URL owns platform/surface and the current proof owns page load. No
+        // payload may claim another tab or stale document.
+        const proof = proofs.get?.(tabId);
+        const accepted = values.filter((s) =>
+          route.platform === "tt" && (route.surface === "LIVE" || route.surface === "LIVE_ROOM") &&
+          proof?.pageLoadId === s.page_load_id && proof?.surface === route.surface
+        ).map((s) => ({ ...s, platform: "tt", surface: route.surface }));
+        if (!getBridge().helloOk) {
+          buffer.push(...accepted.map((value) => ({ kind: "live", value })));
+          if (buffer.length > BUFFER_MAX) buffer = buffer.slice(-BUFFER_MAX);
+          return { queued: accepted.length, connected: false };
+        }
+        return { result: await sendLiveSightings(accepted), connected: true };
       }
 
       case "GET_STATUS": {
@@ -383,6 +444,8 @@ export function createRpcRouter({
               by_surface: {
                 WATCH_NEXT: 0,
                 HOME: 0,
+                EXPLORE: 0,
+                FOLLOWING: 0,
                 SEARCH: 0,
                 CHANNEL: 0,
                 SHORTS: 0,

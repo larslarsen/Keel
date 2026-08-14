@@ -62,9 +62,17 @@ export function platformLabel(p) {
 }
 
 /** Where a live stream lives, per platform. */
-export function liveUrl(id, platform) {
+export function liveUrl(id, platform, locator = "", channelID = "") {
+  if (platform === "tt" && /^@[a-z0-9_.-]{1,64}\/live$/.test(locator)) {
+    return `https://www.tiktok.com/${locator}`;
+  }
   const v = encodeURIComponent(id);
-  if (platform === "tt") return `https://www.tiktok.com/video/${v}`;
+  if (platform === "tt") {
+    if (/^@[A-Za-z0-9_.-]{1,64}$/.test(channelID)) {
+      return `https://www.tiktok.com/${encodeURIComponent(channelID)}/video/${v}`;
+    }
+    return `https://www.tiktok.com/video/${v}`;
+  }
   return `https://www.youtube.com/watch?v=${v}`;
 }
 

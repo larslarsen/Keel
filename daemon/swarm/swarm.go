@@ -324,6 +324,10 @@ func (n *Node) mayPublishLive() bool {
 	return n.cfg.Policy.Live && n.outbound.Load()
 }
 
+// MayPublishLive exposes the effective outbound gate to the daemon bridge.
+// Startup policy alone is insufficient during a contribution-level transition.
+func (n *Node) MayPublishLive() bool { return n.mayPublishLive() }
+
 // Policy exposes the capability set this node was constructed with, so the
 // daemon can report the effective policy rather than the stored setting.
 func (n *Node) Policy() Policy { return n.cfg.Policy }

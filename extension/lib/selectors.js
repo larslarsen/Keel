@@ -32,6 +32,10 @@ const STRING_FIELDS = new Set(["cards", "homeItems", "match"]);
 const LIST_FIELDS = new Set([
   "watch",
   "home",
+  "explore",
+  "following",
+  "liveWall",
+  "liveRoom",
   "href",
   "title",
   "channelLink",
@@ -47,6 +51,9 @@ const LIST_FIELDS = new Set([
   "playerId",
   "hashtag",
   "sound",
+  "active",
+  "creator",
+  "locator",
   "containers",
   "overlay",
 ]);
@@ -268,6 +275,22 @@ export function validateSelectorConfig(cfg) {
   }
   if (!cfg.badges || !validFieldSet(cfg.badges)) return null;
   if (!cfg.containers || !validFieldSet(cfg.containers)) return null;
+  if (cfg.platform === "tt") {
+    // TikTok's compiled extractor consumes all feed roots and all five
+    // Live fields. Rejecting partial configuration is safer than accepting it
+    // and silently making a supported surface inert.
+    const ttContainers = ["watch", "home", "explore", "following", "liveWall", "liveRoom"];
+    const ttLive = ["cards", "active", "locator", "creator", "title"];
+    const populated = (value) =>
+      (typeof value === "string" && value.length > 0) ||
+      (Array.isArray(value) && value.length > 0);
+    if (
+      !cfg.live ||
+      !validFieldSet(cfg.live) ||
+      !ttContainers.every((key) => populated(cfg.containers[key])) ||
+      !ttLive.every((key) => populated(cfg.live[key]))
+    ) return null;
+  }
   if (!validVocabulary(cfg.vocabulary)) return null;
   if (!cfg.containers.watch || !cfg.containers.home) return null;
 

@@ -1,6 +1,6 @@
 # Keel — Privacy Policy
 
-Last updated: 12 August 2026
+Last updated: 13 August 2026
 
 Keel records recommendation surfaces on YouTube and the scrolling feed presented
 to you on TikTok, so you can see and control what recommender systems show you.
@@ -50,7 +50,8 @@ videos being **recommended to you**:
 On supported TikTok feed/video surfaces there is no visible “up next” rail to
 record. Keel instead records the clips the rendered feed presents, in scroll
 order: video id, caption, creator, hashtags and sound id when present, plus when
-the clip was observed. Hashtag and sound clusters stay local. Fields for dwell
+the clip was observed. Explore and Following are recorded as distinct durable
+feed surfaces. Hashtag and sound clusters stay local. Fields for dwell
 and engagement exist for a future local mirror, but the current observers do not
 reliably collect them; this policy must change before collection does.
 
@@ -136,8 +137,10 @@ serve, so the level that answers them is the level that can ask. Searching what
 Keel has recorded on your own device works at every setting.
 
 **Announcing livestreams starts at Level 2.** When a stream appears in your
-recommendations, a sharing node tells other Keel users the stream exists — a
-video id and title. The notice carries **no sender field**: not your name and
+recommendations or on TikTok's Live discovery wall, a sharing node tells other
+Keel users the stream exists — its public platform, video id or canonical
+creator/live locator, creator/title and coarse sighting time. Page-load id and
+displayed slot are discarded before the notice; it carries **no sender field**: not your name and
 not an application identifier for your copy of Keel, and once relayed its
 payload does not say whether the sender saw the stream or forwarded somebody
 else's notice.

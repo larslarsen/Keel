@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseHTML } from "linkedom";
 
-import { extractFromContainer } from "../extension/content/extract.js";
+import { extractFromContainer, extractLiveSightings } from "../extension/content/extract.js";
 import {
   DEFAULT_SELECTORS,
   validateSelectorConfig,
@@ -238,6 +238,15 @@ describe("a second platform runs on the same engine (WO-057)", () => {
     assert.ok(validateSelectorConfig(tiktok));
   });
 
+  it("rejects a partial TikTok configuration rather than disabling a surface", () => {
+    const partial = structuredClone(tiktok);
+    delete partial.containers.liveRoom;
+    assert.equal(validateSelectorConfig(partial), null);
+    const missingEvidence = structuredClone(tiktok);
+    delete missingEvidence.live.active;
+    assert.equal(validateSelectorConfig(missingEvidence), null);
+  });
+
   it("extracts clips using only the TikTok config", () => {
     const doc = loadHtml("tiktok_feed.html");
     const out = extractFromContainer(doc.body, {
@@ -291,5 +300,32 @@ describe("a second platform runs on the same engine (WO-057)", () => {
       0,
       "platforms must not silently extract each other's pages"
     );
+  });
+
+  it("walks Explore and Following containers without collapsing their surfaces", () => {
+    const doc = loadHtml("tiktok_discovery.html");
+    const base = { page_load_id: "11111111-1111-4111-8111-111111111111", observed_at: Date.now(), platform: "tt", context_video_id: null };
+    const explore = extractFromContainer(doc.querySelector('[data-e2e="explore-list"]'), { ...base, surface: "EXPLORE" }, tiktok);
+    const following = extractFromContainer(doc.querySelector('[data-e2e="following-feed"]'), { ...base, surface: "FOLLOWING" }, tiktok);
+    assert.deepEqual(explore.impressions.map((x) => [x.surface, x.slot_index]), [["EXPLORE", 0], ["EXPLORE", 2]]);
+    assert.deepEqual(following.impressions.map((x) => x.surface), ["FOLLOWING"]);
+  });
+
+  it("emits all four Live-wall cards through the real captured ancestor shape", () => {
+    const doc = loadHtml("tiktok_live_wall.html");
+    const ctx = { page_load_id: "11111111-1111-4111-8111-111111111111", observed_at: Date.now(), platform: "tt", surface: "LIVE" };
+    const wall = extractLiveSightings(doc.querySelector("main#tiktok-live-main-container-id"), ctx, tiktok);
+    assert.deepEqual(wall.map((x) => [x.live_locator, x.slot_index]), [
+      ["@alpha.live/live", 0], ["@bravo.live/live", 1], ["@charlie.live/live", 2], ["@delta.live/live", 3],
+    ]);
+    assert.deepEqual(wall.map((x) => x.title), [
+      "Sanitized first Live title", "Sanitized second Live title", "Sanitized third Live title", "Sanitized fourth Live title",
+    ]);
+  });
+
+  it("does not enable a Live room from the former synthetic fixture", () => {
+    const rooms = loadHtml("tiktok_live_room.html");
+    const room = extractLiveSightings(rooms.querySelector("main"), { ...ctx, surface: "LIVE_ROOM" }, tiktok);
+    assert.equal(room.length, 0, "a room stays off until active/inactive DOM evidence is captured");
   });
 });

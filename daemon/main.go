@@ -18,6 +18,7 @@ import (
 
 	"github.com/keel-app/keel/daemon/bridge"
 	"github.com/keel-app/keel/daemon/store"
+	"github.com/keel-app/keel/daemon/swarm"
 )
 
 const version = "0.1.0"
@@ -204,6 +205,8 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 	switch env.Type {
 	case "IMPRESSIONS":
 		return handleImpressions(env, out, st)
+	case "LIVE_SIGHTINGS":
+		return handleLiveSightings(env, out)
 	case "STATS":
 		stats, err := st.Stats()
 		if err != nil {
@@ -712,6 +715,38 @@ func handleImpressions(env *bridge.Envelope, out io.Writer, st *store.Store) err
 		"inserted": n,
 		"received": len(p.Impressions),
 	})
+}
+
+// handleLiveSightings keeps rendered stream discovery out of the durable
+// impression catalogue. Page, slot and sender context are dropped here.
+func handleLiveSightings(env *bridge.Envelope, out io.Writer) error {
+	var p bridge.LiveSightingsPayload
+	if err := json.Unmarshal(env.Payload, &p); err != nil {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: "invalid LIVE_SIGHTINGS payload", Code: "bad_payload"})
+	}
+	n := currentSwarmNode()
+	if n == nil || n.Live() == nil || !n.MayPublishLive() {
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: "Live sharing starts at Broad sharing", Code: bridge.CodeContributionRequired,
+			Detail: bridge.ContributionRequiredDetail{Capability: "live", RequiredLevel: store.LevelBroad, EffectiveLevel: supervisor.effectiveLevel()}})
+	}
+	accepted := 0
+	for i := range p.Sightings {
+		s := &p.Sightings[i]
+		if err := bridge.ValidateLiveSighting(s); err != nil {
+			continue
+		}
+		r := swarm.LiveRecord{Platform: "tt", LiveLocator: s.LiveLocator, ChannelID: s.ChannelID, Title: s.Title, SeenAt: s.ObservedAt, StartedAt: s.ObservedAt}
+		if !swarm.ValidLiveRecord(r) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		published := n.PublishLive(ctx, r)
+		cancel()
+		if published {
+			accepted++
+		}
+	}
+	return reply(out, env.ID, "LIVE_SIGHTINGS_ACK", map[string]any{"accepted": accepted, "rejected": len(p.Sightings) - accepted})
 }
 
 func reply(out io.Writer, id, typ string, payload any) error {

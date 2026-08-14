@@ -1237,6 +1237,12 @@ snapshot, relay or publish path; Level 2+ runs the complete existing system.
 Tested with real gossipsub between nodes; like the rest of §7, not yet exercised
 between two machines on the open internet.
 
+**WO-098 (2026-08-13)** adds TikTok Live discovery without treating a creator
+route as a video id. Explore and Following remain durable ordinary feed
+observations. `/live` and an actively proven `/@creator/live` room produce only
+an ephemeral Level-2+ sighting with canonical `@creator/live` locator, creator,
+title and coarse time; page id and slot are discarded before the v2 Live wire.
+
 Livestreams are the case the block/catalogue split handles badly. A stream is
 interesting for hours and worthless afterwards, so persisting it into the
 catalogue — which is durable and never evicted — accumulates dead rows forever.

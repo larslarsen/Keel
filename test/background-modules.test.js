@@ -367,6 +367,74 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     );
   });
 
+  it("derives Live proof from the sender and gates sibling-valid sightings by capability and level", async () => {
+    const PID = "99999999-9999-4999-8999-999999999999";
+    let live = false;
+    const { router, sent } = makeRouter({
+      caps: { live_sightings: 1 },
+      reply: (type) => {
+        if (type === "GET_CONTRIBUTION") {
+          return { type: "CONTRIBUTION_RESULT", payload: { live, transition: "idle" } };
+        }
+        return { type: `${type}_RESULT`, payload: {} };
+      },
+    });
+    const sender = { tab: { id: 7, windowId: 1, url: "https://www.tiktok.com/live" } };
+    await router.handle({ type: "PAGE_CONTEXT", payload: { pageLoadId: PID, platform: "yt", surface: "HOME" } }, sender);
+    const valid = {
+      page_load_id: PID, observed_at: Date.now(), surface: "LIVE_ROOM", slot_index: 0,
+      platform: "tt", live_locator: "@creator/live", channel_id: "@creator",
+      channel_name: "Creator", title: "Live now", badges: ["LIVE"],
+    };
+    const first = await router.handle(
+      { type: "LIVE_SIGHTINGS", payload: { sightings: [valid, { ...valid, live_locator: "/bad" }] } },
+      sender,
+    );
+    assert.equal(first.result.dropped, 1, "Level 1 refuses Live even with the negotiated RPC");
+    assert.equal(sent.some((x) => x.type === "LIVE_SIGHTINGS"), false);
+
+    live = true;
+    await router.handle({ type: "LIVE_SIGHTINGS", payload: { sightings: [valid] } }, sender);
+    const publish = sent.find((x) => x.type === "LIVE_SIGHTINGS");
+    assert.equal(publish.payload.sightings.length, 1, "one malformed sibling cannot poison a valid sighting");
+    assert.equal(publish.payload.sightings[0].surface, "LIVE", "the sender URL, not the payload, owns the surface");
+  });
+
+  it("keeps one bounded tagged FIFO, preserves adjacent-kind order, and purges Live on downgrade", async () => {
+    const PID = "88888888-8888-4888-8888-888888888888";
+    const { router, bridge, sent } = makeRouter({
+      helloOk: false,
+      caps: { live_sightings: 1 },
+      reply: (type) => type === "GET_CONTRIBUTION"
+        ? { type: "CONTRIBUTION_RESULT", payload: { live: true, transition: "idle" } }
+        : { type: `${type}_RESULT`, payload: {} },
+    });
+    const sender = { tab: { id: 8, windowId: 1, url: "https://www.tiktok.com/live" } };
+    await router.handle({ type: "PAGE_CONTEXT", payload: { pageLoadId: PID } }, sender);
+    const sighting = (n) => ({ page_load_id: PID, observed_at: Date.now(), surface: "LIVE", slot_index: n, platform: "tt", live_locator: `@live${n}/live`, channel_id: `@live${n}`, title: `Live ${n}`, badges: [] });
+    const impression = { page_load_id: PID, observed_at: Date.now(), surface: "HOME", context_video_id: null, context_query_hash: null, slot_index: 0, video_id: "queuedvideo", channel_id: null, channel_name: null, title: "Queued impression", duration_s: null, view_count: null, published_at: null, badges: [] };
+    await router.handle({ type: "LIVE_SIGHTINGS", payload: { sightings: [sighting(1)] } }, sender);
+    await router.handle({ type: "IMPRESSIONS", payload: { impressions: [impression] } }, sender);
+    await router.handle({ type: "LIVE_SIGHTINGS", payload: { sightings: [sighting(2)] } }, sender);
+    assert.equal((await router.handle({ type: "GET_STATUS", payload: {} }, {})).buffered, 3);
+    bridge.helloOk = true;
+    router.flushBuffer();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(
+      sent.filter((x) => x.type === "LIVE_SIGHTINGS" || x.type === "IMPRESSIONS").map((x) => x.type),
+      ["LIVE_SIGHTINGS", "IMPRESSIONS", "LIVE_SIGHTINGS"],
+      "adjacent kinds group, but alternating evidence never reorders"
+    );
+
+    bridge.helloOk = false;
+    for (let i = 0; i < 201; i++) {
+      await router.handle({ type: "LIVE_SIGHTINGS", payload: { sightings: [sighting(i + 10)] } }, sender);
+    }
+    assert.equal((await router.handle({ type: "GET_STATUS", payload: {} }, {})).buffered, 200, "the cap is global across tagged records");
+    router.onBridgeMessage({ type: "CONTRIBUTION_STATUS", payload: { live: false, transition: "idle" } });
+    assert.equal((await router.handle({ type: "GET_STATUS", payload: {} }, {})).buffered, 0, "downgrade purges only queued Live evidence immediately");
+  });
+
   it("will not let a page claim a proof slot it has no browser-attributed tab for", async () => {
     const { router, proofs } = makeRouter();
     await router.handle(
@@ -395,7 +463,7 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     assert.equal(sent[0]?.payload?.accepted, true);
     assert.equal(
       sent[0]?.payload?.revision,
-      1,
+      2,
       "the client must name the disclosure revision it actually rendered"
     );
     assert.equal(siteBroadcasts.at(-1)?.type, "CONSENT_CHANGED");
@@ -447,10 +515,33 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     for (let i = 0; i < 8; i++) await Promise.resolve();
     assert.deepEqual(opened, ["consent"]);
     assert.equal(
-      broadcasts.some((m) => m.type === "CONTRIBUTION_STATUS" && m.payload?.consent_required),
+      broadcasts.some((m) => m.type === "NETWORK_CONSENT_STATUS" && m.payload?.consent_required),
       true,
-      "surfaces have to hear about the gate without a second RPC"
+      "extension pages may hear disclosure migration state under its own type"
     );
+  });
+
+  it("never presents network-consent payloads to content scripts as contribution state", async () => {
+    const { router, siteBroadcasts } = makeRouter({
+      caps: { network_consent: 1, contribution_runtime: 1 },
+      reply: (type) => {
+        if (type === "GET_NETWORK_CONSENT") {
+          return { type: "NETWORK_CONSENT_RESULT", payload: { consent_required: true } };
+        }
+        if (type === "GET_CONTRIBUTION") {
+          return { type: "CONTRIBUTION_RESULT", payload: { live: true, transition: "idle" } };
+        }
+        return { type: "OK", payload: {} };
+      },
+    });
+    router.onBridgeStatus(true, "", { capabilities: { network_consent: 1, contribution_runtime: 1 } });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.deepEqual(
+      siteBroadcasts.filter((m) => m.type === "CONTRIBUTION_STATUS").map((m) => m.payload),
+      [{ live: true, transition: "idle" }],
+      "an open Live observer must only receive effective policy state"
+    );
+    assert.equal(siteBroadcasts.some((m) => m.type === "NETWORK_CONSENT_STATUS"), false);
   });
 
   it("does not open a second consent tab for a first-run profile", async () => {

@@ -4,6 +4,9 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
+	"time"
 )
 
 const ProtocolV = 2
@@ -105,7 +108,7 @@ func ValidateImpression(imp *Impression) error {
 		return fmt.Errorf("observed_at required")
 	}
 	switch imp.Surface {
-	case "WATCH_NEXT", "HOME", "SEARCH", "CHANNEL", "SHORTS":
+	case "WATCH_NEXT", "HOME", "SEARCH", "CHANNEL", "SHORTS", "EXPLORE", "FOLLOWING":
 	default:
 		return fmt.Errorf("bad surface")
 	}
@@ -128,12 +131,67 @@ func ValidateImpression(imp *Impression) error {
 	if imp.Surface == "WATCH_NEXT" && (imp.ContextVideoID == nil || *imp.ContextVideoID == "") {
 		return fmt.Errorf("WATCH_NEXT needs context_video_id")
 	}
+	if (imp.Surface == "EXPLORE" || imp.Surface == "FOLLOWING") && imp.Platform != "tt" {
+		return fmt.Errorf("TikTok surface needs tt platform")
+	}
 	return nil
 }
 
 // ImpressionsPayload is the body of type IMPRESSIONS.
 type ImpressionsPayload struct {
 	Impressions []Impression `json:"impressions"`
+}
+
+// LiveSighting is an ephemeral rendered observation. Page context and slot are
+// validated at the bridge boundary then deliberately discarded before a
+// swarm.LiveRecord is constructed (WO-098): neither belongs in SQLite, gossip
+// or a snapshot.
+type LiveSighting struct {
+	PageLoadID  string   `json:"page_load_id"`
+	ObservedAt  int64    `json:"observed_at"`
+	Surface     string   `json:"surface"`
+	SlotIndex   int      `json:"slot_index"`
+	Platform    string   `json:"platform"`
+	LiveLocator string   `json:"live_locator"`
+	ChannelID   string   `json:"channel_id"`
+	ChannelName string   `json:"channel_name,omitempty"`
+	Title       string   `json:"title"`
+	Badges      []string `json:"badges"`
+}
+
+type LiveSightingsPayload struct {
+	Sightings []LiveSighting `json:"sightings"`
+}
+
+var (
+	uuidRE    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	locatorRE = regexp.MustCompile(`^@([a-z0-9_.-]{1,64})/live$`)
+	channelRE = regexp.MustCompile(`^@[A-Za-z0-9_.-]{1,64}$`)
+)
+
+func ValidateLiveSighting(s *LiveSighting) error {
+	if !uuidRE.MatchString(strings.ToLower(s.PageLoadID)) || s.ObservedAt <= 0 || s.SlotIndex < 0 || s.Platform != "tt" {
+		return fmt.Errorf("bad live sighting")
+	}
+	if s.Surface != "LIVE" && s.Surface != "LIVE_ROOM" {
+		return fmt.Errorf("bad live surface")
+	}
+	loc := locatorRE.FindStringSubmatch(s.LiveLocator)
+	if loc == nil || !channelRE.MatchString(s.ChannelID) || strings.ToLower(s.ChannelID) != "@"+loc[1] || s.Title == "" || len(s.Title) > 300 || len(s.ChannelName) > 300 || time.Now().UnixMilli()-s.ObservedAt > int64((12*time.Hour)/time.Millisecond) || s.ObservedAt > time.Now().Add(time.Hour).UnixMilli() {
+		return fmt.Errorf("missing live identity fields")
+	}
+	if len(s.Badges) > 12 {
+		return fmt.Errorf("too many live badges")
+	}
+	for _, b := range s.Badges {
+		if len(b) == 0 || len(b) > 40 {
+			return fmt.Errorf("bad live badge")
+		}
+	}
+	if s.Badges == nil {
+		s.Badges = []string{}
+	}
+	return nil
 }
 
 // StatsPayload is STATS_RESULT body.

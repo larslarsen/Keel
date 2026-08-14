@@ -26,6 +26,10 @@ const (
 	// to reconcile, so one name serves both HELLO negotiation and
 	// ContributionRequiredDetail.Capability.
 	CapContributionImpact = "contribution_impact"
+	// CapLiveSightings is the dedicated, ephemeral rendered-live bridge path
+	// (WO-098). It is intentionally separate from CapTikTok: support for the
+	// static message shape is not permission to use Live at Level 1.
+	CapLiveSightings = "live_sightings"
 
 	// Stable HELLO_ACK / ERROR codes.
 	CodeOK                    = "ok"
@@ -120,6 +124,7 @@ func DaemonCaps() map[string]int {
 		CapContributionRuntime: 1,
 		CapNetworkConsent:      1,
 		CapContributionImpact:  1,
+		CapLiveSightings:       1,
 	}
 }
 
@@ -298,6 +303,8 @@ func RPCCapability(typ string) string {
 		return CapNetworkConsent
 	case "GET_CONTRIBUTION_IMPACT", "RESET_CONTRIBUTION_IMPACT":
 		return CapContributionImpact
+	case "LIVE_SIGHTINGS":
+		return CapLiveSightings
 	default:
 		// TikTok is a surface on IMPRESSIONS/SUGGEST, not a separate RPC.
 		// CapTikTok is UI/selector-facing; daemon still accepts tt rows under core.

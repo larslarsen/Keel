@@ -48,7 +48,7 @@ import (
 // shown. Raise this only when that sentence stops being true, and update the
 // consent screen in the same change — the number and the wording are one fact
 // stored in two places, and the test suite checks they agree.
-const NetworkConsentRevision = 1
+const NetworkConsentRevision = 2
 
 const (
 	// metaNetworkConsentKey holds the accepted revision.

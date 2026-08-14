@@ -148,6 +148,13 @@ subscription and relay are permanent and not tied to opening the Live tab. At
 Level 1 the Live surface stays visible but unavailable with a direct Level-2
 explanation; there is no partial receive-only Live mode.
 
+TikTok Explore and Following are distinct durable ordinary-impression surfaces.
+TikTok `/live` and `/@creator/live` are instead ephemeral Level-2+ Live
+sightings: a record uses a canonical lowercase `@creator/live` locator (or a
+rendered numeric TikTok video id), never a fabricated room id. Page-load id and
+displayed slot are bridge-only and never enter SQLite, the Live wire, snapshots
+or logs. Live wire v2 is `keel/live/2` and `/keel/live-snapshot/2.0.0`.
+
 The following capabilities are independently selected; they are not inferred
 from one generic “swarm enabled” boolean:
 
@@ -304,7 +311,8 @@ envelope, not every RPC payload revision. Compatibility is negotiated inside
   "required": { "core": 1, "network_consent": 1 },
   "optional": { "selectors": 1, "tiktok": 1, "scroll_history": 1,
                 "peer_search": 2, "word_stats": 1, "queue": 1,
-                "contribution_runtime": 1, "contribution_impact": 1 }
+                "contribution_runtime": 1, "contribution_impact": 1,
+                "live_sightings": 1 }
 }
 ```
 

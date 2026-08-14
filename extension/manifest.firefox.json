@@ -29,6 +29,7 @@
     {
       "resources": [
         "content/observer.js",
+        "content/live_policy.js",
         "content/extract.js",
         "content/extract_yt.js",
         "content/hide.js",

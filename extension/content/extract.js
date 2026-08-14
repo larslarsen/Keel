@@ -86,7 +86,7 @@ export function homeItemSel(cfg = DEFAULT_SELECTORS) {
 }
 /** What a MutationObserver should consider relevant for a given config. */
 export function mutationSel(cfg = DEFAULT_SELECTORS) {
-  return `${cfg.cards}, ${cfg.homeItems}`;
+  return `${cfg.cards}, ${cfg.homeItems}${cfg.live?.cards ? `, ${cfg.live.cards}` : ""}`;
 }
 
 /** @param {string | null | undefined} text */
@@ -244,8 +244,11 @@ export function channelIdFromHref(href, platform = "yt") {
 export function platformFromUrl(href) {
   try {
     const h = new URL(href, "https://www.youtube.com").hostname;
-    if (/(^|\.)youtube\.com$/.test(h)) return "yt";
-    if (/(^|\.)tiktok\.com$/.test(h)) return "tt";
+    // These are the two hosts named in the manifest, not domain suffixes.
+    // A content script can be handed a URL by extension code, so accepting an
+    // arbitrary subdomain here would quietly expand the user's permission.
+    if (h === "www.youtube.com") return "yt";
+    if (h === "www.tiktok.com") return "tt";
   } catch {
     /* not a URL we can read */
   }
@@ -265,8 +268,10 @@ export function surfaceFromUrl(href) {
   const platform = platformFromUrl(href);
   try {
     const u = new URL(href, "https://www.youtube.com");
+    // Exact routes accept an optional trailing slash, never a prefix.
+    const path = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, "") : u.pathname;
     if (platform === "yt") {
-      if (u.pathname === "/watch") {
+      if (path === "/watch") {
         const v = u.searchParams.get("v");
         return {
           platform,
@@ -275,30 +280,44 @@ export function surfaceFromUrl(href) {
         };
       }
       // HOME only at the exact root (WO-010). /feed/*, /@*, /results* stay idle.
-      if (u.pathname === "/" || u.pathname === "") {
+      if (path === "/" || path === "") {
         return { platform, surface: "HOME", context_video_id: null };
       }
     }
     if (platform === "tt") {
       // /@author/video/<id> is a single clip with a recommendation column.
-      const m = u.pathname.match(/^\/@[^/]+\/video\/(\d{15,25})$/);
+      const m = path.match(/^\/@[^/]+\/video\/(\d{15,25})$/);
       if (m) {
         return { platform, surface: "WATCH_NEXT", context_video_id: m[1] };
       }
       // A live room reads as a watch page whose id is the room.
-      const live = u.pathname.match(/^\/@[^/]+\/live$/);
+      const live = path.match(/^\/@[^/]+\/live$/);
       if (live) {
-        return { platform, surface: "WATCH_NEXT", context_video_id: null };
+        return { platform, surface: "LIVE_ROOM", context_video_id: null,
+          live_locator: liveLocatorFromHref(path) };
       }
       // The For You feed, and the explicit /foryou path.
-      if (u.pathname === "/" || u.pathname === "" || u.pathname === "/foryou") {
+      if (path === "/" || path === "" || path === "/foryou") {
         return { platform, surface: "HOME", context_video_id: null };
       }
+      if (path === "/explore") return { platform, surface: "EXPLORE", context_video_id: null };
+      if (path === "/following") return { platform, surface: "FOLLOWING", context_video_id: null };
+      if (path === "/live") return { platform, surface: "LIVE", context_video_id: null };
     }
   } catch {
     /* ignore */
   }
   return { platform, surface: null, context_video_id: null };
+}
+
+/** Canonical TikTok stream identity, compiled rather than selector supplied. */
+export function liveLocatorFromHref(href) {
+  try {
+    const u = new URL(href, "https://www.tiktok.com");
+    if (u.hostname !== "www.tiktok.com") return null;
+    const m = u.pathname.replace(/\/{2,}/g, "/").match(/^\/@([A-Za-z0-9_.-]{1,64})\/live$/);
+    return m ? `@${m[1].toLowerCase()}/live` : null;
+  } catch { return null; }
 }
 
 /**
@@ -601,7 +620,7 @@ export function readCardFields(el, cfg = DEFAULT_SELECTORS) {
   return readCompactFields(el, cfg) || readLockupFields(el, cfg);
 }
 
-const OBSERVED_SURFACES = new Set(["WATCH_NEXT", "HOME"]);
+const OBSERVED_SURFACES = new Set(["WATCH_NEXT", "HOME", "EXPLORE", "FOLLOWING"]);
 
 /**
  * @param {Element} el
@@ -769,7 +788,7 @@ export function extractFromContainer(root, ctx, cfg = DEFAULT_SELECTORS) {
     seen.add(f.video_id);
     const imp = extractFromElement(
       card,
-      { ...ctx, surface: "WATCH_NEXT", slot_index },
+      { ...ctx, slot_index },
       f,
       cfg
     );
@@ -777,4 +796,35 @@ export function extractFromContainer(root, ctx, cfg = DEFAULT_SELECTORS) {
     else failures += 1;
   }
   return { impressions, failures, candidates: cards.length };
+}
+
+/**
+ * Extract one rendered TikTok Live card. This intentionally does not reuse
+ * readCardFields: a locator is not an ordinary durable video id.
+ */
+export function extractLiveSightings(root, ctx, cfg = DEFAULT_SELECTORS) {
+  if (!root || !ctx || !["LIVE", "LIVE_ROOM"].includes(ctx.surface) || ctx.platform !== "tt") return [];
+  // No active/inactive room capture has been accepted yet. Do not turn a
+  // synthetic selector into a claim that an individual room is live: a room
+  // URL is not evidence, and wall discovery remains fully functional.
+  if (ctx.surface === "LIVE_ROOM") return [];
+  const live = cfg.live;
+  if (!live) return [];
+  const cards = [
+    ...(root.matches?.(live.cards) ? [root] : []),
+    ...root.querySelectorAll(live.cards),
+  ];
+  const out = [], seen = new Set();
+  for (let slot_index = 0; slot_index < cards.length; slot_index++) {
+    const card = cards[slot_index];
+    const a = pick(card, live.locator);
+    const live_locator = liveLocatorFromHref(a?.getAttribute("href"));
+    const channel_id = channelIdFromHref(a?.getAttribute("href"), "tt");
+    const title = (pick(card, live.title)?.textContent || "").replace(/\s+/g, " ").trim();
+    const channel_name = (pick(card, live.creator)?.textContent || "").replace(/\s+/g, " ").trim();
+    if (!live_locator || !channel_id || channel_id.toLowerCase() !== live_locator.slice(0, -5) || !title || seen.has(live_locator)) continue;
+    seen.add(live_locator);
+    out.push({ page_load_id: ctx.page_load_id, observed_at: ctx.observed_at ?? Date.now(), surface: ctx.surface, slot_index, platform: "tt", live_locator, channel_id, channel_name, title, badges: extractBadges(card, cfg) });
+  }
+  return out;
 }
