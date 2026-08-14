@@ -229,6 +229,10 @@ type Node struct {
 	// degraded-DHT ordering tests hold discovery open while proving an already
 	// connected Keel peer remains usable (WO-111).
 	providerLookup func(context.Context, cid.Cid, int) <-chan peer.AddrInfo
+	// peerConnect is the matching dial seam. Production nodes use Host.Connect;
+	// rendezvous tests use it to prove dead ephemeral providers are attempted
+	// concurrently rather than consuming the whole lookup deadline in series.
+	peerConnect func(context.Context, peer.AddrInfo) error
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{} // dedupes concurrent fetches of one key
@@ -369,6 +373,7 @@ func newNode(h host.Host, kdht *dht.IpfsDHT, st Store, cfg Config) *Node {
 	n := &Node{
 		host: h, dht: kdht, st: st, cfg: cfg,
 		providerLookup: kdht.FindProvidersAsync,
+		peerConnect:    h.Connect,
 		searchSem:      newSearchPermits(),
 		inflight:       map[string]chan struct{}{},
 		serve:          newServeLimiter(),

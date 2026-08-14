@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus or GPT-5.6 Terra High) |
-| **Status** | **Code accepted 2026-08-14 — live QA with a deliberately stale revision-1 build pending** |
+| **Status** | **Accepted and live-verified 2026-08-14** — with the same daemon binary, the stale revision-1 consent page (old extension) was tried four times: the stale page claims consent (reports success) but observation never actually starts — the gate stays closed, so no recording and no false `CONSENT_CHANGED` reach the daemon. The fail-closed property holds: a stale affirmative can never enable browser observation. The rev-2 consent page in the updated extension granted normally. The stale page is a stale *extension*, not a stale binary |
 | **Date** | 2026-08-14 |
 | **Source** | Windows live QA: recording accepted four times, but consent remained required |
 | **Depends on** | WO-089 revisioned daemon-owned network consent |

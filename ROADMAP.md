@@ -70,6 +70,14 @@ The current implementation queue is:
   failure backoff. The whole-index, Level-2, authorless and bounded-expiry
   contract is unchanged.
 
+- **WO-113 — rendezvous must survive ephemeral identity churn.**
+  **Implemented; two-machine rerun pending.** Provider records outlive the
+  ephemeral peer identity that published them, so the eight successful
+  connections are now selected from a separately bounded 32-candidate DHT
+  scan. A quiet walk may dial verified remembered peers directly, without
+  claiming that the shared discovery key was published or making identities
+  stable.
+
 - **WO-099 — streaming-search lifecycle and resource correction.** Implemented.
   Independent page jobs, early-event preservation and prompt downgrade
   cancellation landed; WO-100 closed its first review findings.
@@ -176,6 +184,9 @@ owns the bounded network-health state.
 WO-111 is accepted and live-verified; its two-machine rerun passed.
 WO-112 is implemented; matching Live counts after both nodes reconcile is the
 immediate two-machine check.
+WO-113 repairs the restart-induced rendezvous failure blocking that check; the
+immediate rerun is `keel_peers: 1` on both machines, followed by matching Live
+counts.
 WO-110 is code accepted; its deliberately stale revision-1 live check remains.
 There is no implementation order behind either result: the next correction, if
 one is needed, comes from the remaining live-QA evidence rather than from an
