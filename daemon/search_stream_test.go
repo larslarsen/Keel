@@ -53,9 +53,30 @@ func (s *syncBuf) envelopes(t *testing.T) []*bridge.Envelope {
 }
 
 // streamingSession is a negotiated session at peer_search revision 3.
-func streamingSession() *bridgeSession {
+//
+// retire() stands in for the job goroutine's deferred finishJob. Since WO-100 a
+// cancelled job keeps its registration — and its place against the active-job
+// ceiling — until its goroutine terminates, so a test that only cancels would
+// leak registrations into the shared registry and starve later tests.
+func streamingSession(t *testing.T) *bridgeSession {
 	caps := bridge.DaemonCaps()
-	return &bridgeSession{helloOK: true, caps: caps}
+	sess := &bridgeSession{helloOK: true, caps: caps}
+	t.Cleanup(func() { sess.retireAll() })
+	return sess
+}
+
+// retireAll finishes every job the way a job goroutine would.
+func (s *bridgeSession) retireAll() {
+	s.jobMu.Lock()
+	jobs := map[string]*searchJob{}
+	for id, j := range s.jobs {
+		jobs[id] = j
+	}
+	s.jobMu.Unlock()
+	for id, j := range jobs {
+		j.stop(cancelSession)
+		s.finishJob(id, j)
+	}
 }
 
 // TestEventEnvelopeIdsCannotResolveARequest is WO-095 §3's correlation rule.
@@ -144,7 +165,7 @@ func TestEventSequenceIsMonotonicUnderConcurrency(t *testing.T) {
 // TestJobsAreScopedToTheirSession is WO-095 §3's isolation requirement: two
 // sessions must never receive one another's events.
 func TestJobsAreScopedToTheirSession(t *testing.T) {
-	a, b := streamingSession(), streamingSession()
+	a, b := streamingSession(t), streamingSession(t)
 	bufA, bufB := &syncBuf{}, &syncBuf{}
 
 	jobA, err := a.startJob("11111111-1111-4111-8111-111111111111", bufA, func() {})
@@ -174,7 +195,6 @@ func TestJobsAreScopedToTheirSession(t *testing.T) {
 	if b.cancelJob(jobA.id, cancelReplaced) {
 		t.Error("session B cancelled a job belonging to session A")
 	}
-	b.cancelAllJobs()
 	_ = jobB
 }
 
@@ -190,8 +210,7 @@ func TestJobsAreScopedToTheirSession(t *testing.T) {
 //
 // Replacement is a page decision, expressed by the page cancelling its own id.
 func TestConcurrentPagesOnOneSessionDoNotCancelEachOther(t *testing.T) {
-	sess := streamingSession()
-	defer sess.cancelAllJobs()
+	sess := streamingSession(t)
 	buf := &syncBuf{}
 
 	pageACancelled := false
@@ -215,8 +234,7 @@ func TestConcurrentPagesOnOneSessionDoNotCancelEachOther(t *testing.T) {
 // TestDuplicateLiveSearchIDIsRefused is WO-099 §7: a duplicate id would
 // silently take over another page's route rather than starting a search.
 func TestDuplicateLiveSearchIDIsRefused(t *testing.T) {
-	sess := streamingSession()
-	defer sess.cancelAllJobs()
+	sess := streamingSession(t)
 	buf := &syncBuf{}
 	const id = "33333333-3333-4333-8333-333333333333"
 
@@ -232,8 +250,7 @@ func TestDuplicateLiveSearchIDIsRefused(t *testing.T) {
 // room by cancelling somebody else's search is invisible to whoever was using
 // it, so excess starts are refused instead.
 func TestActiveJobCeilingRefusesRatherThanDisplacing(t *testing.T) {
-	sess := streamingSession()
-	defer sess.cancelAllJobs()
+	sess := streamingSession(t)
 	buf := &syncBuf{}
 
 	cancelled := 0
@@ -256,8 +273,7 @@ func TestActiveJobCeilingRefusesRatherThanDisplacing(t *testing.T) {
 // transition must not wait for a worker to poll, and must not let a job report
 // COMPLETE.
 func TestDowngradeCancelsEverySearchPromptly(t *testing.T) {
-	sess := streamingSession()
-	defer sess.cancelAllJobs()
+	sess := streamingSession(t)
 	buf := &syncBuf{}
 
 	job, err := sess.startJob("44444444-4444-4444-8444-444444444444", buf, func() {})
@@ -277,7 +293,7 @@ func TestDowngradeCancelsEverySearchPromptly(t *testing.T) {
 // and a browser going away (WO-095 §4). Work whose results nobody can receive
 // must not keep spending peers' serving budget.
 func TestSessionTeardownCancelsEveryJob(t *testing.T) {
-	sess := streamingSession()
+	sess := streamingSession(t)
 	buf := &syncBuf{}
 	n := 0
 	if _, err := sess.startJob("55555555-5555-4555-8555-555555555555", buf, func() { n++ }); err != nil {
@@ -287,8 +303,11 @@ func TestSessionTeardownCancelsEveryJob(t *testing.T) {
 	if n != 1 {
 		t.Errorf("session teardown cancelled %d jobs, want 1", n)
 	}
+	// The id stays reserved until the job's goroutine retires it (WO-100 §5),
+	// so cancelling again is still idempotent and still finds it.
+	sess.retireAll()
 	if sess.cancelJob("55555555-5555-4555-8555-555555555555", cancelReplaced) {
-		t.Error("a job survived session teardown")
+		t.Error("a job survived being retired")
 	}
 }
 
@@ -296,7 +315,7 @@ func TestSessionTeardownCancelsEveryJob(t *testing.T) {
 // its own has not made an error, and telling it so would be noise it cannot act
 // on.
 func TestCancelIsIdempotent(t *testing.T) {
-	sess := streamingSession()
+	sess := streamingSession(t)
 	env, err := bridge.NewEnvelope("req-1", "PEER_SEARCH_CANCEL",
 		bridge.PeerSearchCancelPayload{SearchID: "never-existed"})
 	if err != nil {
@@ -483,4 +502,84 @@ func TestProgressEventsCarryNoQueryOrPeerIdentity(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestCancelledIdStaysReservedUntilTheJobRetires is WO-100 §5.
+//
+// Cancelling used to deregister immediately, while the goroutine was still
+// winding down. The same UUID could then be accepted for a new job — and when
+// the old goroutine ran its deferred finish, it deleted the NEW one, because
+// the entry was keyed only by the reused string. The new search then ran
+// unregistered, outside the ceiling, and its own cancel reported that it did
+// not exist.
+func TestCancelledIdStaysReservedUntilTheJobRetires(t *testing.T) {
+	sess := streamingSession(t)
+	buf := &syncBuf{}
+	const id = "66666666-6666-4666-8666-666666666666"
+
+	old, err := sess.startJob(id, buf, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess.cancelJob(id, cancelReplaced) {
+		t.Fatal("cancelling a live job reported it did not exist")
+	}
+	if got := old.stopReason(); got != cancelReplaced {
+		t.Errorf("stop reason = %q, want %q", got, cancelReplaced)
+	}
+
+	// Still retiring: the id is reserved and reusing it is refused.
+	if _, err := sess.startJob(id, buf, func() {}); !errors.Is(err, errDuplicateSearchID) {
+		t.Errorf("a UUID was reused while its job was still retiring (err=%v)", err)
+	}
+	// Cancellation stays idempotent while it retires.
+	if !sess.cancelJob(id, cancelReplaced) {
+		t.Error("cancelling a retiring job reported it did not exist")
+	}
+
+	// The goroutine terminates.
+	sess.finishJob(id, old)
+
+	fresh, err := sess.startJob(id, buf, func() {})
+	if err != nil {
+		t.Fatalf("the id was not released after the job retired: %v", err)
+	}
+
+	// The OLD job's deferred finish must not touch the new registration.
+	sess.finishJob(id, old)
+	if !sess.cancelJob(id, cancelReplaced) {
+		t.Error("the retired job's deferred finish deleted the job that reused its id")
+	}
+	sess.finishJob(id, fresh)
+}
+
+// TestRetiringJobsStillCountAgainstTheCeiling: releasing the slot on cancel
+// would open a hole that admits unbounded retiring work.
+func TestRetiringJobsStillCountAgainstTheCeiling(t *testing.T) {
+	sess := streamingSession(t)
+	buf := &syncBuf{}
+
+	var jobs []*searchJob
+	for i := 0; i < maxActiveSearchJobs; i++ {
+		id := fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012d", i)
+		j, err := sess.startJob(id, buf, func() {})
+		if err != nil {
+			t.Fatalf("start %d refused early: %v", i, err)
+		}
+		jobs = append(jobs, j)
+		sess.cancelJob(id, cancelReplaced)
+	}
+	// All cancelled, none retired: the ceiling still holds.
+	if _, err := sess.startJob("bbbbbbbb-0000-4000-8000-000000000000", buf, func() {}); !errors.Is(err, errSearchBusy) {
+		t.Errorf("cancelled-but-retiring jobs released their slots (err=%v)", err)
+	}
+	for i, j := range jobs {
+		sess.finishJob(fmt.Sprintf("aaaaaaaa-0000-4000-8000-%012d", i), j)
+	}
+	// Once retired, the slots are free again.
+	fresh, err := sess.startJob("bbbbbbbb-0000-4000-8000-000000000000", buf, func() {})
+	if err != nil {
+		t.Errorf("slots were not released after the jobs retired: %v", err)
+	}
+	sess.finishJob("bbbbbbbb-0000-4000-8000-000000000000", fresh)
 }

@@ -380,10 +380,11 @@ func TestLevelTwoServesItsOwnCatalogue(t *testing.T) {
 	defer cNode.Close()
 
 	prefix := store.CataloguePrefix("localvid001", store.DefaultPrefixBits)
-	rows, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), prefix, true)
+	res, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), prefix, true)
 	if err != nil {
 		t.Fatal(err)
 	}
+	rows := res.Rows
 	if rows == 0 {
 		t.Error("a Level-2 node served no catalogue rows, so its graph blocks arrive unlabelled")
 	}

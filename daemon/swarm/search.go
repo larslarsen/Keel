@@ -159,7 +159,7 @@ func (n *Node) StreamingSearch(
 	// (WO-099 §4).
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	meter := &budgetMeter{limit: searchByteBudget(n.st.DiskBudget()), cancel: cancel}
+	meter := newBudgetMeter(searchByteBudget(n.st.DiskBudget()), cancel)
 	jobCtx = withBudget(jobCtx, meter)
 
 	st := newSearchState(n, plan, targets, limit, ev)
@@ -209,8 +209,15 @@ type searchState struct {
 	// its prefix is in flight, join that one rather than starting another";
 	// anything in neither is retryable and will be re-nominated by the next
 	// eligible response.
-	checked   map[string]bool
-	resolving map[string]bool
+	checked map[string]bool
+	// candidates in flight, so a concurrent nomination joins the resolution
+	// already running rather than skipping the candidate and calling itself
+	// gainless (WO-100 §4).
+	candidates map[string]*candidateState
+	// absent is a candidate a COMPLETE broad traversal failed to title. Only a
+	// complete traversal may retire a candidate; anything less leaves it
+	// retryable.
+	absent map[string]bool
 	// prefixes coalesces catalogue traversals across the whole job.
 	prefixes *prefixGroup
 	meter    *budgetMeter
@@ -231,20 +238,21 @@ type searchState struct {
 
 func newSearchState(n *Node, plan store.QueryPlan, targets map[int]store.WordTarget, limit int, ev SearchEvents) *searchState {
 	s := &searchState{
-		limit:     limit,
-		n:         n,
-		plan:      plan,
-		ev:        ev,
-		targets:   targets,
-		tokenIDs:  map[string]int{},
-		wordsFor:  map[string][]int{},
-		wordFound: map[int]map[string]bool{},
-		wordMiss:  map[int]int{},
-		checked:   map[string]bool{},
-		resolving: map[string]bool{},
-		prefixes:  newPrefixGroup(),
-		emitted:   map[string]bool{},
-		usedPeers: map[peer.ID]bool{},
+		limit:      limit,
+		n:          n,
+		plan:       plan,
+		ev:         ev,
+		targets:    targets,
+		tokenIDs:   map[string]int{},
+		wordsFor:   map[string][]int{},
+		wordFound:  map[int]map[string]bool{},
+		wordMiss:   map[int]int{},
+		checked:    map[string]bool{},
+		candidates: map[string]*candidateState{},
+		absent:     map[string]bool{},
+		prefixes:   newPrefixGroup(),
+		emitted:    map[string]bool{},
+		usedPeers:  map[peer.ID]bool{},
 	}
 	for _, t := range plan.Tokens {
 		if t.Discovery {
@@ -491,81 +499,154 @@ func (s *searchState) markStopped(reason string) {
 // returns it only after every title is resolved and checked, which is what
 // makes "saturated" mean "this peer really added nothing" rather than "this
 // peer's titles have not arrived yet".
+// creditResponse resolves the candidates one response nominated, checks them
+// against the complete query, and reports what that response gained.
+//
+// # Why a response waits for candidates another worker is resolving
+//
+// The previous version skipped a candidate whose resolution another worker had
+// already claimed, and returned zero gain for it. That reintroduced exactly the
+// rule it was meant to protect: the response was recorded as gainless — and
+// could saturate a word — while the candidate that would have advanced that
+// word was still being fetched. So concurrent nominations join a completion
+// barrier, and a response is judged only once its candidates are decided
+// (WO-100 §4).
+//
+// # What counts as gain
+//
+// A candidate counts toward this response if it was not already checked when
+// this response began. That is what makes a joint resolution fair: if another
+// worker's traversal is what actually resolved the video, both responses
+// observe the gain rather than one of them recording a false miss — and because
+// word counts are sets of video ids, neither double-counts it.
 func (s *searchState) creditResponse(ctx context.Context, token string, candidates []string) map[int]int {
 	gained := map[int]int{}
 	for _, id := range s.wordsFor[token] {
 		gained[id] = 0
 	}
-
-	// Claim the candidates this worker will resolve. A candidate already
-	// checked is done; one already being resolved by another worker is that
-	// worker's to finish; anything else is retryable and claimed here.
-	s.mu.Lock()
-	fresh := make([]string, 0, len(candidates))
-	for _, id := range candidates {
-		if id == "" || s.checked[id] || s.resolving[id] {
-			continue
-		}
-		s.resolving[id] = true
-		fresh = append(fresh, id)
-	}
-	s.mu.Unlock()
-	if len(fresh) == 0 {
+	if len(candidates) == 0 {
 		return gained
 	}
 
-	resolved := s.resolveTitles(ctx, fresh)
+	// Partition into what this worker will resolve and what it will wait for,
+	// and record which candidates were already decided before it started.
+	var mine []string
+	var joined []*candidateState
+	wasChecked := map[string]bool{}
+
+	s.mu.Lock()
+	for _, id := range candidates {
+		if id == "" {
+			continue
+		}
+		if s.checked[id] {
+			wasChecked[id] = true
+			continue
+		}
+		if s.absent[id] {
+			// A complete traversal already established this one has no public
+			// title. Re-nominating it every cycle would spend the budget
+			// re-traversing a bucket that answered.
+			wasChecked[id] = true
+			continue
+		}
+		if st, busy := s.candidates[id]; busy {
+			joined = append(joined, st)
+			continue
+		}
+		cs := &candidateState{done: make(chan struct{})}
+		s.candidates[id] = cs
+		mine = append(mine, id)
+	}
+	s.mu.Unlock()
 
 	touched := map[int]bool{}
 	var results []bridge.SearchHit
 
-	s.mu.Lock()
-	for _, h := range resolved {
-		// Released from `resolving` either way. Only a candidate whose title is
-		// locally available becomes `checked`; the rest fall back to retryable,
-		// so a later eligible response can pick them up (WO-099 §5). Marking a
-		// candidate checked before its bucket resolved is what used to discard
-		// it forever after one transient failure.
-		delete(s.resolving, h.VideoID)
-		if h.Title == "" {
-			continue
-		}
-		s.checked[h.VideoID] = true
-		for _, wordID := range s.plan.WordIDsInTitle(h.Title) {
-			if !s.tracksWord(wordID) {
+	if len(mine) > 0 {
+		hits, settled := s.resolveTitles(ctx, mine)
+
+		s.mu.Lock()
+		for _, h := range hits {
+			// Only a candidate whose title is locally available becomes
+			// checked. One whose prefix came back incomplete or unavailable is
+			// not absent — nothing looked for it — so it stays retryable and a
+			// later eligible response can pick it up.
+			if h.Title == "" {
 				continue
 			}
-			if s.wordFound[wordID] == nil {
-				s.wordFound[wordID] = map[string]bool{}
+			s.checked[h.VideoID] = true
+			for _, wordID := range s.plan.WordIDsInTitle(h.Title) {
+				if !s.tracksWord(wordID) {
+					continue
+				}
+				if s.wordFound[wordID] == nil {
+					s.wordFound[wordID] = map[string]bool{}
+				}
+				if s.wordFound[wordID][h.VideoID] {
+					continue
+				}
+				s.wordFound[wordID][h.VideoID] = true
+				touched[wordID] = true
 			}
-			if s.wordFound[wordID][h.VideoID] {
-				continue
+			if s.plan.MatchTitle(h.Title) && !s.emitted[h.VideoID] {
+				s.emitted[h.VideoID] = true
+				s.matched++
+				// The presentation cap bounds what is STREAMED, never what is
+				// discovered or counted (WO-095 §8).
+				if s.limit <= 0 || s.streamed < s.limit {
+					s.streamed++
+					results = append(results, h)
+				}
 			}
-			s.wordFound[wordID][h.VideoID] = true
-			gained[wordID]++
-			touched[wordID] = true
 		}
-		if s.plan.MatchTitle(h.Title) && !s.emitted[h.VideoID] {
-			s.emitted[h.VideoID] = true
-			s.matched++
-			// The presentation cap bounds what is STREAMED, never what is
-			// discovered or counted (WO-095 §8).
-			if s.limit <= 0 || s.streamed < s.limit {
-				s.streamed++
-				results = append(results, h)
+		// A candidate in a completely-traversed prefix that still has no title
+		// is definitively absent from the network's public catalogue as far as
+		// this search can tell, and is retired so it is not re-nominated
+		// forever. Everything else goes back to retryable.
+		for _, id := range mine {
+			cs := s.candidates[id]
+			if settled[id] && !s.checked[id] {
+				s.absent[id] = true
 			}
+			delete(s.candidates, id)
+			if cs != nil {
+				close(cs.done)
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	// Wait for the candidates another worker claimed. Woken by the job context
+	// too, so a cancellation, a downgrade or the budget running out never
+	// leaves a worker parked here (WO-100 §3).
+	for _, cs := range joined {
+		select {
+		case <-cs.done:
+		case <-ctx.Done():
 		}
 	}
-	// Anything the resolver never returned a row for at all is released too,
-	// or a candidate could be stranded in `resolving` for the rest of the job.
-	for _, id := range fresh {
-		delete(s.resolving, id)
+
+	// Gain is computed after everything this response nominated is decided,
+	// including the parts another worker resolved.
+	s.mu.Lock()
+	for _, wordID := range s.wordsFor[token] {
+		found := s.wordFound[wordID]
+		if found == nil {
+			continue
+		}
+		for _, id := range candidates {
+			if id == "" || wasChecked[id] {
+				continue
+			}
+			if found[id] {
+				gained[wordID]++
+			}
+		}
 	}
 	// One update per word per response, carrying the final count, rather than
 	// one per candidate: a single response can confirm hundreds of candidates,
-	// and a bar cannot render hundreds of frames anyway. The resolution of one
-	// response IS the unit "immediately after each title is resolved and
-	// checked" (WO-095 §7) describes — nothing is deferred past it.
+	// and a bar cannot render hundreds of frames anyway.
 	updates := make(map[int]int, len(touched))
 	for wordID := range touched {
 		updates[wordID] = len(s.wordFound[wordID])
@@ -584,36 +665,63 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 }
 
 // resolveTitles downloads the complete broad prefix buckets these candidates
-// need, coalesced across the whole job, and reads back whatever titles are now
-// locally available.
+// need, coalesced across the whole job, and reports what was established.
 //
 // The request is always the complete broad bucket; nothing here narrows to a
 // candidate id, and the traversal completes even once the wanted row has
 // arrived (catalogue.go rule 1). Two workers nominating ids in the same missing
-// prefix join one traversal rather than racing into two identical downloads
-// (WO-099 §4).
-func (s *searchState) resolveTitles(ctx context.Context, ids []string) []bridge.SearchHit {
+// prefix join one traversal (WO-099 §4), and a verified complete traversal is
+// remembered for the life of the job (WO-100 §3).
+//
+// `settled` is the set of candidates whose prefix was completely traversed. Only
+// those are decided: a candidate in a prefix that came back incomplete,
+// unavailable or invalid is NOT absent — nothing looked for it — so it stays
+// retryable and must never be counted as a gainless step (WO-100 §2, §4).
+func (s *searchState) resolveTitles(ctx context.Context, ids []string) (hits []bridge.SearchHit, settled map[string]bool) {
+	settled = map[string]bool{}
 	prefixes, err := s.n.st.MissingCataloguePrefixes(ids, s.n.prefixBits())
 	if err != nil {
 		// Identifier-free (WO-099 §6): a category, never a prefix or an id.
 		s.n.logf("search: candidate resolution could not be planned")
-		return nil
+		return nil, settled
 	}
+
+	// Anything already held locally needs no traversal and is settled by
+	// definition — MissingCataloguePrefixes only names buckets for ids this
+	// node does not have.
+	missing := map[string]bool{}
+	for _, prefix := range prefixes {
+		missing[prefix] = true
+	}
+	bits := s.n.prefixBits()
+	resolvedPrefix := map[string]bool{}
+
 	for _, prefix := range prefixes {
 		if ctx.Err() != nil {
 			break
 		}
 		p := prefix
-		_, _ = s.prefixes.do(p, func() (int, error) {
+		res, err := s.prefixes.resolve(ctx, p, func() (catalogueResult, error) {
 			return s.n.fetchCataloguePrefixQuiet(ctx, p)
 		})
+		if err == nil && res.Outcome.resolved() {
+			resolvedPrefix[p] = true
+		}
 	}
-	hits, err := s.n.st.TitlesFor(ids)
+
+	for _, id := range ids {
+		prefix := store.CataloguePrefix(id, bits)
+		if !missing[prefix] || resolvedPrefix[prefix] {
+			settled[id] = true
+		}
+	}
+
+	got, err := s.n.st.TitlesFor(ids)
 	if err != nil {
 		s.n.logf("search: reading resolved titles failed")
-		return nil
+		return nil, settled
 	}
-	return hits
+	return got, settled
 }
 
 // tracksWord reports whether a word gets a bar and a stop condition at all.
@@ -686,13 +794,19 @@ func (s *searchState) tokenSatisfied(token string) bool {
 	return true
 }
 
+// outcome decides how the job ended.
+//
+// The order of these clauses is the whole point (WO-100 §1). Budget exhaustion
+// is read from the meter rather than from a flag some loop iteration happened
+// to set — the budget can be spent inside the LAST provider response, where no
+// next iteration exists to notice — but an external withdrawal still outranks
+// it, because "you cancelled this" and "this ran out of allowance" are
+// different answers and the user asked for one of them.
 func (s *searchState) outcome(ctx context.Context) SearchOutcome {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := SearchOutcome{Results: s.streamed, TargetMet: true, Reason: bridge.JobReasonComplete}
-	if s.stopped != "" {
-		out.Reason = s.stopped
-	}
+
 	for _, w := range s.plan.WordValues() {
 		if w.Stopword {
 			continue
@@ -711,10 +825,24 @@ func (s *searchState) outcome(ctx context.Context) SearchOutcome {
 			}
 		}
 	}
-	if ctx.Err() != nil && s.stopped == "" {
-		out.Reason = bridge.JobReasonComplete
+
+	switch {
+	case ctx.Err() != nil, s.stopped == bridge.JobReasonCancelled:
+		// External withdrawal: a page replaced the search, the contribution
+		// level dropped, consent was revoked, the daemon is going away.
+		out.Reason = bridge.JobReasonCancelled
+	case s.meter.isExhausted():
+		out.Reason = bridge.JobReasonBudget
+	case s.stopped != "":
+		out.Reason = s.stopped
 	}
 	return out
+}
+
+// candidateState is one candidate's in-flight resolution, which concurrent
+// nominations wait on rather than skipping.
+type candidateState struct {
+	done chan struct{}
 }
 
 // tokenAccumulator folds successive peer responses for ONE token, preserving

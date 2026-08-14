@@ -484,7 +484,7 @@ func (n *Node) ResolveCandidateTitles(ctx context.Context, ids []string) (int, e
 		if err != nil {
 			continue
 		}
-		rows += got
+		rows += got.Rows
 	}
 	return rows, nil
 }

@@ -323,8 +323,10 @@ count.
       must bring catalogue work under the same bound.**
 - [x] Candidate sets are unioned. A title discovered through any one token can
       stream once the local matcher proves the whole query.
-- [x] Missing titles arrive only through complete broad catalogue/string
+- [ ] Missing titles arrive only through complete broad catalogue/string
       buckets; cover rows never enter this search's counters or result matcher.
+      **WO-100 must preserve authenticated complete/incomplete state through
+      candidate resolution.**
 - [x] A verified network result appears before unrelated token work ends and is
       never retracted.
 - [x] Token bars animate/reset once per logical peer response and do not claim
@@ -337,7 +339,9 @@ count.
       continues; above+saturated stops; hard budget and exhaustion end visibly
       incomplete. **The matrix passes; WO-099 must charge catalogue bytes to
       the hard budget.**
-- [x] Saturation cannot be declared before candidate string resolution finishes.
+- [ ] Saturation cannot be declared before candidate string resolution finishes.
+      **WO-100 adds the join barrier for a candidate concurrently resolving in
+      another worker.**
 - [x] Peer diversity is preferred within the eligible yield set but lack of a
       second peer never breaks correctness.
 - [ ] Start acknowledgement is prompt; two sessions never receive one another's

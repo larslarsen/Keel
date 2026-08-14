@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Done** 2026-08-13 — every code acceptance box is covered by a test; the live-QA line stays open |
+| **Status** | **Implemented** 2026-08-13 — WO-100 correction required before acceptance/live QA |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-095 implementation at `4455f76` |
 | **Source** | Architecture review of the completed WO-095 implementation |
@@ -181,18 +181,23 @@ another page's job.
       cancellation boundary without allowing another peer request.
 - [x] One job never has more than four search-caused logical responses in
       flight, including catalogue resolution.
-- [x] The aggregate meter includes shard and catalogue bytes, including bytes
+- [ ] The aggregate meter includes shard and catalogue bytes, including bytes
       read from rejected responses, and budget exhaustion cancels outstanding
-      reads with a visible `budget` terminal state.
-- [x] Concurrent candidates sharing a catalogue prefix cause one complete broad
-      prefix traversal, not duplicate or per-video fetches.
+      reads with a visible `budget` terminal state. **WO-100: charging currently
+      occurs after a whole response is read and the last-response reason can be
+      misreported.**
+- [ ] Concurrent candidates sharing a catalogue prefix cause one complete broad
+      prefix traversal, not duplicate or per-video fetches. **WO-100: successful
+      completion is not memoized after the in-flight entry is removed.**
 - [x] A candidate whose first catalogue resolution fails can succeed after a
       later eligible response; it is neither lost nor counted before its title
       is locally checked.
 - [x] Captured search logs contain no query, token, shard, catalogue prefix,
       title, video id, or peer id on success or failure.
-- [x] Empty, malformed, and duplicate live `search_id`s fail before peer
-      contact; ordinary `crypto.randomUUID()` ids continue to work.
+- [ ] Empty, malformed, and duplicate live `search_id`s fail before peer
+      contact; ordinary `crypto.randomUUID()` ids continue to work. **Initial
+      validation works; WO-100 keeps a cancelled id reserved until its old
+      goroutine actually terminates.**
 - [x] Existing revision-2 atomic search, revision-3 wire shapes, local-result
       precedence, target/saturation matrix, and privacy tests remain green.
 - [ ] After the automated correction, perform WO-095's pending two-machine live

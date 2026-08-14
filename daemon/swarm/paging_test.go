@@ -148,8 +148,11 @@ func TestMultiPageCatalogueResponseArrivesWhole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != counts[prefix] {
-		t.Errorf("imported %d rows from bucket %s, want %d", got, prefix, counts[prefix])
+	if got.Outcome != catalogueComplete {
+		t.Errorf("outcome = %v, want a verified complete traversal", got.Outcome)
+	}
+	if got.Rows != counts[prefix] {
+		t.Errorf("imported %d rows from bucket %s, want %d", got.Rows, prefix, counts[prefix])
 	}
 }
 

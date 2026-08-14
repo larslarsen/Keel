@@ -26,19 +26,20 @@ func planState(t *testing.T, query string, targets map[int]store.WordTarget) (*s
 	t.Helper()
 	plan := store.BuildQueryPlan(query)
 	s := &searchState{
-		plan:      plan,
-		targets:   targets,
-		ev:        nopEvents{},
-		tokenIDs:  map[string]int{},
-		wordsFor:  map[string][]int{},
-		wordFound: map[int]map[string]bool{},
-		wordMiss:  map[int]int{},
-		checked:   map[string]bool{},
-		emitted:   map[string]bool{},
-		usedPeers: map[peer.ID]bool{},
-		resolving: map[string]bool{},
-		prefixes:  newPrefixGroup(),
-		meter:     &budgetMeter{limit: 1 << 30},
+		plan:       plan,
+		targets:    targets,
+		ev:         nopEvents{},
+		tokenIDs:   map[string]int{},
+		wordsFor:   map[string][]int{},
+		wordFound:  map[int]map[string]bool{},
+		wordMiss:   map[int]int{},
+		checked:    map[string]bool{},
+		emitted:    map[string]bool{},
+		usedPeers:  map[peer.ID]bool{},
+		candidates: map[string]*candidateState{},
+		absent:     map[string]bool{},
+		prefixes:   newPrefixGroup(),
+		meter:      newBudgetMeter(1<<30, nil),
 	}
 	for _, tok := range plan.Tokens {
 		if tok.Discovery {
@@ -335,27 +336,31 @@ func TestMaxDiscoveryTokensIsRefusedBeforePeerContact(t *testing.T) {
 	}
 }
 
-// TestSearchDiagnosticsCarryNoIdentifiers is WO-099 §6.
+// TestSearchDiagnosticsCarryNoIdentifiers is WO-099 §6, exercised through the
+// real resolver (WO-100).
 //
-// The search path reuses the catalogue transport, which logs the prefix it was
-// rejected on and the peer that rejected it. That is right for prewalk and seed
-// traffic and wrong here: WO-095 §10 permits one aggregate terminal diagnostic
-// for a search and no peer or corpus identifiers at all. A search must not
-// inherit another path's logging just because it shares its transport.
+// The earlier version of this test invoked the verbose ordinary catalogue path
+// and then filtered its output away, which proved nothing about the search
+// path. This one drives searchState.resolveTitles — the function a search
+// actually uses — and asserts on EVERY line captured while it runs, rather than
+// on the subset that happens to be prefixed "search:".
 func TestSearchDiagnosticsCarryNoIdentifiers(t *testing.T) {
 	var mu sync.Mutex
 	var lines []string
+	capturing := false
 	capture := func(f string, a ...any) {
 		mu.Lock()
-		lines = append(lines, fmt.Sprintf(f, a...))
+		if capturing {
+			lines = append(lines, fmt.Sprintf(f, a...))
+		}
 		mu.Unlock()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// A server that will fail every request: it serves nothing, so the client's
-	// shard and catalogue fetches both go wrong and both want to log.
+	// A server that serves nothing, so both the shard fetch and the catalogue
+	// traversal fail and both want to log.
 	server := newStore(t, "diag-server.sqlite")
 	sNode, err := Start(ctx, server, isolated(false, t))
 	if err != nil {
@@ -373,24 +378,154 @@ func TestSearchDiagnosticsCarryNoIdentifiers(t *testing.T) {
 	defer cNode.Close()
 	cNode.remember(sNode.AddrInfo())
 
-	// Drive the two failing paths a search actually uses.
-	shard := store.ShardOf(store.TokenizeQuery("recommendation")[0])
-	_, _, _, _ = cNode.fetchShardPages(ctx, sNode.AddrInfo(), shard)
-	_, _ = cNode.ResolveCandidateTitles(ctx, []string{"vid00000001", "vid00000002"})
-
-	secret := store.CataloguePrefix("vid00000001", cNode.prefixBits())
+	// Everything from here is search-path logging.
 	mu.Lock()
-	defer mu.Unlock()
-	for _, line := range lines {
-		// The catalogue path is the one that used to leak. Anything logged by
-		// the search's own resolution must name a category, never a bucket, a
-		// peer or a video.
-		if strings.Contains(line, "search:") {
-			for _, bad := range []string{secret, sNode.ID().String(), "vid00000001", "recommendation"} {
-				if strings.Contains(line, bad) {
-					t.Errorf("search diagnostic %q contains an identifier (%q)", line, bad)
-				}
+	capturing = true
+	mu.Unlock()
+
+	token := store.TokenizeQuery("recommendation")[0]
+	_, _, _, _ = cNode.fetchShardPages(ctx, sNode.AddrInfo(), store.ShardOf(token))
+
+	// The actual search resolver, not the ordinary catalogue path.
+	st, _ := planState(t, "recommendation", map[int]store.WordTarget{})
+	st.n = cNode
+	ids := []string{"vid00000001", "vid00000002"}
+	_, _ = st.resolveTitles(ctx, ids)
+
+	mu.Lock()
+	capturing = false
+	captured := append([]string(nil), lines...)
+	mu.Unlock()
+
+	forbidden := []string{
+		store.CataloguePrefix(ids[0], cNode.prefixBits()),
+		store.CataloguePrefix(ids[1], cNode.prefixBits()),
+		sNode.ID().String(),
+		cNode.ID().String(),
+		ids[0], ids[1],
+		"recommendation", token,
+	}
+	for _, line := range captured {
+		for _, bad := range forbidden {
+			if bad == "" {
+				continue
+			}
+			if strings.Contains(line, bad) {
+				t.Errorf("search diagnostic %q contains an identifier (%q) — WO-095 §10 "+
+					"permits one aggregate terminal diagnostic and no query, corpus or "+
+					"peer identifiers at all", line, bad)
 			}
 		}
 	}
+}
+
+// TestBudgetTerminalWinsOverExhausted is WO-100 §1's last clause.
+//
+// The budget can be spent inside the LAST available provider response, where no
+// next loop iteration exists to notice. Reading exhaustion from the meter
+// rather than from a flag some iteration set is what stops that reporting as
+// `exhausted` — which would tell the user the network ran out of peers when it
+// was their own allowance that ran out.
+func TestBudgetTerminalWinsOverExhausted(t *testing.T) {
+	s, plan := planState(t, "world", map[int]store.WordTarget{})
+	world := wordIDOf(plan, "world")
+	s.targets[world] = store.WordTarget{Word: "world", Adjusted: 100, Known: true}
+	s.wordFound[world] = map[string]bool{"v1": true}
+
+	// Below target with no budget problem: honestly exhausted.
+	if got := s.outcome(context.Background()).Reason; got != bridge.JobReasonExhausted {
+		t.Fatalf("reason = %q, want %q", got, bridge.JobReasonExhausted)
+	}
+
+	// Same state, but the allowance ran out. No loop iteration ever called
+	// overBudget().
+	s.meter = newBudgetMeter(0, nil)
+	s.meter.reserve(1)
+	if got := s.outcome(context.Background()).Reason; got != bridge.JobReasonBudget {
+		t.Errorf("reason = %q, want %q — exhaustion inside the last response "+
+			"must still report as budget", got, bridge.JobReasonBudget)
+	}
+
+	// An external withdrawal outranks the budget: "you cancelled this" and
+	// "this ran out of allowance" are different answers, and the user asked for
+	// one of them.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := s.outcome(ctx).Reason; got != bridge.JobReasonCancelled {
+		t.Errorf("reason = %q, want %q — cancellation must outrank budget", got, bridge.JobReasonCancelled)
+	}
+}
+
+// TestConcurrentNominationCannotRecordAFalseMiss is WO-100 §4.
+//
+// The previous version skipped a candidate another worker was already
+// resolving and returned zero gain — so a response could be recorded gainless,
+// and saturate a word, while the very candidate that would have advanced that
+// word was still being fetched.
+func TestConcurrentNominationCannotRecordAFalseMiss(t *testing.T) {
+	s, plan := planState(t, "world", map[int]store.WordTarget{})
+	world := wordIDOf(plan, "world")
+
+	// Worker A has claimed vid1 and has not finished.
+	claimed := &candidateState{done: make(chan struct{})}
+	s.candidates["vid1"] = claimed
+
+	// Worker B nominates the same candidate. It must WAIT, not report a miss.
+	done := make(chan map[int]int, 1)
+	go func() {
+		done <- s.creditResponse(context.Background(), tokenFor(s), []string{"vid1"})
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("a response sharing an in-flight candidate returned before that " +
+			"candidate was resolved — it would have counted as a gainless step")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Worker A finishes and the candidate confirms the word.
+	s.mu.Lock()
+	s.checked["vid1"] = true
+	s.wordFound[world] = map[string]bool{"vid1": true}
+	delete(s.candidates, "vid1")
+	s.mu.Unlock()
+	close(claimed.done)
+
+	gained := <-done
+	if gained[world] != 1 {
+		t.Errorf("gain for the shared word = %d, want 1 — a concurrent "+
+			"confirmation must be observed as gain, not a simultaneous false miss",
+			gained[world])
+	}
+
+	// And it does not double-count: the word is a set of video ids.
+	if len(s.wordFound[world]) != 1 {
+		t.Errorf("word count = %d, want 1", len(s.wordFound[world]))
+	}
+}
+
+// TestAlreadyCheckedCandidatesAreAHonestMiss is the other side of the same
+// rule: a response whose candidates were all decided before it started really
+// did add nothing, and must be allowed to saturate.
+func TestAlreadyCheckedCandidatesAreAHonestMiss(t *testing.T) {
+	s, plan := planState(t, "world", map[int]store.WordTarget{})
+	world := wordIDOf(plan, "world")
+	s.mu.Lock()
+	s.checked["vid1"] = true
+	s.wordFound[world] = map[string]bool{"vid1": true}
+	s.mu.Unlock()
+
+	gained := s.creditResponse(context.Background(), tokenFor(s), []string{"vid1"})
+	if gained[world] != 0 {
+		t.Errorf("gain = %d for a candidate already checked before this response "+
+			"began; that is a real miss and must be able to saturate", gained[world])
+	}
+}
+
+// tokenFor returns any discovery token of the plan under test.
+func tokenFor(s *searchState) string {
+	for token := range s.wordsFor {
+		return token
+	}
+	return ""
 }

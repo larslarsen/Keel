@@ -278,29 +278,43 @@ func (s *bridgeSession) startJob(id string, out io.Writer, cancel context.Cancel
 	return j, nil
 }
 
-// finishJob deregisters a job. Safe to call for a job already replaced.
-func (s *bridgeSession) finishJob(id string) {
+// finishJob deregisters a job by IDENTITY, not by id alone (WO-100 §5).
+//
+// Cancelling a job used to remove it from both registries immediately, while
+// its goroutine was still retiring. The same UUID could then be accepted for a
+// new job — and when the old goroutine finally ran its deferred finish, it
+// deleted the *new* one, because the entry was keyed only by the reused string.
+// The new search would then run with no registration, outside the active-job
+// ceiling, and its cancel would report that it did not exist.
+//
+// So a cancelled id stays reserved until its goroutine exits, and finishing
+// only removes the exact object that was registered.
+func (s *bridgeSession) finishJob(id string, j *searchJob) {
 	s.jobMu.Lock()
-	j := s.jobs[id]
-	delete(s.jobs, id)
-	s.jobMu.Unlock()
-	if j != nil {
-		liveSearches.remove(j)
+	if s.jobs[id] == j {
+		delete(s.jobs, id)
 	}
+	s.jobMu.Unlock()
+	liveSearches.remove(j)
 }
 
 // cancelJob stops one job by id and reports whether it existed.
+//
+// The registration is deliberately NOT removed here: the id stays reserved and
+// the job keeps counting against the ceiling until its goroutine terminates and
+// calls finishJob (WO-100 §5). Releasing on the cancel would open a hole that
+// admits unbounded retiring work and lets a reused UUID collide with a job that
+// has not finished.
+//
+// Idempotent: cancelling twice, or cancelling a job that already completed,
+// is not an error.
 func (s *bridgeSession) cancelJob(id, reason string) bool {
 	s.jobMu.Lock()
 	j, ok := s.jobs[id]
-	if ok {
-		delete(s.jobs, id)
-	}
 	s.jobMu.Unlock()
 	if !ok {
 		return false
 	}
-	liveSearches.remove(j)
 	j.stop(reason)
 	return true
 }
@@ -313,13 +327,13 @@ func (s *bridgeSession) cancelJob(id, reason string) bool {
 func (s *bridgeSession) cancelAllJobs() {
 	s.jobMu.Lock()
 	jobs := make([]*searchJob, 0, len(s.jobs))
-	for id, j := range s.jobs {
+	for _, j := range s.jobs {
 		jobs = append(jobs, j)
-		delete(s.jobs, id)
 	}
 	s.jobMu.Unlock()
+	// Stopped, not deregistered: each job's own goroutine retires it, which is
+	// what keeps the ceiling honest while they wind down (WO-100 §5).
 	for _, j := range jobs {
-		liveSearches.remove(j)
 		j.stop(cancelSession)
 	}
 }
@@ -446,14 +460,14 @@ func handlePeerSearchStart(
 		Words:    wire,
 	}); err != nil {
 		cancel()
-		sess.finishJob(p.SearchID)
+		sess.finishJob(p.SearchID, job)
 		return err
 	}
 
 	go func() {
 		defer close(job.done)
 		defer cancel()
-		defer sess.finishJob(p.SearchID)
+		defer sess.finishJob(p.SearchID, job)
 		started := time.Now()
 
 		outcome, err := n.StreamingSearch(jobCtx, plan, targets, p.Limit, &jobEvents{job: job})

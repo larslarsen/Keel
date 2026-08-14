@@ -148,13 +148,30 @@ func (n *Node) requestPaged(ctx context.Context, p peer.AddrInfo, key string, pr
 	if err := s.CloseWrite(); err != nil {
 		return nil, err
 	}
+	// Reset promptly on cancellation rather than waiting for the deadline
+	// above (WO-100 §1). Budget exhaustion cancels the job context, and "the
+	// budget is spent" has to mean the transfers stop, not that they stop
+	// growing while the open ones drain.
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.Reset()
+		case <-watchDone:
+		}
+	}()
+
+	// Metered inside the reader, so a reservation is taken BEFORE bytes are
+	// read and no response can overshoot the ceiling by the difference between
+	// the budget and the transport cap (WO-100 §1). Non-search callers have no
+	// meter on their context and read unmetered.
 	counted := &countingReader{r: io.LimitReader(s, maxBlockBytes)}
-	resp, err := readPagedResponse(counted)
-	// Charged before the response is judged, and charged whatever the verdict
-	// (WO-099 §4). A rejected or malformed reply still cost what was read; a
-	// budget that only charged for accepted responses would be one a hostile
-	// peer walks straight through by sending garbage.
-	meterFrom(ctx).charge(counted.n)
+	var reader io.Reader = counted
+	if m := meterFrom(ctx); m != nil {
+		reader = &budgetReader{r: counted, m: m}
+	}
+	resp, err := readPagedResponse(reader)
 	if resp != nil {
 		resp.Bytes = counted.n
 	}

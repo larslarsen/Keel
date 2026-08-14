@@ -636,7 +636,7 @@ func newSearchPermits() chan struct{} {
 // here: WO-095 §10 permits one aggregate terminal diagnostic for a search and
 // no peer or corpus identifiers at all. A search must not inherit another
 // path's logging just because it reuses its transport.
-func (n *Node) fetchCataloguePrefixQuiet(ctx context.Context, prefix string) (int, error) {
+func (n *Node) fetchCataloguePrefixQuiet(ctx context.Context, prefix string) (catalogueResult, error) {
 	return n.fetchCataloguePrefixLogging(ctx, prefix, false)
 }
 
@@ -818,47 +818,76 @@ func (n *Node) syncCatalogue(ctx context.Context, blocks []store.Block) {
 // fetchCataloguePrefix retrieves one catalogue bucket from any provider, with
 // the identifier-rich logging appropriate to prewalk and seed traffic.
 func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, error) {
-	return n.fetchCataloguePrefixLogging(ctx, prefix, true)
+	res, err := n.fetchCataloguePrefixLogging(ctx, prefix, true)
+	return res.Rows, err
 }
 
-func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, verbose bool) (int, error) {
+func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, verbose bool) (catalogueResult, error) {
+	unavailable := catalogueResult{Outcome: catalogueUnavailable}
 	c, err := prefixCID("catalogue/" + prefix)
 	if err != nil {
-		return 0, err
+		return unavailable, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
+	// best is the strongest outcome any provider gave us. A verified but
+	// incomplete traversal is worth keeping — its rows are real public data —
+	// while still not resolving the prefix, so it must not be discarded merely
+	// because a later provider failed outright (WO-100 §2).
+	best := unavailable
 	for p := range n.dht.FindProvidersAsync(ctx, c, 8) {
 		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
 			continue
 		}
-		rows, err := n.fetchCataloguePagesFrom(ctx, p, prefix, verbose)
+		res, err := n.fetchCataloguePagesFrom(ctx, p, prefix, verbose)
 		if err != nil {
 			if verbose {
 				n.logf("catalogue %s from %s rejected: %v", prefix, p.ID, err)
 			}
+			if res.Outcome > best.Outcome {
+				best = res
+			}
 			continue
 		}
 		n.remember(p)
-		return rows, nil
+		if res.Outcome.resolved() {
+			return res, nil
+		}
+		if res.Outcome > best.Outcome {
+			best = res
+		}
 	}
 
 	// Same fallback as blocks: titles are no use if only discovery is blocked.
 	known, err := n.st.KnownPeers(0)
 	if err != nil {
-		return 0, nil
+		return best, nil
 	}
 	for _, k := range known {
 		info, err := addrInfo(k)
 		if err != nil {
 			continue
 		}
-		if rows, err := n.fetchCataloguePagesFrom(ctx, info, prefix, verbose); err == nil && rows > 0 {
-			return rows, nil
+		res, err := n.fetchCataloguePagesFrom(ctx, info, prefix, verbose)
+		if err != nil {
+			if res.Outcome > best.Outcome {
+				best = res
+			}
+			continue
+		}
+		if res.Outcome.resolved() {
+			return res, nil
+		}
+		if res.Outcome > best.Outcome {
+			best = res
 		}
 	}
-	return 0, nil
+	// Falling through every provider is `unavailable`, never a complete empty
+	// bucket. The two are opposite claims — "nobody answered" against "the
+	// answer is nothing" — and conflating them lets a search declare a
+	// candidate absent that was never actually looked for.
+	return best, nil
 }
 
 // fetchCataloguePagesFrom retrieves one peer's whole logical response for a
@@ -873,10 +902,10 @@ func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, v
 //
 // Rows are imported only after every page has been verified against the signed
 // terminal, so a response with a dropped or reordered frame writes nothing.
-func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, prefix string, verbose bool) (int, error) {
+func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, prefix string, verbose bool) (catalogueResult, error) {
 	resp, err := n.requestPaged(ctx, p, fmt.Sprintf("%s %d", prefix, requestNonce()), CatalogueProtocol)
 	if err != nil {
-		return 0, err
+		return catalogueResult{Outcome: catalogueUnavailable}, err
 	}
 
 	digests := make([]string, 0, len(resp.Pages))
@@ -886,16 +915,18 @@ func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, pre
 	for i, raw := range resp.Pages {
 		var pack store.CataloguePack
 		if err := json.Unmarshal(raw, &pack); err != nil {
-			return 0, err
+			return catalogueResult{Outcome: catalogueInvalid}, err
 		}
 		if pack.Prefix != prefix {
-			return 0, fmt.Errorf("page %d answers prefix %q, not %q", i, pack.Prefix, prefix)
+			return catalogueResult{Outcome: catalogueInvalid},
+				fmt.Errorf("page %d answers prefix %q, not %q", i, pack.Prefix, prefix)
 		}
 		if pack.Index != i {
-			return 0, fmt.Errorf("page arrived at position %d claiming index %d", i, pack.Index)
+			return catalogueResult{Outcome: catalogueInvalid},
+				fmt.Errorf("page arrived at position %d claiming index %d", i, pack.Index)
 		}
 		if err := store.VerifyCataloguePack(&pack); err != nil {
-			return 0, err
+			return catalogueResult{Outcome: catalogueInvalid}, err
 		}
 		digests = append(digests, pack.ContentSHA256)
 		publicKey = pack.PublicKey
@@ -908,12 +939,24 @@ func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, pre
 		}
 	}
 	if err := pageDigestsMatch(digests, resp.Terminal); err != nil {
-		return 0, err
+		return catalogueResult{Outcome: catalogueInvalid}, err
 	}
-	if !resp.Complete() && verbose {
-		n.logf("catalogue %s from %s: peer ended the traversal incomplete", prefix, p.ID)
+	// Verified rows are imported whatever the terminal said: they are public
+	// catalogue data and caching them is exactly the cover traffic broad
+	// buckets exist to produce. What the terminal decides is whether the
+	// PREFIX is resolved — an incomplete traversal has not established that
+	// anything is missing, only that this provider stopped (WO-100 §2).
+	rows, err := n.st.ImportCatalogueEntries(entries, publicKey)
+	if err != nil {
+		return catalogueResult{Outcome: catalogueInvalid}, err
 	}
-	return n.st.ImportCatalogueEntries(entries, publicKey)
+	if !resp.Complete() {
+		if verbose {
+			n.logf("catalogue %s from %s: peer ended the traversal incomplete", prefix, p.ID)
+		}
+		return catalogueResult{Outcome: catalogueIncomplete, Rows: rows}, nil
+	}
+	return catalogueResult{Outcome: catalogueComplete, Rows: rows}, nil
 }
 
 // provideAll publishes a set of CIDs with bounded concurrency.

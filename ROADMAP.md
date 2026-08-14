@@ -52,13 +52,15 @@ The current implementation queue is:
   saturation alone. WO-096 is folded into these two orders and must not be
   implemented separately.
 
-- **WO-099 — streaming-search lifecycle and resource correction.** Required
-  before WO-095's two-machine QA. Allow independent page jobs on one shared
-  native session without increasing the node-wide peer-load ceiling; preserve
-  events that beat the start acknowledgement; make contribution downgrade a
-  prompt cancellation; include catalogue work in the four-response and byte
-  budgets; keep unresolved candidates retryable; remove identifier-rich search
-  logs; validate job ids.
+- **WO-099 — streaming-search lifecycle and resource correction.** Implemented;
+  WO-100 is required before acceptance or two-machine QA. Independent page
+  jobs, early-event preservation and prompt downgrade cancellation landed.
+
+- **WO-100 — finish search-budget and resolution atomicity.** Meter at read
+  time instead of after whole responses; keep catalogue complete/incomplete
+  states explicit; retain successful job-local prefix coalescing; join
+  concurrent candidate resolution before saturation; retire jobs by object
+  identity. Required before WO-095/099 live QA.
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of
   WO-095. Preserve the three real feed surfaces instead of mapping them to
