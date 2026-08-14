@@ -905,7 +905,11 @@ func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, v
 func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, prefix string, verbose bool) (catalogueResult, error) {
 	resp, err := n.requestPaged(ctx, p, fmt.Sprintf("%s %d", prefix, requestNonce()), CatalogueProtocol)
 	if err != nil {
-		return catalogueResult{Outcome: catalogueUnavailable}, err
+		// Typed, not flattened to "unavailable" (WO-101 §3): a reply that sent
+		// bytes and then failed framing or authentication is an INVALID
+		// response, and the saturation decision downstream depends on knowing
+		// that a provider was there at all.
+		return catalogueResult{Outcome: classifyPagedError(err)}, err
 	}
 
 	digests := make([]string, 0, len(resp.Pages))

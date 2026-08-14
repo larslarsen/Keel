@@ -4,6 +4,7 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -398,5 +399,79 @@ func TestCandidateResolutionDownloadsTheWholeBroadPrefix(t *testing.T) {
 	if again != 0 {
 		t.Errorf("re-resolving candidates already held fetched %d rows; catalogue "+
 			"traffic must converge to nothing", again)
+	}
+}
+
+// TestCatalogueOutcomesAreDistinguishedEndToEnd is WO-101 §3's acceptance,
+// driven through the real transport rather than through classifyPagedError
+// alone.
+//
+// Each of these is a different fact about a prefix, and the saturation decision
+// downstream depends on which one it was. Flattening them — as the first
+// implementation did, mapping every transport error to "unavailable" — lets a
+// peer that answered with garbage be recorded as a peer that was not there.
+func TestCatalogueOutcomesAreDistinguishedEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	server := newStore(t, "outcome-server.sqlite")
+	seedTitles(t, server, 40, "recommendation")
+	sNode, err := Start(ctx, server, isolated(true, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	client := newStore(t, "outcome-client.sqlite")
+	cNode, err := Start(ctx, client, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+
+	// complete-with-rows
+	withRows := store.CataloguePrefix("vid00000003", cNode.prefixBits())
+	res, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), withRows, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != catalogueComplete || res.Rows == 0 {
+		t.Errorf("complete-with-rows = %+v", res)
+	}
+
+	// complete-empty: a bucket the server holds nothing in still completes.
+	empty := ""
+	for i := 0; i < 4096 && empty == ""; i++ {
+		p := store.CataloguePrefix(fmt.Sprintf("absent%06d", i), cNode.prefixBits())
+		got, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), p, false)
+		if err == nil && got.Outcome == catalogueComplete && got.Rows == 0 {
+			empty = p
+		}
+	}
+	if empty == "" {
+		t.Error("no complete-empty bucket was observed; a valid empty bucket must " +
+			"be completion, not an absence of one")
+	}
+
+	// unavailable: a peer that is not there at all.
+	dead := sNode.AddrInfo()
+	dead.ID = cNode.ID() // an id nothing will answer for on this address
+	res, err = cNode.fetchCataloguePagesFrom(ctx, dead, withRows, false)
+	if err == nil {
+		t.Error("a dead peer answered")
+	} else if res.Outcome != catalogueUnavailable {
+		t.Errorf("a peer that never responded classified as %v, want unavailable", res.Outcome)
+	}
+
+	// invalid: bytes arrived and could not be framed. Driven at the reader,
+	// which is where the classification is decided.
+	if got := classifyPagedError(fmt.Errorf("malformed response frame: %w", io.ErrUnexpectedEOF)); got != catalogueInvalid {
+		t.Errorf("malformed framing classified as %v, want invalid", got)
+	}
+
+	// The budget sentinel survives classification rather than being turned into
+	// a verdict about the peer.
+	if !errors.Is(fmt.Errorf("read: %w", ErrSearchBudget), ErrSearchBudget) {
+		t.Error("the budget sentinel does not survive wrapping")
 	}
 }

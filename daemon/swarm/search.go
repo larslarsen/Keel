@@ -383,7 +383,7 @@ func (n *Node) runTokenWork(ctx context.Context, st *searchState, token string, 
 		//
 		// acc.ids() rather than only what this response added: a candidate whose
 		// earlier resolution failed is retryable and gets another chance here.
-		gained := st.creditResponse(ctx, token, acc.ids())
+		credit := st.creditResponse(ctx, token, acc.ids())
 		<-sem
 
 		terminal := ""
@@ -391,7 +391,7 @@ func (n *Node) runTokenWork(ctx context.Context, st *searchState, token string, 
 			terminal = "incomplete"
 		}
 		st.ev.TokenPhase(tokenID, cycle, bridge.PhaseComplete, terminal)
-		st.recordSaturation(token, gained)
+		st.recordSaturation(token, credit)
 	}
 	// The provider list ran out. Whether that is "complete" or "exhausted"
 	// depends on whether the words this token feeds actually reached their
@@ -519,35 +519,31 @@ func (s *searchState) markStopped(reason string) {
 // worker's traversal is what actually resolved the video, both responses
 // observe the gain rather than one of them recording a false miss — and because
 // word counts are sets of video ids, neither double-counts it.
-func (s *searchState) creditResponse(ctx context.Context, token string, candidates []string) map[int]int {
-	gained := map[int]int{}
+func (s *searchState) creditResponse(ctx context.Context, token string, candidates []string) responseCredit {
+	credit := responseCredit{gained: map[int]int{}}
 	for _, id := range s.wordsFor[token] {
-		gained[id] = 0
+		credit.gained[id] = 0
 	}
 	if len(candidates) == 0 {
-		return gained
+		return credit
 	}
 
 	// Partition into what this worker will resolve and what it will wait for,
 	// and record which candidates were already decided before it started.
 	var mine []string
 	var joined []*candidateState
-	wasChecked := map[string]bool{}
+	wasDecided := map[string]bool{}
 
 	s.mu.Lock()
 	for _, id := range candidates {
 		if id == "" {
 			continue
 		}
-		if s.checked[id] {
-			wasChecked[id] = true
-			continue
-		}
-		if s.absent[id] {
-			// A complete traversal already established this one has no public
-			// title. Re-nominating it every cycle would spend the budget
-			// re-traversing a bucket that answered.
-			wasChecked[id] = true
+		if s.checked[id] || s.absent[id] {
+			// Already decided before this response began: an honest zero gain
+			// for it, and re-nominating an absent candidate every cycle would
+			// spend the budget re-traversing a bucket that already answered.
+			wasDecided[id] = true
 			continue
 		}
 		if st, busy := s.candidates[id]; busy {
@@ -600,14 +596,28 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 				}
 			}
 		}
-		// A candidate in a completely-traversed prefix that still has no title
-		// is definitively absent from the network's public catalogue as far as
-		// this search can tell, and is retired so it is not re-nominated
-		// forever. Everything else goes back to retryable.
+		// Publish each candidate's disposition, then wake the joiners. A
+		// candidate in a completely-traversed prefix that still has no title is
+		// definitively absent as far as this search can tell and is retired;
+		// anything the traversal did not settle stays retryable and is
+		// explicitly UNRESOLVED, which is not a miss (WO-101 §2).
 		for _, id := range mine {
 			cs := s.candidates[id]
-			if settled[id] && !s.checked[id] {
+			switch {
+			case s.checked[id]:
+				if cs != nil {
+					cs.disposition = dispChecked
+				}
+			case settled[id]:
 				s.absent[id] = true
+				if cs != nil {
+					cs.disposition = dispAbsent
+				}
+			default:
+				if cs != nil {
+					cs.disposition = dispUnresolved
+				}
+				credit.unresolved = true
 			}
 			delete(s.candidates, id)
 			if cs != nil {
@@ -617,13 +627,19 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 		s.mu.Unlock()
 	}
 
-	// Wait for the candidates another worker claimed. Woken by the job context
-	// too, so a cancellation, a downgrade or the budget running out never
-	// leaves a worker parked here (WO-100 §3).
+	// Wait for the candidates another worker claimed, and read the disposition
+	// it published. Woken by the job context too, so a cancellation, a
+	// downgrade or the budget running out never leaves a worker parked here
+	// (WO-100 §3) — and a wake by cancellation is itself unresolved, because no
+	// decision was ever reached.
 	for _, cs := range joined {
 		select {
 		case <-cs.done:
+			if cs.disposition == dispUnresolved {
+				credit.unresolved = true
+			}
 		case <-ctx.Done():
+			credit.unresolved = true
 		}
 	}
 
@@ -636,11 +652,11 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 			continue
 		}
 		for _, id := range candidates {
-			if id == "" || wasChecked[id] {
+			if id == "" || wasDecided[id] {
 				continue
 			}
 			if found[id] {
-				gained[wordID]++
+				credit.gained[wordID]++
 			}
 		}
 	}
@@ -661,7 +677,18 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 	for _, h := range results {
 		s.ev.Result(h)
 	}
-	return gained
+	return credit
+}
+
+// responseCredit is what one logical peer response established.
+//
+// `unresolved` is the clause WO-101 §2 adds: a response that gained nothing but
+// left a candidate undecided has NOT shown the network to be quiet, and must
+// not advance a saturation streak. Three such peer failures would otherwise
+// satisfy saturation and stop a search below its retained word target.
+type responseCredit struct {
+	gained     map[int]int
+	unresolved bool
 }
 
 // resolveTitles downloads the complete broad prefix buckets these candidates
@@ -738,12 +765,19 @@ func (s *searchState) tracksWord(wordID int) bool {
 
 // recordSaturation folds one completed response into the saturation streak of
 // every word the token could have advanced.
-func (s *searchState) recordSaturation(token string, gained map[int]int) {
+func (s *searchState) recordSaturation(token string, credit responseCredit) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, wordID := range s.wordsFor[token] {
-		if gained[wordID] > 0 {
+		if credit.gained[wordID] > 0 {
 			s.wordMiss[wordID] = 0
+			continue
+		}
+		if credit.unresolved {
+			// Gained nothing, but a candidate is still undecided because a
+			// peer failed or the job ran out of resources. That is not evidence
+			// the network is quiet, so the streak stands still rather than
+			// advancing toward a stop (WO-101 §2).
 			continue
 		}
 		s.wordMiss[wordID]++
@@ -839,10 +873,27 @@ func (s *searchState) outcome(ctx context.Context) SearchOutcome {
 	return out
 }
 
+// Candidate dispositions (WO-101 §2).
+//
+// The three are not shades of the same thing. `checked` and `absent` are
+// decisions — the complete query was tested, or a verified complete traversal
+// established there is no title to test. `unresolved` is the absence of a
+// decision, and treating it as one is what let a peer failure saturate a word
+// that still had matches to find.
+const (
+	dispUnresolved = iota
+	dispAbsent
+	dispChecked
+)
+
 // candidateState is one candidate's in-flight resolution, which concurrent
 // nominations wait on rather than skipping.
+//
+// The disposition is written BEFORE done is closed, so every joiner reads a
+// settled value rather than racing the resolver.
 type candidateState struct {
-	done chan struct{}
+	done        chan struct{}
+	disposition int
 }
 
 // tokenAccumulator folds successive peer responses for ONE token, preserving

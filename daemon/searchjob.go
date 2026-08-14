@@ -168,13 +168,20 @@ func (r *searchRegistry) remove(j *searchJob) {
 
 // stopAll cancels every running search. Called when the entitlement to run one
 // goes away — a downgrade, a consent withdrawal, process shutdown.
+//
+// It stops the jobs; it does NOT deregister them (WO-101 §4). Emptying the map
+// here would free the whole ceiling while those goroutines were still retiring,
+// so a fresh burst of starts could be admitted alongside them — the exact hole
+// that cancelJob and finishJob were changed to close. Only the job's own
+// deferred retirement, keyed by identity, may free a slot.
+//
+// Repeated calls are safe: stop() is idempotent and keeps the first reason.
 func (r *searchRegistry) stopAll(reason string) {
 	r.mu.Lock()
 	jobs := make([]*searchJob, 0, len(r.jobs))
 	for j := range r.jobs {
 		jobs = append(jobs, j)
 	}
-	r.jobs = map[*searchJob]struct{}{}
 	r.mu.Unlock()
 	for _, j := range jobs {
 		j.stop(reason)

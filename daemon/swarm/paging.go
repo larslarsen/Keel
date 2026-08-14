@@ -13,6 +13,7 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -130,23 +131,46 @@ func (n *Node) writeFrame(s network.Stream, frame any) (int, error) {
 	return len(raw) + 1, nil
 }
 
+// errNoResponse marks a failure that happened before any bytes came back —
+// connect, stream open, or request write (WO-101 §3).
+//
+// The distinction matters downstream: "nobody answered" and "somebody answered
+// with garbage" are different facts about a prefix, and collapsing them let an
+// invalid reply be recorded as an absent provider.
+var errNoResponse = errors.New("no response from peer")
+
+// classifyPagedError maps a transport failure onto what it established.
+//
+// Budget termination is neither unavailable nor invalid: the peer may have been
+// answering perfectly well, and this node stopped listening.
+func classifyPagedError(err error) catalogueOutcome {
+	switch {
+	case errors.Is(err, ErrSearchBudget):
+		return catalogueUnavailable
+	case errors.Is(err, errNoResponse):
+		return catalogueUnavailable
+	default:
+		return catalogueInvalid
+	}
+}
+
 // requestPaged opens one stream and reads a whole logical response from it.
 func (n *Node) requestPaged(ctx context.Context, p peer.AddrInfo, key string, proto protocol.ID) (*pagedResponse, error) {
 	if err := n.host.Connect(ctx, p); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errNoResponse, err)
 	}
 	s, err := n.host.NewStream(ctx, p.ID, proto)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errNoResponse, err)
 	}
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(requestTimeout))
 
 	if _, err := io.WriteString(s, key+"\n"); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errNoResponse, err)
 	}
 	if err := s.CloseWrite(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errNoResponse, err)
 	}
 	// Reset promptly on cancellation rather than waiting for the deadline
 	// above (WO-100 §1). Budget exhaustion cancels the job context, and "the
@@ -169,11 +193,16 @@ func (n *Node) requestPaged(ctx context.Context, p peer.AddrInfo, key string, pr
 	counted := &countingReader{r: io.LimitReader(s, maxBlockBytes)}
 	var reader io.Reader = counted
 	if m := meterFrom(ctx); m != nil {
-		reader = &budgetReader{r: counted, m: m}
+		reader = &budgetReader{ctx: ctx, r: counted, m: m}
 	}
 	resp, err := readPagedResponse(reader)
 	if resp != nil {
 		resp.Bytes = counted.n
+	}
+	if err != nil && counted.n == 0 && !errors.Is(err, ErrSearchBudget) {
+		// The stream opened and then produced nothing. That is an absent
+		// response, not a malformed one.
+		err = fmt.Errorf("%w: %v", errNoResponse, err)
 	}
 	return resp, err
 }

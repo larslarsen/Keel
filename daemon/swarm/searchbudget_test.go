@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestBudgetReaderCannotOvershootItsBalance is WO-100 §1's headline.
@@ -21,7 +23,7 @@ func TestBudgetReaderCannotOvershootItsBalance(t *testing.T) {
 	const balance = 1024
 	m := newBudgetMeter(balance, nil)
 	src := bytes.NewReader(make([]byte, 1<<20))
-	r := &budgetReader{r: src, m: m}
+	r := &budgetReader{ctx: context.Background(), r: src, m: m}
 
 	read, err := io.Copy(io.Discard, r)
 	if !errors.Is(err, ErrSearchBudget) {
@@ -50,7 +52,7 @@ func TestConcurrentReadersShareOneBalance(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := &budgetReader{r: bytes.NewReader(make([]byte, 1<<20)), m: m}
+			r := &budgetReader{ctx: context.Background(), r: bytes.NewReader(make([]byte, 1<<20)), m: m}
 			n, _ := io.Copy(io.Discard, r)
 			mu.Lock()
 			total += n
@@ -75,7 +77,7 @@ func TestBudgetExhaustionCancelsTheJob(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := newBudgetMeter(16, cancel)
-	r := &budgetReader{r: bytes.NewReader(make([]byte, 1024)), m: m}
+	r := &budgetReader{ctx: context.Background(), r: bytes.NewReader(make([]byte, 1024)), m: m}
 	_, _ = io.Copy(io.Discard, r)
 
 	select {
@@ -92,7 +94,7 @@ func TestBudgetExhaustionCancelsTheJob(t *testing.T) {
 func TestMalformedBytesAreChargedIncrementally(t *testing.T) {
 	m := newBudgetMeter(1<<20, nil)
 	junk := strings.Repeat("not json at all ", 1000)
-	r := &budgetReader{r: strings.NewReader(junk), m: m}
+	r := &budgetReader{ctx: context.Background(), r: strings.NewReader(junk), m: m}
 
 	if _, err := readPagedResponse(r); err == nil {
 		t.Fatal("garbage parsed as a valid response")
@@ -110,8 +112,9 @@ func TestUnmeteredContextIsUnaffected(t *testing.T) {
 	}
 	// reserve on a nil meter grants whatever was asked.
 	var nilMeter *budgetMeter
-	if got := nilMeter.reserve(4096); got != 4096 {
-		t.Errorf("an unmetered reader was granted %d of 4096", got)
+	got, err := nilMeter.reserve(context.Background(), 4096)
+	if err != nil || got != 4096 {
+		t.Errorf("an unmetered reader was granted %d of 4096 (err=%v)", got, err)
 	}
 }
 
@@ -204,4 +207,163 @@ func TestPrefixGroupWakesWaitersOnCancellation(t *testing.T) {
 		t.Fatal("a waiter did not wake on cancellation")
 	}
 	close(release)
+}
+
+// TestReservationIsNotExhaustion is WO-101 §1.
+//
+// The previous meter subtracted a read's whole grant up front, so while one
+// reader held the last reservation another saw nothing remaining, latched
+// exhaustion and cancelled every stream — even though the first reader was
+// about to short-read and refund most of it. The job then reported `budget`
+// with usable allowance unspent.
+func TestReservationIsNotExhaustion(t *testing.T) {
+	cancelled := false
+	m := newBudgetMeter(budgetReadChunk, func() { cancelled = true })
+
+	// Reader A leases the entire remaining balance.
+	grantA, err := m.reserve(context.Background(), budgetReadChunk)
+	if err != nil || grantA != budgetReadChunk {
+		t.Fatalf("first reserve = %d, %v", grantA, err)
+	}
+
+	// Reader B asks while nothing is free. It must WAIT, not latch exhaustion.
+	type res struct {
+		n   int
+		err error
+	}
+	got := make(chan res, 1)
+	go func() {
+		n, err := m.reserve(context.Background(), 4096)
+		got <- res{n, err}
+	}()
+
+	select {
+	case r := <-got:
+		t.Fatalf("a reader treated a live reservation as exhaustion: %d, %v", r.n, r.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if m.isExhausted() || cancelled {
+		t.Fatal("holding a reservation latched exhaustion and cancelled the job")
+	}
+
+	// Reader A short-reads and refunds almost all of it.
+	m.settle(grantA, 100)
+
+	select {
+	case r := <-got:
+		if r.err != nil {
+			t.Errorf("the waiter got %v instead of the refunded capacity", r.err)
+		}
+		if r.n <= 0 {
+			t.Errorf("the waiter was granted %d bytes after a refund", r.n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a refund did not wake the waiting reader")
+	}
+	if m.isExhausted() || cancelled {
+		t.Error("the job was cancelled although allowance remained")
+	}
+	if got := m.used(); got != 100 {
+		t.Errorf("committed = %d, want the 100 bytes actually read", got)
+	}
+}
+
+// TestFullyConsumedFinalReservationIsExhaustion: the other side of §1. When the
+// last lease really is spent, the next read must fail and the job must stop.
+func TestFullyConsumedFinalReservationIsExhaustion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newBudgetMeter(1024, cancel)
+
+	grant, err := m.reserve(ctx, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.settle(grant, grant) // fully consumed
+
+	if _, err := m.reserve(context.Background(), 1); !errors.Is(err, ErrSearchBudget) {
+		t.Errorf("a read after the ceiling was fully committed got %v, want ErrSearchBudget", err)
+	}
+	if !m.isExhausted() {
+		t.Error("the meter did not latch exhausted")
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Error("exhaustion did not cancel outstanding search streams")
+	}
+	if got := m.used(); got != 1024 {
+		t.Errorf("committed = %d, want exactly the limit", got)
+	}
+}
+
+// TestMeterWaitersWakeOnCancellation: a reader parked waiting for leased
+// capacity must wake when the job is cancelled, or the search leaks a goroutine
+// and never terminates.
+func TestMeterWaitersWakeOnCancellation(t *testing.T) {
+	m := newBudgetMeter(budgetReadChunk, nil)
+	held, err := m.reserve(context.Background(), budgetReadChunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	woke := make(chan error, 1)
+	go func() {
+		_, err := m.reserve(ctx, 1024)
+		woke <- err
+	}()
+
+	cancel()
+	select {
+	case err := <-woke:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("waiter woke with %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a waiter did not wake on cancellation")
+	}
+	m.settle(held, 0)
+}
+
+// TestConcurrentReadersNeverExceedTheCommittedLimit re-states the ceiling under
+// the reserve/settle split, which is where an off-by-one would hide.
+func TestConcurrentReadersNeverExceedTheCommittedLimit(t *testing.T) {
+	const limit = 64 << 10
+	m := newBudgetMeter(limit, nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := &budgetReader{ctx: context.Background(), r: bytes.NewReader(make([]byte, 1<<20)), m: m}
+			_, _ = io.Copy(io.Discard, r)
+		}()
+	}
+	wg.Wait()
+
+	if got := m.used(); got > limit {
+		t.Errorf("committed %d bytes against a limit of %d", got, limit)
+	}
+}
+
+// TestPagedErrorsAreClassified is WO-101 §3: invalid and unavailable are
+// distinct facts about a prefix, and the transport boundary must not erase the
+// distinction before catalogue code sees it.
+func TestPagedErrorsAreClassified(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want catalogueOutcome
+	}{
+		{"no response", fmt.Errorf("%w: dial failed", errNoResponse), catalogueUnavailable},
+		{"budget", ErrSearchBudget, catalogueUnavailable},
+		{"malformed framing", errors.New("malformed response frame: bad json"), catalogueInvalid},
+		{"bad terminal", errors.New("terminal frame does not match its digest"), catalogueInvalid},
+	} {
+		if got := classifyPagedError(tc.err); got != tc.want {
+			t.Errorf("%s classified as %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }

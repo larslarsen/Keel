@@ -33,25 +33,35 @@ const budgetReadChunk = 32 << 10
 // The first implementation read and decoded a whole response and then charged
 // what it had cost. That is accounting, not a ceiling: at the 8 MiB floor a
 // single response could read up to the 64 MiB transport cap before anything
-// noticed, and cancelling afterwards cannot un-download it. Worse, four
-// concurrent readers each consulting the remaining balance could each see room
-// and each spend it in full.
+// noticed, and cancelling afterwards cannot un-download it.
 //
-// So the balance is reserved *before* each read and refunded after: a reader
-// can never consume more than it was granted, and the grant comes out of one
-// job-wide balance under one lock. Four readers therefore share a real
-// ceiling rather than four optimistic copies of it.
+// # Why reserved and committed are different numbers
 //
-// # Why exhaustion cancels as well as refusing
+// The second implementation subtracted a read's whole grant up front. That made
+// a *lease* look like a spend: while one reader held the last reservation,
+// another would see nothing remaining and latch exhaustion — cancelling every
+// stream — even though the first reader was about to short-read and refund most
+// of it. The job then reported `budget` with usable allowance still unspent
+// (WO-101 §1).
 //
-// Refusing further reads leaves the streams that are already open sitting until
-// their ordinary network deadline. Cancelling the job's context lets
-// requestPaged reset them promptly, so "the budget is spent" means the work
-// stops rather than merely stops growing.
+// So three quantities are tracked, with the invariant
+// `committed + reserved <= limit`:
+//
+//   - committed: bytes reads have actually consumed;
+//   - reserved: bytes leased to reads currently in flight; and
+//   - the remainder, which is what a new read may lease.
+//
+// When every remaining byte is leased but not yet committed, a new read WAITS
+// for a settlement rather than declaring the budget spent. Only committed bytes
+// reaching the limit is exhaustion, and only then does the job stop.
 type budgetMeter struct {
 	mu        sync.Mutex
-	remaining int64
-	spent     int64
+	limit     int64
+	committed int64
+	reserved  int64
+	// release is closed and replaced on every settlement, so readers waiting
+	// for leased capacity wake without polling.
+	release chan struct{}
 	// exhausted latches, so the reason survives the cancellation that follows
 	// it. Without the latch, a budget stop and a page cancel are
 	// indistinguishable at the terminal, and one is a visibly incomplete
@@ -61,7 +71,7 @@ type budgetMeter struct {
 }
 
 func newBudgetMeter(limit int64, cancel context.CancelFunc) *budgetMeter {
-	return &budgetMeter{remaining: limit, cancel: cancel}
+	return &budgetMeter{limit: limit, cancel: cancel, release: make(chan struct{})}
 }
 
 type budgetKey struct{}
@@ -79,43 +89,72 @@ func meterFrom(ctx context.Context) *budgetMeter {
 	return m
 }
 
-// reserve grants up to want bytes from the shared balance, atomically.
+// reserve leases up to want bytes, waiting if the remaining capacity is
+// currently leased to another in-flight read.
 //
-// Returns 0 when nothing is left, which is the signal to stop reading. The
-// grant is a spend: whatever is not actually read must be refunded, or a
-// reader that asked for 32 KiB and got 900 bytes would quietly burn the rest.
-func (m *budgetMeter) reserve(want int) int {
+// Returns ErrSearchBudget only when committed bytes have reached the ceiling
+// and nothing is outstanding to refund — that is the one state in which the
+// budget really has prevented further work.
+func (m *budgetMeter) reserve(ctx context.Context, want int) (int, error) {
 	if m == nil {
-		return want
+		return want, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.remaining <= 0 {
-		if !m.exhausted {
-			m.exhausted = true
-			if m.cancel != nil {
-				defer m.cancel()
-			}
+	for {
+		m.mu.Lock()
+		if m.exhausted {
+			m.mu.Unlock()
+			return 0, ErrSearchBudget
 		}
-		return 0
+		free := m.limit - m.committed - m.reserved
+		if free > 0 {
+			grant := int64(want)
+			if grant > free {
+				grant = free
+			}
+			m.reserved += grant
+			m.mu.Unlock()
+			return int(grant), nil
+		}
+		if m.reserved == 0 {
+			// Nothing is outstanding, so nothing can come back. The ceiling has
+			// genuinely prevented further work.
+			m.exhausted = true
+			cancel := m.cancel
+			m.mu.Unlock()
+			// Never under the lock: the cancellation runs arbitrary callbacks,
+			// and one of them settling a read would deadlock against us.
+			if cancel != nil {
+				cancel()
+			}
+			return 0, ErrSearchBudget
+		}
+		wait := m.release
+		m.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
 	}
-	grant := int64(want)
-	if grant > m.remaining {
-		grant = m.remaining
-	}
-	m.remaining -= grant
-	m.spent += grant
-	return int(grant)
 }
 
-// refund returns unused reservation to the balance.
-func (m *budgetMeter) refund(n int) {
-	if m == nil || n <= 0 {
+// settle commits what a read actually consumed and returns the rest of its
+// lease, waking anyone waiting for capacity.
+func (m *budgetMeter) settle(grant, used int) {
+	if m == nil || grant <= 0 {
 		return
 	}
+	if used < 0 {
+		used = 0
+	}
+	if used > grant {
+		used = grant
+	}
 	m.mu.Lock()
-	m.remaining += int64(n)
-	m.spent -= int64(n)
+	m.reserved -= int64(grant)
+	m.committed += int64(used)
+	close(m.release)
+	m.release = make(chan struct{})
 	m.mu.Unlock()
 }
 
@@ -128,13 +167,14 @@ func (m *budgetMeter) isExhausted() bool {
 	return m.exhausted
 }
 
+// used is committed bytes: what reads actually consumed, never what was leased.
 func (m *budgetMeter) used() int64 {
 	if m == nil {
 		return 0
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.spent
+	return m.committed
 }
 
 // budgetReader is the reader every search-caused response is read through.
@@ -145,24 +185,28 @@ func (m *budgetMeter) used() int64 {
 // A budget charging only for *accepted* responses is one a hostile peer walks
 // straight through by sending garbage.
 type budgetReader struct {
-	r io.Reader
-	m *budgetMeter
+	ctx context.Context
+	r   io.Reader
+	m   *budgetMeter
 }
 
 func (b *budgetReader) Read(p []byte) (int, error) {
 	if len(p) > budgetReadChunk {
 		p = p[:budgetReadChunk]
 	}
-	grant := b.m.reserve(len(p))
+	grant, err := b.m.reserve(b.ctx, len(p))
+	if err != nil {
+		return 0, err
+	}
 	if grant == 0 {
 		return 0, ErrSearchBudget
 	}
-	n, err := b.r.Read(p[:grant])
+	n, readErr := b.r.Read(p[:grant])
 	if n < 0 {
 		n = 0
 	}
-	b.m.refund(grant - n)
-	return n, err
+	b.m.settle(grant, n)
+	return n, readErr
 }
 
 // catalogueOutcome is what a broad prefix traversal actually established

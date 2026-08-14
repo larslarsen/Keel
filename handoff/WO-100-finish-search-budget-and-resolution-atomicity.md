@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Done** 2026-08-13 — every automated acceptance box is covered by a test; the live-QA line stays open |
+| **Status** | **Implemented** 2026-08-13 — architecture review opened required correction WO-101 before merge/live QA |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-099 implementation at `f45510c` |
 | **Source** | Architecture review of WO-099's landed concurrency paths |
@@ -141,9 +141,9 @@ admits unbounded retiring work.
       the last provider response.
 - [x] Malformed and rejected response bytes are charged incrementally; ordinary
       non-search paged requests remain unmetered by a search budget.
-- [x] Catalogue fetch results distinguish complete-empty, complete-with-rows,
+- [ ] Catalogue fetch results distinguish complete-empty, complete-with-rows,
       authenticated-incomplete, unavailable, and invalid.
-- [x] Incomplete catalogue pages may cache verified public rows but cannot
+- [ ] Incomplete catalogue pages may cache verified public rows but cannot
       resolve the prefix, prove an absent candidate, or advance saturation.
 - [x] Two workers with stale plans for one prefix perform one traversal after a
       verified complete result; an incomplete/failed result can be retried.
@@ -214,3 +214,22 @@ Three notes for the reviewer:
 
 Not done, and not code: WO-095's two-machine live QA, both machines on key
 scheme 2.
+
+---
+
+## Architecture review (2026-08-13)
+
+The implementation fixes the five races WO-100 originally identified, but the
+review found four remaining boundary defects and opened WO-101:
+
+1. a reader seeing all remaining bytes *reserved* latches exhaustion before
+   another reader can short-read and refund them;
+2. an incomplete/unavailable/invalid catalogue resolution remains retryable
+   but is still returned as zero gain and advances saturation;
+3. paged framing/authentication failures are collapsed into `unavailable`
+   before the catalogue result is built; and
+4. global `stopAll()` clears the active registry before the stopped jobs have
+   retired.
+
+The automated suites are green, but they do not cover those paths. WO-101 is a
+merge gate for this stacked branch; two-machine QA remains after it.

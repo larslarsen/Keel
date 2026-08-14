@@ -42,7 +42,7 @@ The current implementation queue is:
   transport layer and exchange nothing.
 
 - **WO-095 — responsive streaming peer search and UI.** **Implemented, with
-  WO-099 correction required before acceptance or live QA.**
+  WO-101 correction required before merge or live QA.**
   The start RPC acknowledges immediately; four bounded peer responses run
   independently. Candidate sets are unioned, broad string buckets resolve
   missing titles, and the daemon streams a result as soon as local full-query
@@ -52,15 +52,22 @@ The current implementation queue is:
   saturation alone. WO-096 is folded into these two orders and must not be
   implemented separately.
 
-- **WO-099 — streaming-search lifecycle and resource correction.** Implemented;
-  WO-100 is required before acceptance or two-machine QA. Independent page
-  jobs, early-event preservation and prompt downgrade cancellation landed.
+- **WO-099 — streaming-search lifecycle and resource correction.** Implemented.
+  Independent page jobs, early-event preservation and prompt downgrade
+  cancellation landed; WO-100 closed its first review findings.
 
-- **WO-100 — finish search-budget and resolution atomicity.** Meter at read
-  time instead of after whole responses; keep catalogue complete/incomplete
-  states explicit; retain successful job-local prefix coalescing; join
-  concurrent candidate resolution before saturation; retire jobs by object
-  identity. Required before WO-095/099 live QA.
+- **WO-100 — finish search-budget and resolution atomicity.** Implemented.
+  Metering moved into reads, catalogue outcomes and successful prefix
+  completion remain explicit, concurrent nominations join, and ordinary job
+  cancellation retires by identity. Architecture review found the four final
+  termination boundaries now isolated in WO-101.
+
+- **WO-101 — close distributed-search termination semantics.** **Ready; merge
+  gate for the stacked search branch.** Distinguish bytes temporarily reserved
+  from bytes spent; do not advance saturation for unresolved catalogue work;
+  preserve invalid versus unavailable paged outcomes; and keep globally
+  stopped jobs against the ceiling until exact retirement. After review, merge
+  the whole dependent branch and run WO-095's two-machine key-scheme-2 QA.
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of
   WO-095. Preserve the three real feed surfaces instead of mapping them to

@@ -583,3 +583,50 @@ func TestRetiringJobsStillCountAgainstTheCeiling(t *testing.T) {
 	}
 	sess.finishJob("bbbbbbbb-0000-4000-8000-000000000000", fresh)
 }
+
+// TestStopAllKeepsSlotsUntilJobsRetire is WO-101 §4.
+//
+// stopAll snapshotted the jobs and then replaced the registry with an empty map
+// before cancelling them. Those goroutines were still retiring, but add() could
+// immediately admit another full ceiling of jobs — bypassing the identity-safe
+// retirement rule cancelJob and finishJob had just been changed to enforce.
+func TestStopAllKeepsSlotsUntilJobsRetire(t *testing.T) {
+	sess := streamingSession(t)
+	buf := &syncBuf{}
+
+	ids := make([]string, 0, maxActiveSearchJobs)
+	jobs := make([]*searchJob, 0, maxActiveSearchJobs)
+	for i := 0; i < maxActiveSearchJobs; i++ {
+		id := fmt.Sprintf("cccccccc-0000-4000-8000-%012d", i)
+		j, err := sess.startJob(id, buf, func() {})
+		if err != nil {
+			t.Fatalf("start %d refused early: %v", i, err)
+		}
+		ids = append(ids, id)
+		jobs = append(jobs, j)
+	}
+
+	// Repeated stops are safe and keep the first reason.
+	stopDistributedSearches(cancelDowngrade)
+	stopDistributedSearches(cancelShutdown)
+	if got := jobs[0].stopReason(); got != cancelDowngrade {
+		t.Errorf("stop reason = %q, want the first one recorded (%q)", got, cancelDowngrade)
+	}
+
+	// The slots are still occupied: those goroutines have not retired.
+	extra := "dddddddd-0000-4000-8000-000000000000"
+	if _, err := sess.startJob(extra, buf, func() {}); !errors.Is(err, errSearchBusy) {
+		t.Errorf("stopAll freed the global ceiling before its jobs retired (err=%v)", err)
+	}
+
+	// Retiring by identity frees them, and repeated removal is safe.
+	for i, j := range jobs {
+		sess.finishJob(ids[i], j)
+		sess.finishJob(ids[i], j)
+	}
+	fresh, err := sess.startJob(extra, buf, func() {})
+	if err != nil {
+		t.Errorf("slots were not released after the jobs retired: %v", err)
+	}
+	sess.finishJob(extra, fresh)
+}

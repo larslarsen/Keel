@@ -440,7 +440,7 @@ func TestBudgetTerminalWinsOverExhausted(t *testing.T) {
 	// Same state, but the allowance ran out. No loop iteration ever called
 	// overBudget().
 	s.meter = newBudgetMeter(0, nil)
-	s.meter.reserve(1)
+	_, _ = s.meter.reserve(context.Background(), 1)
 	if got := s.outcome(context.Background()).Reason; got != bridge.JobReasonBudget {
 		t.Errorf("reason = %q, want %q — exhaustion inside the last response "+
 			"must still report as budget", got, bridge.JobReasonBudget)
@@ -471,7 +471,7 @@ func TestConcurrentNominationCannotRecordAFalseMiss(t *testing.T) {
 	s.candidates["vid1"] = claimed
 
 	// Worker B nominates the same candidate. It must WAIT, not report a miss.
-	done := make(chan map[int]int, 1)
+	done := make(chan responseCredit, 1)
 	go func() {
 		done <- s.creditResponse(context.Background(), tokenFor(s), []string{"vid1"})
 	}()
@@ -491,11 +491,11 @@ func TestConcurrentNominationCannotRecordAFalseMiss(t *testing.T) {
 	s.mu.Unlock()
 	close(claimed.done)
 
-	gained := <-done
-	if gained[world] != 1 {
+	credit := <-done
+	if credit.gained[world] != 1 {
 		t.Errorf("gain for the shared word = %d, want 1 — a concurrent "+
 			"confirmation must be observed as gain, not a simultaneous false miss",
-			gained[world])
+			credit.gained[world])
 	}
 
 	// And it does not double-count: the word is a set of video ids.
@@ -515,10 +515,14 @@ func TestAlreadyCheckedCandidatesAreAHonestMiss(t *testing.T) {
 	s.wordFound[world] = map[string]bool{"vid1": true}
 	s.mu.Unlock()
 
-	gained := s.creditResponse(context.Background(), tokenFor(s), []string{"vid1"})
-	if gained[world] != 0 {
+	credit := s.creditResponse(context.Background(), tokenFor(s), []string{"vid1"})
+	if credit.gained[world] != 0 {
 		t.Errorf("gain = %d for a candidate already checked before this response "+
-			"began; that is a real miss and must be able to saturate", gained[world])
+			"began; that is a real miss and must be able to saturate", credit.gained[world])
+	}
+	if credit.unresolved {
+		t.Error("a response whose candidates were all already decided reported " +
+			"an unresolved candidate, which would freeze the saturation streak")
 	}
 }
 
@@ -528,4 +532,108 @@ func tokenFor(s *searchState) string {
 		return token
 	}
 	return ""
+}
+
+// TestUnresolvedCandidateDoesNotAdvanceSaturation is WO-101 §2.
+//
+// resolveTitles correctly left candidates retryable after an incomplete,
+// unavailable or invalid traversal — and then creditResponse returned a plain
+// zero-gain map that runTokenWork fed straight to recordSaturation. Three peer
+// failures could therefore satisfy saturation and stop the search below its
+// retained word target, which is exactly the outcome the target exists to
+// prevent.
+func TestUnresolvedCandidateDoesNotAdvanceSaturation(t *testing.T) {
+	s, plan := planState(t, "world", map[int]store.WordTarget{})
+	world := wordIDOf(plan, "world")
+	token := tokenFor(s)
+
+	// Gained nothing, and a candidate is still undecided.
+	s.recordSaturation(token, responseCredit{gained: map[int]int{world: 0}, unresolved: true})
+	s.recordSaturation(token, responseCredit{gained: map[int]int{world: 0}, unresolved: true})
+	s.recordSaturation(token, responseCredit{gained: map[int]int{world: 0}, unresolved: true})
+	if s.wordMiss[world] != 0 {
+		t.Errorf("miss streak = %d after three unresolved responses; an unresolved "+
+			"candidate is not evidence the network is quiet", s.wordMiss[world])
+	}
+	if s.wordDone(world) {
+		t.Error("unresolved responses saturated the word and would stop the search")
+	}
+
+	// Gained nothing and everything decided: an honest miss.
+	for i := 0; i < searchSaturationStreak; i++ {
+		s.recordSaturation(token, responseCredit{gained: map[int]int{world: 0}})
+	}
+	if s.wordMiss[world] != searchSaturationStreak {
+		t.Errorf("miss streak = %d after %d decided gainless responses",
+			s.wordMiss[world], searchSaturationStreak)
+	}
+
+	// A gain resets the streak regardless.
+	s.recordSaturation(token, responseCredit{gained: map[int]int{world: 2}})
+	if s.wordMiss[world] != 0 {
+		t.Errorf("a gaining response left the streak at %d", s.wordMiss[world])
+	}
+}
+
+// TestJoinedCandidateObservesThePublishedDisposition is §2's barrier clause:
+// the disposition must be published before joiners wake, so two responses
+// sharing one candidate agree about what was established.
+func TestJoinedCandidateObservesThePublishedDisposition(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		disposition    int
+		wantUnresolved bool
+	}{
+		{"checked", dispChecked, false},
+		{"absent", dispAbsent, false},
+		{"unresolved", dispUnresolved, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := planState(t, "world", map[int]store.WordTarget{})
+			cs := &candidateState{done: make(chan struct{})}
+			s.candidates["vid1"] = cs
+
+			out := make(chan responseCredit, 1)
+			go func() {
+				out <- s.creditResponse(context.Background(), tokenFor(s), []string{"vid1"})
+			}()
+
+			// Published BEFORE the wake, exactly as the resolver does it. The
+			// registration is deliberately left in place: whether the joining
+			// goroutine partitions before or after the close, it must find the
+			// candidate claimed and read the disposition rather than starting
+			// its own resolution.
+			cs.disposition = tc.disposition
+			close(cs.done)
+
+			credit := <-out
+			if credit.unresolved != tc.wantUnresolved {
+				t.Errorf("joiner saw unresolved=%v for a %s candidate, want %v",
+					credit.unresolved, tc.name, tc.wantUnresolved)
+			}
+		})
+	}
+}
+
+// TestCancelledBarrierWakeIsUnresolved: a joiner woken by cancellation never
+// learned anything, so it must not report a decision.
+func TestCancelledBarrierWakeIsUnresolved(t *testing.T) {
+	s, _ := planState(t, "world", map[int]store.WordTarget{})
+	s.candidates["vid1"] = &candidateState{done: make(chan struct{})}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan responseCredit, 1)
+	go func() {
+		out <- s.creditResponse(ctx, tokenFor(s), []string{"vid1"})
+	}()
+	cancel()
+
+	select {
+	case credit := <-out:
+		if !credit.unresolved {
+			t.Error("a joiner woken by cancellation reported a decision it never received")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a joiner did not wake on cancellation")
+	}
 }
