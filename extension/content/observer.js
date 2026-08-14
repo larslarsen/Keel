@@ -18,11 +18,11 @@ import {
   surfaceFromUrl,
 } from "./extract.js";
 import { browser } from "../lib/browser.js";
+import { pick } from "../lib/selectors.js";
 import {
-  DEFAULT_SELECTORS,
-  pick,
-  validateSelectorConfig,
-} from "../lib/selectors.js";
+  applyDaemonSelectorReply,
+  initialSelectorsForHref,
+} from "./selector_source.js";
 import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
 import { startHide } from "./hide.js";
 import { errText } from "../lib/errors.js";
@@ -112,33 +112,33 @@ function shutdown(reason) {
 }
 
 /**
- * Selectors in use. Starts as the copy shipped with the extension and is
- * replaced by the daemon's if that one validates (WO-056).
- *
- * The bundled default is the fallback rather than the source of truth: it keeps
- * extraction working before the daemon answers, and survives a daemon offering
- * something unusable. A config that fails validation is discarded whole — half
- * a schema is worse than a stale one.
+ * Selectors in use. Chosen from the page platform's bundled copy before any
+ * daemon reply (WO-107). A matching daemon config may replace that copy;
+ * a failed or other-platform config must not.
  */
-let selectors = DEFAULT_SELECTORS;
+let selectors = null;
 
 async function loadSelectors() {
   const platform = platformFromUrl(location.href);
-  if (!platform) return;
+  if (!platform || !selectors) return;
   try {
     const r = await browser.runtime.sendMessage({
       type: "GET_SELECTORS",
       payload: { platform },
     });
-    const cfg = validateSelectorConfig(r?.ok ? r.selectors?.selectors : null);
-    if (cfg) {
-      selectors = cfg;
-      console.info(LOG, `selectors v${cfg.version} for ${cfg.platform} from daemon`);
+    const next = applyDaemonSelectorReply(selectors, platform, r);
+    selectors = next.selectors;
+    if (next.source === "daemon") {
+      console.info(LOG, `selectors v${selectors.version} for ${selectors.platform} from daemon`);
     } else if (r?.ok) {
-      console.warn(LOG, "daemon selectors rejected; using the bundled set");
+      console.warn(
+        LOG,
+        `daemon selectors rejected; using bundled ${platform}:`,
+        next.reason,
+      );
     }
   } catch {
-    // Daemon not up yet. The bundled set is already in place.
+    // Daemon not up yet. The platform-correct bundle stays in place.
   }
 }
 
@@ -607,6 +607,12 @@ async function start() {
   if (armed) return;
   armed = true;
   lastHref = "";
+  const initial = initialSelectorsForHref(location.href);
+  if (!initial.selectors) {
+    console.info(LOG, "no supported platform — not observing");
+    return;
+  }
+  selectors = initial.selectors;
   // Hide is independent of surface: CSS is scoped to watch #secondary +
   // home grid; off-surface pages are unaffected. Start before arming so it
   // applies without waiting for the first scan.

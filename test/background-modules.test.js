@@ -629,6 +629,102 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     await assert.rejects(() => router.handle(null, {}), /bad message/);
   });
 
+  describe("GET_SELECTORS platform comes from the sender (WO-106)", () => {
+    function selectorRouter() {
+      return makeRouter({
+        caps: { selectors: 1 },
+        reply: (_type, payload) => ({
+          type: "SELECTORS_RESULT",
+          payload: {
+            platform: payload.platform,
+            selectors: { version: 1, platform: payload.platform },
+          },
+        }),
+      });
+    }
+
+    it("relays tt for a TikTok sender and returns that config", async () => {
+      const { router, sent } = selectorRouter();
+      const r = await router.handle(
+        { type: "GET_SELECTORS", payload: { platform: "yt" } },
+        { tab: { id: 4, windowId: 1, url: "https://www.tiktok.com/explore" } },
+      );
+      assert.deepEqual(sent, [{ type: "GET_SELECTORS", payload: { platform: "tt" } }]);
+      assert.equal(r.selectors.platform, "tt");
+      assert.equal(r.selectors.selectors.platform, "tt");
+    });
+
+    it("relays yt for a YouTube sender and returns that config", async () => {
+      const { router, sent } = selectorRouter();
+      const r = await router.handle(
+        { type: "GET_SELECTORS", payload: { platform: "tt" } },
+        { tab: { id: 5, windowId: 1, url: YT_WATCH } },
+      );
+      assert.deepEqual(sent, [{ type: "GET_SELECTORS", payload: { platform: "yt" } }]);
+      assert.equal(r.selectors.platform, "yt");
+      assert.equal(r.selectors.selectors.platform, "yt");
+    });
+
+    it("ignores a payload that claims the other platform", async () => {
+      const { router, sent } = selectorRouter();
+      await router.handle(
+        { type: "GET_SELECTORS", payload: { platform: "yt" } },
+        { tab: { id: 6, windowId: 1, url: TT_FYP } },
+      );
+      await router.handle(
+        { type: "GET_SELECTORS", payload: { platform: "tt" } },
+        { tab: { id: 7, windowId: 1, url: YT_HOME } },
+      );
+      assert.deepEqual(sent.map((s) => s.payload.platform), ["tt", "yt"]);
+    });
+
+    it("makes no daemon request without a supported sender tab", async () => {
+      const { router, sent } = selectorRouter();
+      const senders = [
+        {},
+        { tab: { id: 1, windowId: 1 } },
+        { tab: { id: 1, windowId: 1, url: "" } },
+        { tab: { id: 1, windowId: 1, url: "https://" } },
+        { tab: { id: 1, windowId: 1, url: OTHER } },
+        { tab: { id: 1, windowId: 1, url: "https://m.tiktok.com/explore" } },
+      ];
+      for (const sender of senders) {
+        sent.length = 0;
+        await assert.rejects(
+          () => router.handle({ type: "GET_SELECTORS", payload: { platform: "tt" } }, sender),
+          /selectors require a supported tab/,
+        );
+        assert.deepEqual(sent, [], `sender ${JSON.stringify(sender)} must not reach the daemon`);
+      }
+    });
+
+    it("keeps the connected-daemon gate", async () => {
+      const { router, sent } = makeRouter({ helloOk: false, caps: { selectors: 1 } });
+      await assert.rejects(
+        () =>
+          router.handle(
+            { type: "GET_SELECTORS", payload: { platform: "tt" } },
+            { tab: { id: 1, windowId: 1, url: TT_FYP } },
+          ),
+        /daemon not connected/,
+      );
+      assert.deepEqual(sent, []);
+    });
+
+    it("keeps the selectors capability gate", async () => {
+      const { router, sent } = makeRouter({ caps: {} });
+      await assert.rejects(
+        () =>
+          router.handle(
+            { type: "GET_SELECTORS", payload: { platform: "tt" } },
+            { tab: { id: 1, windowId: 1, url: TT_FYP } },
+          ),
+        /selectors unavailable — desktop app update required/,
+      );
+      assert.deepEqual(sent, []);
+    });
+  });
+
   it("mirrors the negotiated capability map into DAEMON_STATUS and clears it on drop", () => {
     const { router, broadcasts } = makeRouter();
     router.onBridgeStatus(true, "ok", { capabilities: { core: 1, queue: 1 } });

@@ -207,10 +207,10 @@ type Config struct {
 
 // Node is a running swarm participant.
 type Node struct {
-	// rv tracks this node's own discoverability — see RendezvousState. Guarded
-	// because the rendezvous loop writes it while the interface reads it.
-	rvMu sync.Mutex
-	rv   rendezvousState
+	// health tracks whether this node can be found at all, and why not — see
+	// health.go. Never nil: constructed in newNode so a Level-1 node reports
+	// `off` from the instant it exists, without a loop having to run.
+	health *networkHealth
 
 	host host.Host
 	dht  *dht.IpfsDHT
@@ -358,6 +358,10 @@ func newNode(h host.Host, kdht *dht.IpfsDHT, st Store, cfg Config) *Node {
 		searchSem: newSearchPermits(),
 		inflight:  map[string]chan struct{}{},
 		serve:     newServeLimiter(),
+		// Derived from the policy at construction: at Level 1 the answer to
+		// "why zero?" is settled before any loop starts, and there is nothing
+		// that could change it without replacing the node (WO-093 §2).
+		health: newNetworkHealth(cfg.Policy.AnnounceProviders),
 	}
 	n.outbound.Store(true)
 	return n
@@ -1045,9 +1049,10 @@ func provideAll[K any](ctx context.Context, n *Node, keys []K,
 }
 
 // ErrAnnouncedNothing means the announce round published no provider records at
-// all. A node in that state cannot be found by any other install, so a caller
-// that retries on the usual multi-hour cadence would leave it invisible for
-// hours — see announceLoop.
+// all. Nothing this node holds can then be fetched by anyone, so a caller that
+// retries on the usual multi-hour cadence would leave it useless as a provider
+// for hours — see announceLoop. Whether the node itself is *findable* is a
+// separate question with its own loop and its own retry (WO-093 §1).
 // announceFirstBatch is how many records to publish before reporting progress.
 // Small: being findable needs a few records, not all of them.
 const announceFirstBatch = 24
@@ -1104,21 +1109,20 @@ func (n *Node) Announce(ctx context.Context) error {
 	//
 	// So: a small first batch, then a line, then the rest. Reachability arrives
 	// in seconds instead of at the end of the round.
-	// The rendezvous key goes out first and on its own: it is how another node
-	// finds this one at all, and it must not wait behind thousands of content
-	// records. Without it, two nodes with different corpora never meet (WO-094).
-	if err := n.announceRendezvous(ctx); err != nil {
-		n.logf("rendezvous announce failed, this node will be hard to find: %v", err)
-	} else {
-		n.logf("rendezvous published; other Keel nodes can find this one")
-	}
-
+	//
+	// The rendezvous key is deliberately NOT published here. It used to be, at
+	// the top of this function, and that conflated two questions: this round
+	// can publish thousands of content records successfully while the shared
+	// discovery key fails, and it can still be running minutes after that key
+	// succeeded. Either way the answer to "can another install find this node?"
+	// was hostage to a bulk round it has nothing to do with. It has its own
+	// loop now — see health.go (WO-093 §1).
 	if len(keys) > announceFirstBatch {
 		got, err := provideAll(ctx, n, keys[:announceFirstBatch], prefixCID)
 		if err != nil && got == 0 {
 			n.logf("first announce batch published nothing: %v", err)
 		} else {
-			n.logf("first announce batch: %d/%d published; this node is now findable",
+			n.logf("first announce batch: %d/%d graph provider records published",
 				got, announceFirstBatch)
 		}
 	}
@@ -1148,11 +1152,13 @@ func (n *Node) Announce(ctx context.Context) error {
 	}
 	n.logf("announced %d/%d graph buckets, %d/%d catalogue buckets, %d/%d shards",
 		announced, len(keys), catAnnounced, len(catKeys), shardAnnounced, len(shardKeys))
-	// Announcing nothing means this node cannot be found by any other install,
-	// which is indistinguishable from "nobody else is running Keel" — the two
-	// have to be told apart, and only this line can do it.
+	// Announcing nothing means nobody can find the data this node holds. It is
+	// no longer the same statement as "nobody can find this node" — that is the
+	// shared discovery key's answer and it is reported separately (WO-093 §1) —
+	// but a serving node that publishes no provider records is still useless to
+	// its peers, and the retry cadence depends on saying so.
 	if announced == 0 && catAnnounced == 0 && shardAnnounced == 0 && firstErr != nil {
-		n.logf("announce published NOTHING; this node is not discoverable: %v", firstErr)
+		n.logf("announce published NOTHING; nothing this node holds can be fetched: %v", firstErr)
 		return fmt.Errorf("%w: %v", ErrAnnouncedNothing, firstErr)
 	}
 	return nil

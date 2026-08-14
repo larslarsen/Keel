@@ -2,8 +2,11 @@
   "manifest_version": 3,
   "name": "Keel",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0nYqQqZs1idcpdjNidO+64mfdDcevl7Vqgll0aEFhQ7aKUBzvcECO1Dye2EKhtwv1oO3H4AzW4NoxF4q6VqAOhCW/uQuHXsRf+kD3Kfp/wta/4z1eY2yx2Y8My99V0qzWHvScUy8EA5fVUemgAhOwgu7f46OERTZF9TkYXaEfbHrKd7LlxphnPwYZaDkeV+aaNhXqT2SIbQjEsWA34tB39vHfJyAkwITZME+TRdKdeHmEFRbkptMbT8JRbP+eaktohmylHkVJs3lArLqtH2SJ+XaUfe6vr7ztNQIssvG/MKhVU+NrVP9zyB1ww0inaPJQ4HRzEx7OARAJ9NfuwueKwIDAQAB",
+  "minimum_chrome_version": "116",
   "description": "See and control how YouTube recommends videos to you.",
   "permissions": [
+    "sidePanel",
     "storage",
     "nativeMessaging",
     "alarms",
@@ -22,20 +25,18 @@
       "js": [
         "content/bootstrap.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "world": "ISOLATED"
     }
   ],
   "web_accessible_resources": [
     {
       "resources": [
         "content/observer.js",
-        "content/live_policy.js",
         "content/extract.js",
         "content/extract_yt.js",
         "content/hide.js",
-        "content/selector_source.js",
         "lib/selectors.js",
-        "lib/selectors_tt.js",
         "lib/prefs.js",
         "lib/browser.js",
         "lib/errors.js",
@@ -47,14 +48,11 @@
       ]
     }
   ],
-  "sidebar_action": {
-    "default_panel": "sidepanel/index.html",
-    "default_title": "Open Keel"
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
   },
   "background": {
-    "scripts": [
-      "background/sw.js"
-    ],
+    "service_worker": "background/sw.js",
     "type": "module"
   },
   "action": {
@@ -62,11 +60,5 @@
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
-  },
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "keel@local",
-      "strict_min_version": "121.0"
-    }
   }
 }

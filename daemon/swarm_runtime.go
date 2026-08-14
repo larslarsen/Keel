@@ -48,6 +48,10 @@ const (
 	rendezvousInterval      = 15 * time.Minute
 	rendezvousRetry         = 2 * time.Minute
 	rendezvousPeersPerRound = 8
+	// rendezvousLookupTimeout bounds one FindPeers round. Without it a stalled
+	// DHT walk holds the loop open indefinitely, and the interface reports
+	// "looking" forever — a spinner in place of an answer (WO-093 §3).
+	rendezvousLookupTimeout = 90 * time.Second
 )
 
 // prewarmTimeout bounds a background fetch. It runs ahead of the user, so it
@@ -96,11 +100,6 @@ func startSwarm(ctx context.Context, st *store.Store) {
 	supervisor.start(ctx, st)
 }
 
-// announceLoop re-publishes provider records for as long as this node lives.
-//
-// Announce itself re-checks the outbound gate, so a downgrade stops the next
-// tick from re-advertising a cache the user just withdrew even before this
-// loop's context is cancelled.
 // rendezvousLoop looks for other Keel nodes.
 //
 // The node's only unprompted outbound lookup. Everything else reaches out
@@ -109,15 +108,31 @@ func startSwarm(ctx context.Context, st *store.Store) {
 // other. Bounded and slow: finding peers is not urgent, and each round dials
 // only a handful.
 func rendezvousLoop(ctx context.Context, n *swarm.Node) {
-	// A short first pass so a fresh node has company quickly, then settle.
-	wait := 30 * time.Second
+	// The first lookup waits for this node's own shared key to be published
+	// rather than for a fixed delay. Looking earlier is not wrong so much as
+	// uninformative: until this node is itself findable, "found nobody" says
+	// nothing about the network, and the interface would be left presenting a
+	// zero that means neither "quiet" nor "broken" (WO-093 §3).
+	select {
+	case <-ctx.Done():
+		return
+	case <-n.Published():
+	}
+	wait := time.Duration(0)
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
+		if wait > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
 		}
-		found, err := n.FindPeers(ctx, rendezvousPeersPerRound)
+		// Bounded per round for the same reason the publish is: an unfinished
+		// first lookup renders as "looking", and a walk that never returns
+		// would leave it there permanently.
+		lookupCtx, cancel := context.WithTimeout(ctx, rendezvousLookupTimeout)
+		found, err := n.FindPeers(lookupCtx, rendezvousPeersPerRound)
+		cancel()
 		if err != nil && ctx.Err() == nil {
 			log.Printf("swarm: rendezvous: %v", err)
 		}
@@ -133,6 +148,14 @@ func rendezvousLoop(ctx context.Context, n *swarm.Node) {
 	}
 }
 
+// announceLoop re-publishes provider records for as long as this node lives.
+//
+// Announce itself re-checks the outbound gate, so a downgrade stops the next
+// tick from re-advertising a cache the user just withdrew even before this
+// loop's context is cancelled.
+//
+// Content only. Whether this node is discoverable at all is the presence
+// loop's job and is reported separately — see swarm/health.go (WO-093 §1).
 func announceLoop(ctx context.Context, n *swarm.Node) {
 	// Wait for the DHT to be routable before the first attempt.
 	//
@@ -297,16 +320,19 @@ func swarmStatus() map[string]any {
 		// the DHT pads and prunes connections, so presenting it as a count of
 		// people is actively misleading (WO-055).
 		"peers": n.Peers(),
-		// Peers that speak our protocol: actual other installs. This is the
-		// number a person should be shown.
+		// Peers that speak our protocol: actual other installs. Retained for
+		// compatibility with older extensions and for diagnosis; a current
+		// interface must NOT infer health from it, because zero has three
+		// unrelated causes this number cannot distinguish.
 		"keel_peers": n.KeelPeers(),
-		// Why keel_peers is what it is. Zero has three unrelated causes and the
-		// count alone cannot tell them apart: never published (nobody can find
-		// us), published and searching (nobody is there), or not permitted at
-		// this level. WO-093 exists because a day was spent on the first while
-		// reading it as the second.
-		"rendezvous": n.RendezvousState(),
-		"id":         n.ID().String(),
+		// Which of those three it is. Never published (nobody can find us),
+		// published and searching (nobody is there), or not permitted at this
+		// level — WO-093 exists because a day was spent on the first while
+		// reading it as the second. This object is the authoritative payload
+		// for the Network row, and it carries the count with the state so the
+		// two are one snapshot.
+		"network": n.NetworkStatus(),
+		"id":      n.ID().String(),
 		// What the versions around us look like (WO-061). Reported even when
 		// everything agrees, because "no update needed" is itself the answer
 		// to the question a person is asking when they look at this.

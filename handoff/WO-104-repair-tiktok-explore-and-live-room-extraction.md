@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Grok 4.6) |
-| **Status** | **Accepted 2026-08-13 — awaiting commit** |
+| **Status** | **Accepted 2026-08-13 — committed as `0f16d9c`** |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-098 accepted implementation; WO-103 interactive evidence |
 
@@ -379,5 +379,4 @@ go vet ./...             pass
 git diff --check         pass
 ```
 
-The accepted implementation and fixtures remain uncommitted in the working
-tree; acceptance does not claim that the commit/merge step is complete.
+The accepted implementation and fixtures were committed as `0f16d9c`.

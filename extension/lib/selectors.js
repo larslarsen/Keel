@@ -1,3 +1,5 @@
+import { SELECTORS_TT } from "./selectors_tt.js";
+
 /**
  * Selector configuration (WO-056, DESIGN_BOOTSTRAP "Option B").
  *
@@ -180,6 +182,13 @@ export const DEFAULT_SELECTORS = Object.freeze({
   },
 });
 
+/** Bundled config for one named platform, or null when the page is not ours. */
+export function bundledSelectorsFor(platform) {
+  if (platform === "yt") return DEFAULT_SELECTORS;
+  if (platform === "tt") return SELECTORS_TT;
+  return null;
+}
+
 /** Brackets and quotes must balance — catches a truncated or mangled selector. */
 function balanced(s) {
   const pairs = { "[": "]", "(": ")" };
@@ -313,6 +322,27 @@ export function validateSelectorConfig(cfg) {
     if (!cfg.shapes[name]) return null;
   }
   return cfg;
+}
+
+/**
+ * Why validateSelectorConfig refused a daemon payload. Logged so a stale
+ * owner binary is visible as a schema miss, not as a missing Explore root.
+ */
+export function selectorConfigError(cfg) {
+  if (cfg == null) return "missing";
+  if (typeof cfg === "string") return "unparsed string";
+  if (typeof cfg !== "object" || Array.isArray(cfg)) return `type ${typeof cfg}`;
+  if (cfg.version !== 1) return `version ${JSON.stringify(cfg.version)}`;
+  if (typeof cfg.platform !== "string") return "bad platform";
+  if (cfg.platform === "tt") {
+    const need = ["watch", "home", "explore", "following", "liveWall", "liveRoom"];
+    const have = cfg.containers && typeof cfg.containers === "object" ? cfg.containers : {};
+    const missing = need.filter((k) => !have[k]);
+    if (missing.length) return `tt config missing containers: ${missing.join(",")}`;
+    if (!cfg.live) return "tt config missing live";
+  }
+  if (!validateSelectorConfig(cfg)) return "failed schema";
+  return null;
 }
 
 /**

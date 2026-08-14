@@ -225,6 +225,82 @@ The active player also carries an `xgplayer-inactive` class while playing; that
 class describes player-control activity and must not be interpreted as an
 offline-stream signal.
 
+## Post-QA console triage — external TikTok WASM failure
+
+Interactive Brave also logged a failed WebAssembly instantiation from TikTok's
+hashed page bundle, including:
+
+```text
+wasm streaming compile failed: Cannot compile WebAssembly.Module from an already read Response
+failed to asynchronously prepare wasm: CompileError: WebAssembly.instantiate():
+expected magic word 00 61 73 6d, found 3c 21 44 4f
+bg color computed error RuntimeError
+```
+
+The associated console also reports:
+
+```text
+CDN SW  Failover state restored: false
+CDN SW  Path filters restored: Array(0)
+CDN SW  Probe success: Object
+```
+
+The `CDN SW` label belongs to TikTok's page-origin CDN service worker, not to
+Keel. Keel's worker logs with the literal `[Keel SW]` prefix and implements no
+CDN probes, failover state or path-filter configuration. Six successful probes
+show that the endpoints tested by that worker responded at that moment. A false
+failover flag and an empty restored filter array are state values, not errors;
+without TikTok's worker source they do not establish that failover was expected,
+that an asset qualified for interception, or that the worker was responsible
+for the HTML response.
+
+This is not a Keel code defect. Keel ships no `.wasm` asset, calls no
+`WebAssembly` API, and has no host-page fetch listener. Its only service worker
+is the Manifest V3 extension control plane at `extension/background/sw.js`;
+that worker is scoped to Keel's `chrome-extension://` origin and cannot
+intercept TikTok or CDN requests. Keel has no `webRequest` permission and the
+content observer is forbidden from intercepting fetch/XHR.
+
+The bytes `3c 21 44 4f` establish only that the response began with `<!DO`, so
+TikTok's loader received HTML rather than a WASM module. They do not distinguish
+a CDN 404, authentication/challenge document, TikTok-origin service-worker
+fallback, or another browser/network block page. The earlier "already read
+Response" failure likewise belongs to the page loader and its fallback path;
+it is not evidence that Keel read the response.
+
+Do not create a Keel CDN/service-worker correction from these messages. If the
+failed TikTok component visibly prevents a supported surface from rendering
+the DOM fields Keel requires, capture the affected rendered DOM and network
+request URL/status/initiator and open a bounded compatibility investigation.
+Until then this is external console evidence, not a Keel acceptance failure.
+Keel continues to judge a surface by its rendered DOM and must not add network
+inspection to diagnose or repair TikTok's page runtime.
+
+### Remaining third-party console findings
+
+TikTok monitoring POSTs to `mon*.tiktokv.eu/monitor_browser/collect/batch/`
+and `mon-i18n.tiktokv.com/` returned `net::ERR_BLOCKED_BY_CLIENT`. The target
+paths and Slardar retries are TikTok telemetry. The browser error establishes a
+client-side blocker but does not identify which one; Brave Shields or another
+installed content blocker are candidates.
+
+Keel is not a candidate. Its channel blocklist is daemon-owned product data and
+only filters Keel's own rendered suggestions. Keel has no request-blocking API,
+`webRequest` permission, declarative network rules, MAIN-world hook, or
+fetch/XHR interception. These blocked telemetry beacons neither prove nor imply
+a Keel observation failure. Escalate only if a non-monitoring resource needed
+to render the supported DOM is blocked.
+
+The large Emscripten library-symbol warning set from TikTok bundles such as
+`26543.3302afaa.js` and `webmssdk.js` belongs to TikTok's WASM toolchain. Keel
+does not own those bundles or use Emscripten. Treat the warnings as external and
+non-actionable unless a separately observed rendering failure removes DOM Keel
+needs.
+
+The `loadableReady()` preload warning, missing `HydrateFallback`, and missing
+i18n key are likewise TikTok React/SSR/localization diagnostics. They are not
+Keel errors and require no Keel work order.
+
 ## Stop conditions
 
 Return to architecture only if the rendered pages lack a stable public identity

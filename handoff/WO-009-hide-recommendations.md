@@ -353,3 +353,7 @@ visibly wrong, and it makes the new HOME tile look inconsistent with the one bes
 
 The second is preferable: an optimistic count that can be attributed to the wrong surface is worse
 than one that lags by a few seconds.
+
+**Fixed 2026-08-14.** `bumpCounts` increments only the combined impressions
+total. WATCH_NEXT / HOME / EXPLORE wait for `GET_STATS`. Live TikTok Explore
+inserts no longer inflate the WATCH_NEXT tile.

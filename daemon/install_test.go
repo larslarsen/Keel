@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -331,6 +332,129 @@ func TestPrepareExtensionFolder(t *testing.T) {
 		}
 		if !strings.Contains(msg, "already prepared") {
 			t.Errorf("outcome %q, want it reported as already prepared", msg)
+		}
+		got, err := os.ReadFile(filepath.Join(ext, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != template {
+			t.Errorf("packaged manifest was rewritten: %q", got)
+		}
+	})
+
+	t.Run("identical destination is already current", func(t *testing.T) {
+		root := t.TempDir()
+		ext := filepath.Join(root, "extension")
+		if err := os.Mkdir(ext, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ext, "manifest.chrome.json"), []byte(template), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ext, "manifest.json"), []byte(template), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, msg, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(msg, "already current") {
+			t.Errorf("outcome %q, want already current", msg)
+		}
+	})
+
+	t.Run("stale destination is refreshed from the template", func(t *testing.T) {
+		root := t.TempDir()
+		ext := filepath.Join(root, "extension")
+		if err := os.Mkdir(ext, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ext, "manifest.chrome.json"), []byte(template), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stale := `{"manifest_version":3,"name":"Keel","web_accessible_resources":[{"resources":["content/observer.js"]}]}`
+		if err := os.WriteFile(filepath.Join(ext, "manifest.json"), []byte(stale), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, msg, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(msg, "refreshed") {
+			t.Errorf("outcome %q, want refreshed", msg)
+		}
+		got, err := os.ReadFile(filepath.Join(ext, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != template {
+			t.Errorf("refreshed manifest = %q, want template bytes", got)
+		}
+	})
+
+	t.Run("refreshed manifest contains the observer closure", func(t *testing.T) {
+		root := t.TempDir()
+		ext := filepath.Join(root, "extension")
+		if err := os.Mkdir(ext, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		realTmpl, err := os.ReadFile(filepath.Join("..", "extension", "manifest.chrome.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(realTmpl, []byte("content/live_policy.js")) {
+			t.Fatal("chromium template is missing content/live_policy.js")
+		}
+		if err := os.WriteFile(filepath.Join(ext, "manifest.chrome.json"), realTmpl, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stale := []byte(`{"manifest_version":3,"name":"Keel","web_accessible_resources":[{"resources":["content/observer.js"]}]}`)
+		if err := os.WriteFile(filepath.Join(ext, "manifest.json"), stale, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(ext, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, realTmpl) {
+			t.Fatal("refreshed dest must match the chromium template bytes")
+		}
+		if !bytes.Contains(got, []byte("content/live_policy.js")) {
+			t.Error("refreshed manifest omitted content/live_policy.js")
+		}
+	})
+
+	t.Run("unreadable template fails visibly", func(t *testing.T) {
+		root := t.TempDir()
+		ext := filepath.Join(root, "extension")
+		if err := os.Mkdir(ext, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(ext, "manifest.chrome.json"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe")); err == nil {
+			t.Fatal("an unreadable template must fail")
+		}
+	})
+
+	t.Run("unwritable destination fails visibly", func(t *testing.T) {
+		root := t.TempDir()
+		ext := filepath.Join(root, "extension")
+		if err := os.Mkdir(ext, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ext, "manifest.chrome.json"), []byte(template), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(ext, "manifest.json"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := prepareExtensionFolder(filepath.Join(root, "keel-host.exe")); err == nil {
+			t.Fatal("an unwritable destination must fail")
 		}
 	})
 

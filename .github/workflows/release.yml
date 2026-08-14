@@ -56,9 +56,14 @@ jobs:
           sha256sum keel-host-* > SHA256SUMS
           cat SHA256SUMS
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Package the extension
         run: |
-          cp extension/manifest.chrome.json extension/manifest.json
+          npm run prepare:chrome
+          node --test test/background-structure.test.js
           cd extension && zip -qr ../dist/keel-extension.zip . -x 'manifest.firefox.json'
           echo "packaged extension"
 

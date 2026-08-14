@@ -41,6 +41,7 @@ const el = {
   total: document.getElementById("stat-total"),
   watch: document.getElementById("stat-watch"),
   home: document.getElementById("stat-home"),
+  explore: document.getElementById("stat-explore"),
   time: document.getElementById("time-range"),
   channelNote: document.getElementById("channel-note"),
   export: document.getElementById("btn-export"),
@@ -158,6 +159,7 @@ function selectTab(name) {
     view.hidden = !on;
   }
   if (name === "config") {
+    startConfigRefresh();
     refreshStats().catch(() => {});
     refreshPeers().catch(() => {});
     refreshAggregate().catch(() => {});
@@ -323,10 +325,38 @@ function startLiveRefresh() {
   }, LIVE_REFRESH_MS);
 }
 
+/**
+ * Keep the Network row current while somebody is looking at it (WO-093 §4).
+ *
+ * The states this row reports are transient by design: `starting` becomes
+ * `ready` in seconds, `retrying` becomes `fault` on the third failure, and a
+ * fault recovers on its own. Rendered once when the tab was opened, all three
+ * of those look identical to a stuck page — which is the failure mode this
+ * whole section exists to remove, reintroduced in the interface.
+ *
+ * Local RPC only, and only while visible. This adds no network traffic and no
+ * second source of truth: it re-reads the daemon's own snapshot.
+ */
+const CONFIG_REFRESH_MS = 12_000;
+let configRefreshTimer = null;
+
+function configTabVisible() {
+  const view = document.getElementById("view-config");
+  return Boolean(view && !view.hidden && document.visibilityState === "visible");
+}
+
+function startConfigRefresh() {
+  if (configRefreshTimer) return;
+  configRefreshTimer = setInterval(() => {
+    if (configTabVisible()) refreshStats().catch(() => {});
+  }, CONFIG_REFRESH_MS);
+}
+
 document.addEventListener("visibilitychange", () => {
   // Coming back to the tab should show current data, not what was true when it
   // was hidden.
   if (liveTabVisible()) loadLive().catch(() => {});
+  if (configTabVisible()) refreshStats().catch(() => {});
 });
 
 let liveTimer = null;
@@ -548,6 +578,85 @@ function renderDaemon(d) {
     : "";
 }
 
+/**
+ * User-safe wording for the daemon's bounded reason enum (WO-093 §2).
+ *
+ * The daemon owns the enum and the browser owns nothing but the sentence. Raw
+ * libp2p errors never cross the bridge, so there is no case here for one.
+ */
+const NETWORK_REASON = {
+  level_policy: "this node does not advertise itself at the current setting",
+  routing_unavailable: "this machine has not been able to reach the peer network",
+  publish_failed: "publishing this node's address to the network failed",
+};
+
+function reasonText(reason) {
+  return NETWORK_REASON[reason] || "the desktop app did not say why";
+}
+
+/** ", next attempt in about N minutes" — omitted when the daemon gave no time. */
+function retryClause(net) {
+  const at = Number(net.next_retry_at) || 0;
+  if (!at) return "";
+  const mins = Math.round((at - Date.now()) / 60000);
+  if (mins <= 0) return ", retrying now";
+  return `, next attempt in about ${mins} minute${mins === 1 ? "" : "s"}`;
+}
+
+/**
+ * One sentence that answers the question the count cannot (WO-093 §4).
+ *
+ * Every branch says something. A zero is never left as the headline, because
+ * zero is the same number in three unrelated situations — not advertising,
+ * cannot publish, published and alone — and a day of live QA was spent on the
+ * second of those while reading it as the third.
+ *
+ * "Node" and "install", never "user": this counts machines running Keel, and
+ * the raw DHT figure below counts strangers who are not.
+ */
+function networkHeadline(net) {
+  const keel = Number(net.keel_peers) || 0;
+  const failures = Number(net.consecutive_failures) || 0;
+  switch (net.state) {
+    case "off":
+      return (
+        "This node does not advertise itself at your current sharing setting, " +
+        "so no other Keel node can find it and zero connected nodes is what to " +
+        "expect. Downloading shared data and pre-walking still work."
+      );
+    case "starting":
+      return (
+        "Joining the peer network. This node has not finished publishing its " +
+        "address yet, so nothing can find it so far."
+      );
+    case "retrying":
+      return (
+        `Still joining: ${failures} attempt${failures === 1 ? "" : "s"} to publish ` +
+        `this node's address ${failures === 1 ? "has" : "have"} failed because ` +
+        `${reasonText(net.reason)}${retryClause(net)}.`
+      );
+    case "fault":
+      return (
+        `Could not make this node discoverable — ${reasonText(net.reason)}. ` +
+        `${failures} attempts have failed, so no other Keel node can find this ` +
+        `one until one succeeds. Keel keeps trying${retryClause(net)}.`
+      );
+    case "ready":
+      if (!net.lookup_completed) {
+        return "This node is discoverable, and is looking for other Keel nodes.";
+      }
+      if (keel === 0) {
+        return (
+          "Connected to the Keel network and discoverable. No other compatible " +
+          "Keel node has been found yet."
+        );
+      }
+      return `Connected to ${keel} other compatible Keel node${keel === 1 ? "" : "s"}.`;
+    default:
+      return "The desktop app did not report peer-network health.";
+  }
+}
+
 function renderSwarm(sw) {
   const row = document.getElementById("swarm-row");
   if (!row) return;
@@ -560,31 +669,35 @@ function renderSwarm(sw) {
       "setting, and expected if this machine has no route out.";
     return;
   }
-  // Headline the count of other Keel installs, never the raw libp2p figure.
-  //
+  const dht = Number(sw.peers) || 0;
+  // Kept for diagnosis, named for what it is: routing traffic, not people.
   // Joining the public IPFS DHT connects you to dozens of strangers who are not
   // running this software, and that number churns — 53 one minute, 11 the next.
-  // Shown as "peers" it reads as a busy network of people that does not exist.
-  const keel = Number(sw.keel_peers) || 0;
-  const dht = Number(sw.peers) || 0;
-  const live = Number(sw.live_indexed) || 0;
+  const plumbing = `${dht} DHT connection${dht === 1 ? "" : "s"} (network plumbing).`;
 
-  const parts = [
-    keel === 0
-      ? "No other Keel users connected."
-      : `Connected to ${keel} other Keel user${keel === 1 ? "" : "s"}.`,
-  ];
-  if (live) {
-    // With no Keel peers the index can only hold this machine's own sightings,
-    // so saying "known" without qualification would overstate it.
-    parts.push(
-      keel === 0
-        ? `${live} livestream${live === 1 ? "" : "s"} indexed, all from your own browsing.`
-        : `${live} livestream${live === 1 ? "" : "s"} known.`,
-    );
+  // A daemon that never negotiated network_status cannot say why its Keel-node
+  // count is what it is. Showing the count anyway would reinstate exactly the
+  // ambiguity this section exists to remove, so it is withheld and the reason
+  // is stated instead (WO-093 §4).
+  if (!hasCap("network_status")) {
+    row.textContent =
+      "Peer-network health needs a desktop app update. This version cannot say " +
+      "whether other Keel nodes can find this one, and its connected count " +
+      `would mean three different things, so it is not shown. ${plumbing}` +
+      (sw.id ? ` This node: ${String(sw.id).slice(-8)}` : "");
+    renderUpdateNotice(sw.versions);
+    return;
   }
-  // Kept for diagnosis, named for what it is: routing traffic, not people.
-  parts.push(`${dht} DHT connection${dht === 1 ? "" : "s"} (network plumbing).`);
+
+  const net = sw.network || {};
+  const live = Number(sw.live_indexed) || 0;
+  const parts = [networkHeadline(net)];
+  if (live) {
+    // The index outlives individual peer connections, so current network
+    // health cannot establish where any retained record came from (WO-109).
+    parts.push(`${live} livestream${live === 1 ? "" : "s"} indexed.`);
+  }
+  parts.push(plumbing);
   if (sw.id) parts.push(`This node: ${String(sw.id).slice(-8)}`);
   row.textContent = parts.join(" ");
   renderUpdateNotice(sw.versions);
@@ -1063,7 +1176,11 @@ function renderContributionImpact(d, gate) {
     [String(claims), "recommendation claims eligible to serve"],
     [String(catalogue), "catalogue entries eligible to serve"],
     [String((d.buckets_announced ?? 0) + (d.shards_announced ?? 0)), "buckets/shards announced"],
-    [String(d.keel_peers ?? 0), "Keel peers connected right now"],
+    // The Keel-node count deliberately does NOT appear here (WO-093 §4). It
+    // was a second, meaning-free copy of a number the Network section
+    // immediately above now renders with the state that explains it, and two
+    // owners for one number is two chances to disagree about it. The payload
+    // field is still sent, for older extensions.
   ];
   root.className = "stats";
   root.innerHTML = rows
@@ -1177,6 +1294,7 @@ async function refreshStats() {
     el.total.textContent = String(s.total ?? 0);
     el.watch.textContent = String(s.by_surface?.WATCH_NEXT ?? 0);
     el.home.textContent = String(s.by_surface?.HOME ?? 0);
+    if (el.explore) el.explore.textContent = String(s.by_surface?.EXPLORE ?? 0);
     if (typeof s.channel_unknown === "number") {
       const unk = s.channel_unknown ?? 0;
       const known = s.channel_known ?? 0;

@@ -610,7 +610,20 @@ export function createRpcRouter({
       case "GET_SELECTORS": {
         requireDaemon();
         requireCap("selectors", "selectors");
-        return { selectors: await relay("GET_SELECTORS") };
+        // The sender tab owns the platform (WO-106). A TikTok page that
+        // claims "yt" still receives TikTok selectors; an extension page
+        // or unsupported URL must not reach the daemon's empty-platform
+        // YouTube fallback. The URL must be present: surfaceFromUrl
+        // resolves a missing/relative href against www.youtube.com.
+        const url = sender?.tab?.url;
+        if (typeof url !== "string" || !url) {
+          throw new Error("selectors require a supported tab");
+        }
+        const platform = surfaceFromUrl(url).platform;
+        if (platform !== "yt" && platform !== "tt") {
+          throw new Error("selectors require a supported tab");
+        }
+        return { selectors: await relay("GET_SELECTORS", { platform }) };
       }
 
       /**

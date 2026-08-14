@@ -26,6 +26,17 @@ const (
 	// to reconcile, so one name serves both HELLO negotiation and
 	// ContributionRequiredDetail.Capability.
 	CapContributionImpact = "contribution_impact"
+	// CapNetworkStatus is WO-093's typed peer-network health (state, reason,
+	// bounded failure count) inside the swarm status GET_STATS already
+	// returns. It adds no RPC and permits no network action — it revisions the
+	// shape of an existing reply.
+	//
+	// Optional rather than required because the daemon works without it and an
+	// older extension simply ignores the additive object. What it must prevent
+	// is the other pairing: a new extension talking to a daemon that cannot
+	// answer "why is this zero?" has to say "needs a desktop app update", not
+	// fall back to the ambiguous zero this order exists to abolish.
+	CapNetworkStatus = "network_status"
 	// CapLiveSightings is the dedicated, ephemeral rendered-live bridge path
 	// (WO-098). It is intentionally separate from CapTikTok: support for the
 	// static message shape is not permission to use Live at Level 1.
@@ -130,6 +141,7 @@ func DaemonCaps() map[string]int {
 		CapContributionRuntime: 1,
 		CapNetworkConsent:      1,
 		CapContributionImpact:  1,
+		CapNetworkStatus:       1,
 		CapLiveSightings:       LiveSightingsRevTitlelessRoom,
 	}
 }

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Grok 4.6 Extra High) |
-| **Status** | **Accepted 2026-08-13 — awaiting commit** |
+| **Status** | **Accepted 2026-08-13 — committed as `8ff4dd7`** |
 | **Date** | 2026-08-12 |
 | **Source** | Reviewer verification of WO-086 |
 
@@ -208,4 +208,4 @@ go vet ./...             pass
 git diff --check         pass
 ```
 
-The accepted implementation remains uncommitted in the working tree.
+The accepted implementation was committed as `8ff4dd7`.

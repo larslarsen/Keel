@@ -97,7 +97,7 @@ The current implementation queue is:
   replacement state.
 
 - **WO-104 — repair TikTok Explore and Live-room extraction.** **Accepted
-  2026-08-13; awaiting commit.** Explore cards keep the full grid
+  2026-08-13; committed as `0f16d9c`.** Explore cards keep the full grid
   item so creator names come from the author row, not the like overlay. A
   `LIVE_ROOM` sighting requires matching route locator, rendered header and
   room-scoped playing video; late player insertion or a later
@@ -105,8 +105,33 @@ The current implementation queue is:
   empty so replacement-card badges cannot attach. `live_sightings:2` is
   unchanged.
 
+- **WO-105 — stale generated extension manifest.** **Accepted** 2026-08-14.
+  The installer refreshes Chromium drift. A
+  generated `manifest.json` may match either authoritative template; anything
+  else fails and names both `prepare:chrome` and `prepare:firefox`. Release
+  and extension CI stay on `prepare:chrome`. Brave loaded the corrected path
+  and the new TikTok observer armed; the remaining selector failure is WO-106.
+
+- **WO-106 — preserve selector platform through the extension router.**
+  **Accepted** 2026-08-14. Brave Explore logged `selectors v1 for tt from
+  daemon` and `observer armed`. After consent and a current owner binary,
+  `tt`/`EXPLORE` rows landed. Unrelated live-QA edits are separated into
+  WO-107/108.
+
+- **WO-108 — clean up WO-106 scope leakage.** **Accepted** 2026-08-14. The
+  truthful Counts corrections are covered through the real full-page and
+  side-panel DOM paths. The unproved unconditional service-worker startup
+  rearm is gone; WO-008's watchdog remains the sole rearm owner.
+
+- **WO-107 — platform-correct selector fallback.** **Code accepted**
+  2026-08-14; daemon-unavailable live QA pending. The observer chooses a
+  platform-correct bundle before its RPC and rejects a valid configuration for
+  the other platform. The bundled TikTok data is closed against the daemon
+  embed and extracts the real Explore fixture. Chromium/Firefox content-module
+  closure is preserved.
+
 - **WO-092 — contribution-impact accounting correctness.** **Accepted
-  2026-08-13; awaiting commit.** A paged catalogue/shard reply is counted
+  2026-08-13; committed as `8ff4dd7`.** A paged catalogue/shard reply is counted
   only when its signed terminal was fully written. Header or terminal budget
   refusal records nothing; a refused page may still count if the incomplete
   terminal lands. The `-1` budget sentinel is no longer added to wire totals.
@@ -118,6 +143,16 @@ The remaining operational checks are:
 - WO-084 — two-machine network inspection.
 - WO-085 — two-machine serving-limit load check against a real uplink;
   the automated proof is loopback only.
+- WO-093 — remaining public-DHT acceptance gate. WO-109 is accepted: Live
+  wording is provenance-neutral and only the shared presence key claims node
+  discoverability. A live run has now shown a real publish timeout transition
+  to `retrying`, followed by automatic shared-key publication and recovery to
+  `ready` without restart. The current-binary two-machine proof and a controlled
+  three-failure `fault` to recovery sequence remain open.
+
+WO-107's remaining check is manual browser QA, not more implementation. The
+shared Keel discovery key, not content-provider counts or raw DHT connections,
+owns the bounded network-health state.
 
 Nothing here should be read as "ready to publish": the live QA above is the
 gate, and the release rule below it still stands.
@@ -314,8 +349,8 @@ Closed so far: WO-001 … WO-013.
 
 ## Standing debt
 
-- `bumpCounts` attributes optimistic inserts to the WATCH_NEXT tile regardless of surface (WO-009
-  review). Self-corrects within ~5 s.
+- `bumpCounts` now increments only the combined impressions total; per-surface
+  tiles wait for STATS (WO-009 review). Counts also show EXPLORE.
 - `watch_next_mixed.html` and `watch_next_compact.html` are hand-authored, covering a renderer now
   extinct on watch-next. Historical regression cover; cannot be recaptured.
 - `channel_id` unavailable past the initial rail (WO-013, closed as documented-not-fixed). Constrains
