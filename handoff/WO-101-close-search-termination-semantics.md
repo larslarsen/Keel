@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Implemented** 2026-08-13 — architecture review opened required correction WO-102 before merge/live QA |
+| **Status** | **Accepted** 2026-08-13 — WO-102 closed final cause-propagation findings; two-machine live QA pending |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-100 implementation at `a59953b` |
 | **Source** | Architecture review of WO-100's landed concurrency paths |

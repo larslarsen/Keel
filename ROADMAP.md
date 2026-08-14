@@ -41,8 +41,8 @@ The current implementation queue is:
   put **both** machines on the new build; a mixed pair will connect at the
   transport layer and exchange nothing.
 
-- **WO-095 — responsive streaming peer search and UI.** **Implemented, with
-  WO-102 correction required before merge or live QA.**
+- **WO-095 — responsive streaming peer search and UI.** **Accepted; two-machine
+  live QA remains.**
   The start RPC acknowledges immediately; four bounded peer responses run
   independently. Candidate sets are unioned, broad string buckets resolve
   missing titles, and the daemon streams a result as soon as local full-query
@@ -69,12 +69,13 @@ The current implementation queue is:
   retirement. Review accepted those mechanisms and isolated the remaining
   cause-propagation gaps in WO-102.
 
-- **WO-102 — preserve distributed-search stop causes end to end.** **Ready;
-  final merge gate for the stacked search branch.** Budget termination must
-  survive the full catalogue traversal instead of becoming unavailable; local
-  title-read failure must leave candidates unresolved instead of absent; and a
-  cancelled meter waiter must not lease refunded capacity. After review, merge
-  the whole dependent branch and run WO-095's two-machine key-scheme-2 QA.
+- **WO-102 — preserve distributed-search stop causes end to end.** **Accepted;
+  the stacked search branch is merge-ready.** Budget termination survives and
+  short-circuits the full catalogue traversal; local title-read failures leave
+  candidates unresolved; cancelled meter waiters cannot lease refunded
+  capacity; and malformed versus silent peers are distinguished through the
+  real transport. Merge the whole dependent branch as one unit, then run
+  WO-095's two-machine key-scheme-2 QA.
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of
   WO-095. Preserve the three real feed surfaces instead of mapping them to

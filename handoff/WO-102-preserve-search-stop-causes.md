@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Done** 2026-08-13 — every automated acceptance box is covered by a test; the stack remains unmerged for architecture review |
+| **Status** | **Accepted** 2026-08-13 — architecture review passed; stack is merge-ready and two-machine live QA remains |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-101 implementation at `db31531` |
 | **Source** | Architecture review of WO-101's landed error and cancellation paths |
@@ -119,7 +119,7 @@ never invokes its underlying reader. Preserve the existing invariant
       tests from WO-100/101 remain green under `-race`.
 - [x] `go test ./...`, `go test -race ./...` from `daemon/`, `npm test` from the
       repository root, and `git diff --check main...HEAD` pass.
-- [ ] Leave the dependent branch unmerged for architecture review. After
+- [x] Leave the dependent branch unmerged for architecture review. After
       acceptance, merge the whole stack as one unit and run WO-095's pending
       two-machine search QA with both machines on key scheme 2.
 
@@ -180,3 +180,19 @@ Three notes for the reviewer:
 `git diff --check main...HEAD` is clean. Not done, and not code: WO-095's
 two-machine live QA. The stack — WO-097, WO-095, WO-099, WO-100, WO-101,
 WO-102 — is on `wo-097-distributed-search-foundation`, unmerged.
+
+---
+
+## Architecture review (2026-08-13)
+
+Accepted. The budget sentinel now short-circuits the real catalogue call chain
+without becoming a ranked provider outcome; invalid and silent peers are
+distinguished through actual streams; local planning/title-read failures settle
+nothing; and cancellation is checked before every meter lease. The earlier
+lease/spend ceiling, neutral unresolved saturation, completion barrier and
+identity-safe retirement remain intact.
+
+The automated Go, race and extension suites pass, and `main` remains the direct
+ancestor of the nine-commit branch. No further coding ticket is required from
+this review. Merge the complete dependent stack as one unit before the pending
+two-machine key-scheme-2 QA.
