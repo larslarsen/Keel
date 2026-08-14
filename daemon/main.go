@@ -206,7 +206,7 @@ func handleRawContext(ctx context.Context, raw []byte, out io.Writer, st *store.
 	case "IMPRESSIONS":
 		return handleImpressions(env, out, st)
 	case "LIVE_SIGHTINGS":
-		return handleLiveSightings(env, out)
+		return handleLiveSightings(env, out, sess)
 	case "STATS":
 		stats, err := st.Stats()
 		if err != nil {
@@ -719,7 +719,7 @@ func handleImpressions(env *bridge.Envelope, out io.Writer, st *store.Store) err
 
 // handleLiveSightings keeps rendered stream discovery out of the durable
 // impression catalogue. Page, slot and sender context are dropped here.
-func handleLiveSightings(env *bridge.Envelope, out io.Writer) error {
+func handleLiveSightings(env *bridge.Envelope, out io.Writer, sess *bridgeSession) error {
 	var p bridge.LiveSightingsPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: "invalid LIVE_SIGHTINGS payload", Code: "bad_payload"})
@@ -729,10 +729,16 @@ func handleLiveSightings(env *bridge.Envelope, out io.Writer) error {
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{Message: "Live sharing starts at Broad sharing", Code: bridge.CodeContributionRequired,
 			Detail: bridge.ContributionRequiredDetail{Capability: "live", RequiredLevel: store.LevelBroad, EffectiveLevel: supervisor.effectiveLevel()}})
 	}
+	rev := 1
+	if sess != nil && sess.caps != nil {
+		if r, ok := sess.caps[bridge.CapLiveSightings]; ok && r > 0 {
+			rev = r
+		}
+	}
 	accepted := 0
 	for i := range p.Sightings {
 		s := &p.Sightings[i]
-		if err := bridge.ValidateLiveSighting(s); err != nil {
+		if err := bridge.ValidateLiveSighting(s, rev); err != nil {
 			continue
 		}
 		r := swarm.LiveRecord{Platform: "tt", LiveLocator: s.LiveLocator, ChannelID: s.ChannelID, Title: s.Title, SeenAt: s.ObservedAt, StartedAt: s.ObservedAt}

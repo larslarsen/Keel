@@ -31,6 +31,12 @@ const (
 	// static message shape is not permission to use Live at Level 1.
 	CapLiveSightings = "live_sightings"
 
+	// LiveSightingsRevTitlelessRoom is the live_sightings revision at which a
+	// LIVE_ROOM sighting may omit title (WO-104). Revision 1 still requires a
+	// non-empty title on every surface. Gossip and snapshot records already
+	// allowed an absent t; this revision is bridge-only.
+	LiveSightingsRevTitlelessRoom = 2
+
 	// Stable HELLO_ACK / ERROR codes.
 	CodeOK                    = "ok"
 	CodeMissingCore           = "missing_core"
@@ -124,7 +130,7 @@ func DaemonCaps() map[string]int {
 		CapContributionRuntime: 1,
 		CapNetworkConsent:      1,
 		CapContributionImpact:  1,
-		CapLiveSightings:       1,
+		CapLiveSightings:       LiveSightingsRevTitlelessRoom,
 	}
 }
 

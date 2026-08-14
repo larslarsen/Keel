@@ -8,7 +8,8 @@
  * guaranteed to run after a quiet gap of at most THROTTLE_MS once dirty.
  */
 import {
-  mutationSel,
+  mutationRecordsRelevant,
+  observeOptions,
   extractFromContainer,
   extractLiveSightings,
   extractFromYtInitialData,
@@ -29,8 +30,6 @@ import { createLivePolicy } from "./live_policy.js";
 
 const THROTTLE_MS = 750;
 const MAX_ARM_ATTEMPTS = 10;
-/** Bound MO callback work — never walk subtrees per added node. */
-const MAX_NODES_PER_BATCH = 32;
 const LOG = "[Keel]";
 
 let pageLoadId = crypto.randomUUID();
@@ -218,8 +217,10 @@ function buildCtx() {
       context_video_id: null, context_query_hash: null };
   }
   if (surface === "LIVE" || surface === "LIVE_ROOM") {
+    const route = surfaceFromUrl(location.href);
     return { page_load_id: pageLoadId, observed_at: Date.now(), platform, surface,
-      context_video_id: null, context_query_hash: null };
+      context_video_id: null, context_query_hash: null,
+      live_locator: route.live_locator ?? null };
   }
   return null;
 }
@@ -369,23 +370,14 @@ function schedule() {
 }
 
 /**
- * Only schedule when card-like nodes appear.
+ * Only schedule when card-like or room-player nodes appear.
  * O(1) per node: matches() only — never querySelector a subtree in the
  * MO callback (that path pins the renderer at ~1,400 mutations/s).
  * Cap examined nodes per batch; if the cap is hit, schedule anyway —
  * a no-op observeDom pass is cheap; unbounded callback work is not.
  */
 function mutationsRelevant(records) {
-  let examined = 0;
-  for (const r of records) {
-    for (const n of r.addedNodes) {
-      if (n.nodeType !== 1) continue;
-      const el = /** @type {Element} */ (n);
-      if (el.matches?.(mutationSel(selectors))) return true;
-      if (++examined >= MAX_NODES_PER_BATCH) return true;
-    }
-  }
-  return false;
+  return mutationRecordsRelevant(records, selectors);
 }
 
 /** Tear down observer + timers so off-surface pages leave nothing running. */
@@ -441,7 +433,7 @@ function armMo() {
   mo = new MutationObserver((records) => {
     if (mutationsRelevant(records)) schedule();
   });
-  mo.observe(root, { childList: true, subtree: true });
+  mo.observe(root, observeOptions(ctx.surface));
   schedule();
 }
 

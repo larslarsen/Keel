@@ -312,7 +312,7 @@ envelope, not every RPC payload revision. Compatibility is negotiated inside
   "optional": { "selectors": 1, "tiktok": 1, "scroll_history": 1,
                 "peer_search": 2, "word_stats": 1, "queue": 1,
                 "contribution_runtime": 1, "contribution_impact": 1,
-                "live_sightings": 1 }
+                "live_sightings": 2 }
 }
 ```
 
@@ -338,6 +338,11 @@ the other direction: a negotiated `1` means the peer daemon has no level rule,
 so the extension leaves the control enabled rather than imposing a restriction
 the daemon does not enforce. Enforcement itself never depends on the negotiated
 revision — the daemon refuses at Level 1 whatever the client claims to speak.
+`live_sightings:2` (WO-104) is a bridge-only relaxation: a `LIVE_ROOM` sighting
+may omit `title` because the rendered room header has none. Revision 1 still
+requires a title. A revision-2 extension must not send the relaxed shape to a
+daemon that negotiated revision 1. The Live gossip/snapshot record is
+unchanged and already permitted an absent `t`.
 Application semantic versions are diagnostic/update information, not the
 compatibility algorithm.
 

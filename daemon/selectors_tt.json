@@ -30,7 +30,7 @@
       ]
     },
     "lockup": {
-      "match": "[data-e2e=\"recommend-list-item-container\"], div[class*=\"DivItemContainer\"]",
+      "match": "[data-e2e=\"explore-item\"], [data-e2e=\"recommend-list-item-container\"], div[class*=\"DivItemContainer\"]",
       "links": [
         "a[href*=\"/video/\"]",
         "a[href*=\"/live\"]",
@@ -45,6 +45,7 @@
         "img[alt]"
       ],
       "channelLink": [
+        "a[data-e2e=\"explore-card-user-link\"]",
         "a[data-e2e=\"video-author-avatar\"]",
         "a[href^=\"/@\"]"
       ],
@@ -89,6 +90,7 @@
       "main"
     ],
     "explore": [
+      "[data-e2e=\"explore-item-list\"]",
       "[data-e2e=\"explore-list\"]",
       "div[data-e2e=\"recommend-list\"]"
     ],
@@ -100,15 +102,28 @@
       "main#tiktok-live-main-container-id"
     ],
     "liveRoom": [
+      "main#tiktok-live-main-container-id",
       "[data-e2e=\"live-room\"]",
       "main[data-e2e=\"live-room\"]"
     ]
   },
   "live": {
     "cards": "[data-e2e=\"discover_category-list-live-card\"]",
-    "active": ["[data-e2e=\"live-player\"]", "[data-e2e=\"live-badge\"]"],
-    "locator": ["a[href^=\"/@\"][href$=\"/live\"]"],
-    "creator": ["a[href^=\"/@\"][href$=\"/live\"] > div:nth-child(2)"],
+    "active": [
+      "[data-e2e=\"live-room-content\"] .xgplayer-playing video",
+      "[data-e2e=\"live-room-content\"]",
+      ".xgplayer-playing",
+      "[data-e2e=\"live-player\"]",
+      "[data-e2e=\"live-badge\"]"
+    ],
+    "locator": [
+      "[data-e2e=\"live-header-container\"] a[href^=\"/@\"]",
+      "a[href^=\"/@\"][href$=\"/live\"]"
+    ],
+    "creator": [
+      "[data-e2e=\"live-header-container\"] [data-e2e=\"room-header-anchor-name\"]",
+      "a[href^=\"/@\"][href$=\"/live\"] > div:nth-child(2)"
+    ],
     "title": ["a[href^=\"/@\"][href$=\"/live\"] > div:first-child"]
   },
   "rendererKeys": [

@@ -18,11 +18,15 @@ import {
   parseViewCount,
   videoIdFromHref,
   videoIdFromPlayerId,
+  liveLocatorFromHandle,
   surfaceFromUrl,
   extractBalancedObject,
   CARD_SEL,
 } from "../extension/content/extract.js";
-import { validateImpression } from "../extension/lib/protocol.js";
+import {
+  validateImpression,
+  validateLiveSighting,
+} from "../extension/lib/protocol.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(__dirname, "fixtures");
@@ -611,6 +615,79 @@ describe("TikTok surfaces (WO-057)", () => {
   it("a YouTube id is not accepted as a TikTok clip id", () => {
     const r = surfaceFromUrl("https://www.tiktok.com/@someone/video/dQw4w9WgXcQ");
     assert.equal(r.surface, null, "TikTok clip ids are long and numeric");
+  });
+
+  it("derives @handle/live from a validated handle, not from a page URL", () => {
+    assert.equal(liveLocatorFromHandle("@Creator.Name"), "@creator.name/live");
+    assert.equal(liveLocatorFromHandle("/@Creator.Name"), "@creator.name/live");
+    assert.equal(liveLocatorFromHandle("https://www.tiktok.com/@creator"), "@creator/live");
+    assert.equal(liveLocatorFromHandle("/@creator/video/7300000000000000001"), null);
+    assert.equal(liveLocatorFromHandle("/@creator/live"), null);
+    assert.equal(liveLocatorFromHandle("/live"), null);
+    assert.equal(liveLocatorFromHandle(""), null);
+  });
+
+  it("puts the route locator on LIVE_ROOM context and nowhere else", () => {
+    const room = surfaceFromUrl("https://www.tiktok.com/@Someone.Name/live");
+    assert.equal(room.surface, "LIVE_ROOM");
+    assert.equal(room.live_locator, "@someone.name/live");
+    assert.equal(surfaceFromUrl("https://www.tiktok.com/live").live_locator, undefined);
+  });
+});
+
+describe("lockup title precedence (WO-104)", () => {
+  it("YouTube still prefers the watch-link title over a later configured field", async () => {
+    const { readCardFields } = await import("../extension/content/extract.js");
+    const { document } = parseHTML(`<!DOCTYPE html><html><body>
+      <yt-lockup-view-model>
+        <a href="/watch?v=dQw4w9WgXcQ" title="Link Title">Link Title</a>
+        <h3>Configured Title</h3>
+      </yt-lockup-view-model>
+    </body></html>`);
+    const fields = readCardFields(document.querySelector("yt-lockup-view-model"));
+    assert.equal(fields.title, "Link Title");
+  });
+
+  it("TikTok prefers the configured title field over /video/ link text", async () => {
+    const { readCardFields } = await import("../extension/content/extract.js");
+    const tiktok = JSON.parse(
+      readFileSync(join(fixtures, "..", "..", "daemon", "selectors_tt.json"), "utf8")
+    );
+    const { document } = parseHTML(`<!DOCTYPE html><html><body>
+      <div data-e2e="explore-item">
+        <a href="/@creator001/video/7300000000000000001">12.4K</a>
+        <img alt="Caption from alt">
+      </div>
+    </body></html>`);
+    const fields = readCardFields(document.querySelector("[data-e2e=explore-item]"), tiktok);
+    assert.equal(fields.title, "Caption from alt");
+    assert.notEqual(fields.title, "12.4K");
+  });
+});
+
+describe("live sighting bridge revisions (WO-104)", () => {
+  const base = {
+    page_load_id: "11111111-1111-4111-8111-111111111111",
+    observed_at: 1_700_000_000_000,
+    slot_index: 0,
+    platform: "tt",
+    live_locator: "@creator/live",
+    channel_id: "@creator",
+    channel_name: "Creator",
+    badges: [],
+  };
+
+  it("revision 1 rejects a titleless sighting on every surface", () => {
+    assert.equal(validateLiveSighting({ ...base, surface: "LIVE", title: "" }, 1).ok, false);
+    assert.equal(validateLiveSighting({ ...base, surface: "LIVE_ROOM", title: "" }, 1).ok, false);
+    assert.equal(validateLiveSighting({ ...base, surface: "LIVE", title: "On air" }, 1).ok, true);
+  });
+
+  it("revision 2 accepts an empty title only for LIVE_ROOM", () => {
+    assert.equal(validateLiveSighting({ ...base, surface: "LIVE_ROOM", title: "" }, 2).ok, true);
+    assert.equal(validateLiveSighting({ ...base, surface: "LIVE", title: "" }, 2).ok, false);
+    const room = validateLiveSighting({ ...base, surface: "LIVE_ROOM", title: "" }, 2);
+    assert.equal(room.value.title, "");
   });
 });
 

@@ -59,8 +59,14 @@ export const CLIENT_OPTIONAL = Object.freeze({
   queue: 1,
   contribution_runtime: 1,
   contribution_impact: 1,
-  live_sightings: 1,
+  // 2 = titleless LIVE_ROOM is a valid sighting (WO-104). Revision 1 still
+  // requires a non-empty title on every surface. Gossip already permitted an
+  // omitted `t`; this revision is bridge-only.
+  live_sightings: 2,
 });
+
+/** live_sightings revision that accepts an empty title on LIVE_ROOM only. */
+export const LIVE_SIGHTINGS_REV_TITLELESS_ROOM = 2;
 
 /** peer_search revision at which distributed search became Level-2+. */
 export const PEER_SEARCH_REV_RECIPROCAL = 2;
@@ -240,8 +246,8 @@ export function validateImpression(value) {
   };
 }
 
-/** Validate the separate ephemeral Live wire shape (WO-098). */
-export function validateLiveSighting(value) {
+/** Validate the separate ephemeral Live wire shape (WO-098 / WO-104). */
+export function validateLiveSighting(value, rev = LIVE_SIGHTINGS_REV_TITLELESS_ROOM) {
   const r = value || {};
   const e = [];
   if (typeof r.page_load_id !== "string" || !UUID_RE.test(r.page_load_id)) e.push("page_load_id");
@@ -251,16 +257,19 @@ export function validateLiveSighting(value) {
   if (r.platform !== "tt") e.push("platform");
   if (typeof r.live_locator !== "string" || !/^@[a-z0-9_.-]{1,64}\/live$/.test(r.live_locator)) e.push("live_locator");
   if (typeof r.channel_id !== "string" || !/^@[a-z0-9_.-]{1,64}$/i.test(r.channel_id)) e.push("channel_id");
-  if (typeof r.title !== "string" || !r.title || r.title.length > 300) e.push("title");
+  const title = typeof r.title === "string" ? r.title : "";
+  const titlelessRoom = rev >= LIVE_SIGHTINGS_REV_TITLELESS_ROOM && r.surface === "LIVE_ROOM";
+  if (r.title != null && typeof r.title !== "string") e.push("title");
+  else if (title.length > 300 || (!title && !titlelessRoom)) e.push("title");
   if (!Array.isArray(r.badges) || !r.badges.every((b) => typeof b === "string")) e.push("badges");
   if (e.length) return { ok: false, errors: e };
-  return { ok: true, value: { page_load_id: r.page_load_id, observed_at: r.observed_at, surface: r.surface, slot_index: r.slot_index, platform: "tt", live_locator: r.live_locator, channel_id: r.channel_id, channel_name: typeof r.channel_name === "string" ? r.channel_name : "", title: r.title, badges: [...r.badges] } };
+  return { ok: true, value: { page_load_id: r.page_load_id, observed_at: r.observed_at, surface: r.surface, slot_index: r.slot_index, platform: "tt", live_locator: r.live_locator, channel_id: r.channel_id, channel_name: typeof r.channel_name === "string" ? r.channel_name : "", title, badges: [...r.badges] } };
 }
 
-export function validateLiveSightingList(list) {
+export function validateLiveSightingList(list, rev = LIVE_SIGHTINGS_REV_TITLELESS_ROOM) {
   if (!Array.isArray(list)) return { ok: false, values: [], errors: ["not array"] };
   const values = [], errors = [];
-  list.forEach((v, i) => { const r = validateLiveSighting(v); if (r.ok) values.push(r.value); else errors.push(`${i}: ${r.errors.join(",")}`); });
+  list.forEach((v, i) => { const r = validateLiveSighting(v, rev); if (r.ok) values.push(r.value); else errors.push(`${i}: ${r.errors.join(",")}`); });
   return { ok: !errors.length, values, errors };
 }
 

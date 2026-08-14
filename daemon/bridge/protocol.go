@@ -169,15 +169,19 @@ var (
 	channelRE = regexp.MustCompile(`^@[A-Za-z0-9_.-]{1,64}$`)
 )
 
-func ValidateLiveSighting(s *LiveSighting) error {
+func ValidateLiveSighting(s *LiveSighting, rev int) error {
 	if !uuidRE.MatchString(strings.ToLower(s.PageLoadID)) || s.ObservedAt <= 0 || s.SlotIndex < 0 || s.Platform != "tt" {
 		return fmt.Errorf("bad live sighting")
 	}
 	if s.Surface != "LIVE" && s.Surface != "LIVE_ROOM" {
 		return fmt.Errorf("bad live surface")
 	}
+	titleOK := s.Title != ""
+	if rev >= LiveSightingsRevTitlelessRoom && s.Surface == "LIVE_ROOM" {
+		titleOK = true
+	}
 	loc := locatorRE.FindStringSubmatch(s.LiveLocator)
-	if loc == nil || !channelRE.MatchString(s.ChannelID) || strings.ToLower(s.ChannelID) != "@"+loc[1] || s.Title == "" || len(s.Title) > 300 || len(s.ChannelName) > 300 || time.Now().UnixMilli()-s.ObservedAt > int64((12*time.Hour)/time.Millisecond) || s.ObservedAt > time.Now().Add(time.Hour).UnixMilli() {
+	if loc == nil || !channelRE.MatchString(s.ChannelID) || strings.ToLower(s.ChannelID) != "@"+loc[1] || !titleOK || len(s.Title) > 300 || len(s.ChannelName) > 300 || time.Now().UnixMilli()-s.ObservedAt > int64((12*time.Hour)/time.Millisecond) || s.ObservedAt > time.Now().Add(time.Hour).UnixMilli() {
 		return fmt.Errorf("missing live identity fields")
 	}
 	if len(s.Badges) > 12 {

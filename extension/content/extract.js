@@ -84,9 +84,51 @@ export function cardSel(cfg = DEFAULT_SELECTORS) {
 export function homeItemSel(cfg = DEFAULT_SELECTORS) {
   return cfg.homeItems;
 }
+/** Bound examined added nodes per MutationObserver batch (WO-006). */
+export const MAX_MUTATION_NODES = 32;
+
 /** What a MutationObserver should consider relevant for a given config. */
 export function mutationSel(cfg = DEFAULT_SELECTORS) {
-  return `${cfg.cards}, ${cfg.homeItems}${cfg.live?.cards ? `, ${cfg.live.cards}` : ""}`;
+  const extra = [cfg.live?.cards, ...(Array.isArray(cfg.live?.active) ? cfg.live.active : [])]
+    .filter(Boolean)
+    .join(", ");
+  return `${cfg.cards}, ${cfg.homeItems}${extra ? `, ${extra}` : ""}`;
+}
+
+/**
+ * LIVE_ROOM must see class changes: the player often exists first and later
+ * gains `xgplayer-playing`. Other surfaces stay childList-only (WO-006).
+ */
+export function observeOptions(surface) {
+  if (surface === "LIVE_ROOM") {
+    return { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] };
+  }
+  return { childList: true, subtree: true };
+}
+
+/**
+ * O(1) matches() only — never querySelector a subtree in the MO callback.
+ * Attribute records are class changes on LIVE_ROOM; added nodes match the
+ * configured selector, including room-content / .xgplayer-playing hosts.
+ */
+export function mutationRecordsRelevant(records, cfg = DEFAULT_SELECTORS) {
+  const sel = mutationSel(cfg);
+  let examined = 0;
+  for (const r of records || []) {
+    if (r.type === "attributes") {
+      const el = r.target;
+      if (el?.nodeType === 1 && typeof el.matches === "function" && el.matches(sel)) {
+        return true;
+      }
+      continue;
+    }
+    for (const n of r.addedNodes || []) {
+      if (n.nodeType !== 1) continue;
+      if (typeof n.matches === "function" && n.matches(sel)) return true;
+      if (++examined >= MAX_MUTATION_NODES) return true;
+    }
+  }
+  return false;
 }
 
 /** @param {string | null | undefined} text */
@@ -321,6 +363,38 @@ export function liveLocatorFromHref(href) {
 }
 
 /**
+ * Canonical `@handle/live` from a bare validated handle or an exact
+ * rendered `/@creator` profile href. Video and `/live` paths fail closed.
+ */
+export function liveLocatorFromHandle(handle) {
+  if (handle == null) return null;
+  const s = String(handle).trim();
+  const bare = s.match(/^@([A-Za-z0-9_.-]{1,64})$/);
+  if (bare) return liveLocatorFromHref(`https://www.tiktok.com/@${bare[1]}/live`);
+  try {
+    const u = /^[a-z]+:/i.test(s) ? new URL(s) : new URL(s, "https://www.tiktok.com");
+    if (u.hostname !== "www.tiktok.com") return null;
+    const m = u.pathname.replace(/\/{2,}/g, "/").match(/^\/@([A-Za-z0-9_.-]{1,64})$/);
+    if (!m) return null;
+    return liveLocatorFromHref(`https://www.tiktok.com/@${m[1]}/live`);
+  } catch {
+    return null;
+  }
+}
+
+/** First configured selector only — used by the one-room Live branch. */
+function primarySelector(list) {
+  if (typeof list === "string" && list) return list;
+  return Array.isArray(list) && typeof list[0] === "string" ? list[0] : null;
+}
+
+function configuredTitleText(el) {
+  return (el?.getAttribute("title") || el?.textContent || el?.getAttribute("alt") || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Pull just the age out of a metadata line.
  *
  * YouTube packs several facts into one row, and which ones vary by surface, so
@@ -460,7 +534,7 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
   const c = cfg.shapes.lockup;
   // Prefer any watch href on the lockup
   let video_id = null;
-  let title = "";
+  let linkTitle = "";
   for (const a of pickAll(el, c.links)) {
     const id = videoIdFromHref(a.getAttribute("href"), cfg.platform);
     if (!id) continue;
@@ -469,7 +543,7 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
       .replace(/\s+/g, " ")
       .trim();
     // Prefer longer title-like text over bare thumbnails
-    if (t && t.length > title.length && !/^[\d:]+$/.test(t)) title = t;
+    if (t && t.length > linkTitle.length && !/^[\d:]+$/.test(t)) linkTitle = t;
   }
   // TikTok FYP has no /video/<id> href — id lives on the player host
   // (config `playerId`). Shape of the id string is compiled; host is data.
@@ -484,12 +558,11 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
   }
   if (!video_id) return null;
 
-  if (!title) {
-    const h = pick(el, c.title);
-    title = (h?.getAttribute("title") || h?.textContent || h?.getAttribute("alt") || "")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
+  // TikTok lockups: configured semantic title (caption / image alt) before
+  // link text. Explore's /video/ anchor is the like-count overlay.
+  // YouTube keeps link text first — its watch-anchor title is the caption.
+  const semanticTitle = configuredTitleText(pick(el, c.title));
+  const title = cfg.platform === "tt" ? semanticTitle || linkTitle : linkTitle || semanticTitle;
   if (!title) return null;
 
   let channel_id = null;
@@ -501,13 +574,18 @@ function readLockupFields(el, cfg = DEFAULT_SELECTORS) {
     const href = a.getAttribute("href") || "";
     if (href.includes("watch?v=")) continue;
     const id = channelIdFromHref(href, cfg.platform);
-    if (id) {
-      channel_id = id;
-      channel_name = (a.textContent || a.getAttribute("alt") || "")
-        .replace(/\s+/g, " ")
-        .trim() || null;
-      break;
-    }
+    if (!id) continue;
+    if (!channel_id) channel_id = id;
+    // A /video/ href is identity, not a display name — Explore puts the
+    // like-count overlay in that anchor.
+    if (cfg.platform === "tt" && videoIdFromHref(href, "tt")) continue;
+    const name = (a.textContent || a.getAttribute("alt") || "")
+      .replace(/\s+/g, " ")
+      .trim() || null;
+    if (!name) continue;
+    channel_id = id;
+    channel_name = name;
+    break;
   }
   // Real lockup cards have no channel link in the DOM; the display name is the
   // first metadata row with no leading icon (row 2 is "1.2K views · 3 days
@@ -804,12 +882,9 @@ export function extractFromContainer(root, ctx, cfg = DEFAULT_SELECTORS) {
  */
 export function extractLiveSightings(root, ctx, cfg = DEFAULT_SELECTORS) {
   if (!root || !ctx || !["LIVE", "LIVE_ROOM"].includes(ctx.surface) || ctx.platform !== "tt") return [];
-  // No active/inactive room capture has been accepted yet. Do not turn a
-  // synthetic selector into a claim that an individual room is live: a room
-  // URL is not evidence, and wall discovery remains fully functional.
-  if (ctx.surface === "LIVE_ROOM") return [];
   const live = cfg.live;
   if (!live) return [];
+  if (ctx.surface === "LIVE_ROOM") return extractLiveRoomSighting(root, ctx, cfg);
   const cards = [
     ...(root.matches?.(live.cards) ? [root] : []),
     ...root.querySelectorAll(live.cards),
@@ -827,4 +902,45 @@ export function extractLiveSightings(root, ctx, cfg = DEFAULT_SELECTORS) {
     out.push({ page_load_id: ctx.page_load_id, observed_at: ctx.observed_at ?? Date.now(), surface: ctx.surface, slot_index, platform: "tt", live_locator, channel_id, channel_name, title, badges: extractBadges(card, cfg) });
   }
   return out;
+}
+
+/**
+ * One current-room sighting. The page URL classifies LIVE_ROOM and supplies a
+ * consistency locator; activity and identity still come from this document's
+ * room-scoped player and header. All three must agree.
+ */
+function extractLiveRoomSighting(root, ctx, cfg) {
+  const live = cfg.live;
+  const activeSel = primarySelector(live.active);
+  const locatorSel = primarySelector(live.locator);
+  const creatorSel = primarySelector(live.creator);
+  if (!activeSel || !locatorSel || !creatorSel) return [];
+  if (!root.querySelector(activeSel)) return [];
+  const routeLocator = ctx.live_locator || null;
+  const a = root.querySelector(locatorSel);
+  const headerLocator = liveLocatorFromHandle(a?.getAttribute("href"));
+  const channel_id = channelIdFromHref(a?.getAttribute("href"), "tt");
+  const channel_name = (root.querySelector(creatorSel)?.textContent || "").replace(/\s+/g, " ").trim();
+  if (
+    !routeLocator ||
+    !headerLocator ||
+    headerLocator !== routeLocator ||
+    !channel_id ||
+    channel_id.toLowerCase() !== headerLocator.slice(0, -5) ||
+    !channel_name
+  ) {
+    return [];
+  }
+  return [{
+    page_load_id: ctx.page_load_id,
+    observed_at: ctx.observed_at ?? Date.now(),
+    surface: "LIVE_ROOM",
+    slot_index: 0,
+    platform: "tt",
+    live_locator: headerLocator,
+    channel_id,
+    channel_name,
+    title: "",
+    badges: [],
+  }];
 }

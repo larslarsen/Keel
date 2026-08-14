@@ -244,7 +244,7 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     const bridge = {
       helloOk,
       lastHelloFailure: null,
-      hasCapability: (n) => Boolean(caps[n]),
+      hasCapability: (n, minRev = 1) => Number(caps[n] || 0) >= minRev,
       request: async (type, payload) => {
         sent.push({ type, payload });
         return reply
@@ -398,6 +398,48 @@ describe("background/rpc.js — dispatch, validation and capability gates", () =
     const publish = sent.find((x) => x.type === "LIVE_SIGHTINGS");
     assert.equal(publish.payload.sightings.length, 1, "one malformed sibling cannot poison a valid sighting");
     assert.equal(publish.payload.sightings[0].surface, "LIVE", "the sender URL, not the payload, owns the surface");
+  });
+
+  it("will not send a titleless LIVE_ROOM to a live_sightings:1 daemon", async () => {
+    const PID = "77777777-7777-4777-8777-777777777777";
+    const { router, sent } = makeRouter({
+      caps: { live_sightings: 1 },
+      reply: (type) => type === "GET_CONTRIBUTION"
+        ? { type: "CONTRIBUTION_RESULT", payload: { live: true, transition: "idle" } }
+        : { type: `${type}_RESULT`, payload: {} },
+    });
+    const sender = { tab: { id: 9, windowId: 1, url: "https://www.tiktok.com/@creator/live" } };
+    await router.handle({ type: "PAGE_CONTEXT", payload: { pageLoadId: PID, platform: "tt", surface: "LIVE_ROOM" } }, sender);
+    const room = {
+      page_load_id: PID, observed_at: Date.now(), surface: "LIVE_ROOM", slot_index: 0,
+      platform: "tt", live_locator: "@creator/live", channel_id: "@creator",
+      channel_name: "Creator", title: "", badges: [],
+    };
+    const r = await router.handle({ type: "LIVE_SIGHTINGS", payload: { sightings: [room] } }, sender);
+    assert.equal(sent.some((x) => x.type === "LIVE_SIGHTINGS"), false);
+    assert.ok(r.result.dropped >= 1);
+  });
+
+  it("sends a titleless LIVE_ROOM only after live_sightings:2 is negotiated", async () => {
+    const PID = "66666666-6666-4666-8666-666666666666";
+    const { router, sent } = makeRouter({
+      caps: { live_sightings: 2 },
+      reply: (type) => type === "GET_CONTRIBUTION"
+        ? { type: "CONTRIBUTION_RESULT", payload: { live: true, transition: "idle" } }
+        : { type: `${type}_RESULT`, payload: {} },
+    });
+    const sender = { tab: { id: 10, windowId: 1, url: "https://www.tiktok.com/@creator/live" } };
+    await router.handle({ type: "PAGE_CONTEXT", payload: { pageLoadId: PID, platform: "tt", surface: "LIVE_ROOM" } }, sender);
+    const room = {
+      page_load_id: PID, observed_at: Date.now(), surface: "LIVE_ROOM", slot_index: 0,
+      platform: "tt", live_locator: "@creator/live", channel_id: "@creator",
+      channel_name: "Creator", title: "", badges: [],
+    };
+    await router.handle({ type: "LIVE_SIGHTINGS", payload: { sightings: [room] } }, sender);
+    const publish = sent.find((x) => x.type === "LIVE_SIGHTINGS");
+    assert.equal(publish.payload.sightings.length, 1);
+    assert.equal(publish.payload.sightings[0].title, "");
+    assert.equal(publish.payload.sightings[0].surface, "LIVE_ROOM");
   });
 
   it("keeps one bounded tagged FIFO, preserves adjacent-kind order, and purges Live on downgrade", async () => {

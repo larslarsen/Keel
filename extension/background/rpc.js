@@ -36,9 +36,11 @@
  */
 import {
   validateImpressionList,
+  validateLiveSighting,
   validateLiveSightingList,
   CONSENT_REVISION,
   PEER_SEARCH_REV_STREAMING,
+  LIVE_SIGHTINGS_REV_TITLELESS_ROOM,
 } from "../lib/protocol.js";
 import { isChannelId, coerceHideMode, isHideMode } from "../lib/prefs.js";
 import { surfaceFromUrl } from "../content/extract.js";
@@ -151,10 +153,25 @@ export function createRpcRouter({
     if (!sightings.length) return { accepted: 0, rejected: 0 };
     if (!getBridge().helloOk) return { accepted: 0, queued: sightings.length };
     if (!hasCap("live_sightings")) return { accepted: 0, dropped: sightings.length };
+    const rev = hasCap("live_sightings", LIVE_SIGHTINGS_REV_TITLELESS_ROOM)
+      ? LIVE_SIGHTINGS_REV_TITLELESS_ROOM
+      : 1;
+    const sendable = [];
+    let dropped = 0;
+    for (const s of sightings) {
+      const r = validateLiveSighting(s, rev);
+      if (r.ok) sendable.push(r.value);
+      else dropped += 1;
+    }
+    if (!sendable.length) return { accepted: 0, dropped: dropped || sightings.length };
     const state = await relay("GET_CONTRIBUTION");
-    if (state?.live !== true || state?.transition !== "idle") return { accepted: 0, dropped: sightings.length };
-    const env = await getBridge().request("LIVE_SIGHTINGS", { sightings });
-    return env.payload || {};
+    if (state?.live !== true || state?.transition !== "idle") {
+      return { accepted: 0, dropped: sightings.length };
+    }
+    const env = await getBridge().request("LIVE_SIGHTINGS", { sightings: sendable });
+    const result = env.payload || {};
+    if (dropped) return { ...result, dropped: (result.dropped || 0) + dropped };
+    return result;
   }
 
   function flushBuffer() {

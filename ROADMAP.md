@@ -78,20 +78,32 @@ The current implementation queue is:
   WO-095's two-machine key-scheme-2 QA.
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.**
-  **Code accepted 2026-08-13; interactive QA continues in WO-103.**
+  **Code accepted 2026-08-13; interactive QA completed in WO-103 and exposed
+  implementation corrections in WO-104.**
   Preserve the three real feed surfaces instead of mapping them to `HOME`.
-  Explore/Following are durable ordinary observations; `LIVE`/`LIVE_ROOM` are
-  a disjoint ephemeral sighting schema and can never enter SQLite. Canonical
+  Explore and any future proven Following video cards are durable ordinary
+  observations; the currently observed `/following` creator wall emits none.
+  `LIVE`/`LIVE_ROOM` are a disjoint ephemeral sighting schema and can never
+  enter SQLite. Canonical
   `@creator/live` identity requires Live topic/snapshot v2. Static bridge
   support and dynamic Level-2 entitlement are separate gates, with one shared
   200-record browser reconnect bound. This supersedes WO-076 and repairs the
   dropped TikTok platform, idle live-room and 11-character snapshot bugs.
 
-- **WO-103 — interactive TikTok surface QA.** Explore, logged-in Following and
-  active/inactive Live-room DOM require a real Brave session with Shields on;
-  automation did not hydrate them. Capture and sanitize the rendered shapes,
-  verify yield/SPA/virtualization behavior, and make selector-data corrections
-  only. Models must not invent replacement fixtures.
+- **WO-103 — interactive TikTok surface QA.** **Review complete.** Interactive
+  Brave proved the Explore root and title-precedence defects, proved that the
+  observed `/following` page is a zero-impression creator wall, and captured
+  both an active room and the six-to-eight-second inactive automatic-
+  replacement state.
+
+- **WO-104 — repair TikTok Explore and Live-room extraction.** **Accepted
+  2026-08-13; awaiting commit.** Explore cards keep the full grid
+  item so creator names come from the author row, not the like overlay. A
+  `LIVE_ROOM` sighting requires matching route locator, rendered header and
+  room-scoped playing video; late player insertion or a later
+  `xgplayer-playing` class change both schedule a scan. Room badges stay
+  empty so replacement-card badges cannot attach. `live_sightings:2` is
+  unchanged.
 
 - **WO-092 — contribution-impact accounting correctness.** Follow-up to
   implemented WO-086: count only complete replies and enforce/propagate the
