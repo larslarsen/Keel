@@ -29,6 +29,7 @@ import { createProofStore } from "./page_proofs.js";
 import { createPrefs } from "./prefs.js";
 import { createPanelContext } from "./panel_context.js";
 import { createRpcRouter } from "./rpc.js";
+import { createSearchSessions, SEARCH_PORT } from "./search_sessions.js";
 import { errText } from "../lib/errors.js";
 
 const LOG = "[Keel SW]";
@@ -123,9 +124,29 @@ async function broadcastHideState(mode) {
  * It is assigned once below and swapped by the test seam; a router holding the
  * value would keep talking to a replaced port.
  */
+/**
+ * Search-event routing (WO-095 §4). Feature state with a lifetime, so it lives
+ * in its own module and this file only composes it — `sw.js` holds no feature
+ * state (WO-083).
+ *
+ * onOrphan closes the loop the router cannot: a Port that went away with a job
+ * still running leaves the daemon working for nobody, so the search is
+ * cancelled. The module knows about routing; the bridge is this file's to
+ * reach.
+ */
+const searchSessions = createSearchSessions({
+  onOrphan: (searchId) => {
+    bridge
+      ?.request?.("PEER_SEARCH_CANCEL", { search_id: searchId })
+      .catch(() => {});
+  },
+  log,
+});
+
 let bridge = null;
 const router = createRpcRouter({
   getBridge: () => bridge,
+  searchSessions,
   proofs: pageProofs,
   prefs,
   panel,
@@ -165,6 +186,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
  */
 if (browser.runtime.onConnect) {
   browser.runtime.onConnect.addListener((port) => {
+    if (port?.name === SEARCH_PORT) {
+      searchSessions.register(port);
+      return;
+    }
     if (port?.name !== SIDEPANEL_PORT) return;
     panel.registerPanelPort(port, () => {
       broadcastHideState().catch(() => {});
@@ -380,7 +405,7 @@ console.info(LOG, "ready");
 // connection, plus the per-tab proof store for WO-080 assertions. Production
 // never calls these; the injector only swaps the module-level `bridge`
 // binding, which the router reads through getBridge().
-export { handle, pageProofs };
+export { handle, pageProofs, searchSessions };
 export const flushBuffer = router.flushBuffer;
 export function __test_setBridge(b) {
   bridge = b;

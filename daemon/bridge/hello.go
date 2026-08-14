@@ -58,6 +58,46 @@ const (
 //     level, refreshed by CONTRIBUTION_STATUS.
 const PeerSearchRevReciprocal = 2
 
+// PeerSearchRevStreaming is the peer_search revision at which the RPC stopped
+// being one request/one reply (WO-095).
+//
+// At revision 2 and below, PEER_SEARCH holds a native request open while the
+// daemon walks every token, then answers once. Every bar, count and result
+// therefore appears atomically at the end — and when a shared deadline expired
+// mid-walk, the reply carried whatever the first token happened to have found
+// and nothing said the rest never ran.
+//
+// At revision 3 the request only *starts* a job. It is acknowledged promptly
+// with PEER_SEARCH_STARTED, and the work reports itself through unsolicited
+// events on the same session until it completes, is cancelled, or fails.
+//
+// The revision, not a new RPC name, carries this for the same reason
+// PeerSearchRevReciprocal did — but the compatibility story is stricter here,
+// because the two shapes cannot be mixed on one session:
+//
+//   - New extension, old daemon (negotiated 2): the extension falls back to the
+//     atomic call and shows it as such. It must not fabricate streaming
+//     progress for a daemon that is not streaming.
+//   - Old extension, new daemon (negotiated 2): the daemon answers atomically,
+//     exactly as before, and emits no revision-3 events. An event nobody
+//     negotiated is an unsolicited envelope an old client would log as an
+//     error.
+//   - Both new (negotiated 3): the job model above.
+const PeerSearchRevStreaming = 3
+
+// EventIDPrefix marks an envelope the daemon sent unsolicited (WO-095 §3).
+//
+// A revision-3 job emits envelopes nobody is waiting for, onto a session where
+// every other envelope answers a request by id. Without a reserved prefix, a
+// job event could collide with a live request's correlation id and resolve
+// somebody else's pending promise with a payload of the wrong type — the same
+// class of defect as the `THUMBNAIL`/`GET_CONSENT` fall-through, arriving over
+// the wire instead of through a switch.
+//
+// Clients treat an id with this prefix as "never a reply": it is dispatched by
+// event type and search id, and it can never satisfy a pending request.
+const EventIDPrefix = "evt-"
+
 // CodeContributionRequired marks an RPC refused because the running
 // contribution level does not entitle this node to it (WO-085).
 //
@@ -74,7 +114,7 @@ func DaemonCaps() map[string]int {
 		CapSelectors:           1,
 		CapTikTok:              1,
 		CapScrollHistory:       1,
-		CapPeerSearch:          PeerSearchRevReciprocal,
+		CapPeerSearch:          PeerSearchRevStreaming,
 		CapWordStats:           1,
 		CapQueue:               1,
 		CapContributionRuntime: 1,
@@ -246,7 +286,7 @@ func RPCCapability(typ string) string {
 		return CapSelectors
 	case "SCROLL_HISTORY":
 		return CapScrollHistory
-	case "PEER_SEARCH":
+	case "PEER_SEARCH", "PEER_SEARCH_CANCEL":
 		return CapPeerSearch
 	case "WORD_STATS":
 		return CapWordStats

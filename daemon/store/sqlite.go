@@ -405,6 +405,23 @@ CREATE TABLE IF NOT EXISTS token_sketches (
 );
 CREATE INDEX IF NOT EXISTS idx_token_sketches_lru ON token_sketches(last_used_at);
 CREATE INDEX IF NOT EXISTS idx_token_sketches_due ON token_sketches(due_at);
+-- The retained word-telemetry refresh round (WO-097 §7). Exactly one row,
+-- replaced whole: it is an aggregate of one round's packs, never an
+-- accumulation across rounds, because Count-Min addition is not idempotent and
+-- re-fetching an unchanged pack would double its counters. Holds no word
+-- strings, no video ids and no query — only HLL registers and CMS counters.
+CREATE TABLE IF NOT EXISTS word_snapshot (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  p INTEGER NOT NULL,
+  word_registers BLOB NOT NULL,
+  graph_registers BLOB NOT NULL,
+  freq BLOB NOT NULL,
+  sources INTEGER NOT NULL,
+  peers INTEGER NOT NULL,
+  duplication REAL NOT NULL,
+  have_factor INTEGER NOT NULL,
+  refreshed_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS channel_blocklist (
   channel_id TEXT PRIMARY KEY,
   blocked_at INTEGER NOT NULL

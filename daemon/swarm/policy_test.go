@@ -446,11 +446,11 @@ func TestLevelTwoAnnouncesEverythingItServes(t *testing.T) {
 		t.Fatal("a Level-2 node announced no catalogue buckets, so its blocks arrive unlabelled")
 	}
 	for _, prefix := range catPrefixes {
-		pack, err := st.BuildCataloguePack(prefix, catalogue, 4096)
+		rows, _, err := st.CatalogueRows(prefix, catalogue, 0)
 		if err != nil {
 			t.Fatalf("announced catalogue bucket %s cannot be served: %v", prefix, err)
 		}
-		if len(pack.Entries) == 0 {
+		if len(rows) == 0 {
 			t.Errorf("announced catalogue bucket %s returns nothing", prefix)
 		}
 	}

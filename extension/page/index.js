@@ -7,7 +7,11 @@
  * to the daemon — this page holds no observation data of its own.
  */
 import { browser } from "../lib/browser.js";
-import { PEER_SEARCH_REV_RECIPROCAL } from "../lib/protocol.js";
+import {
+  PEER_SEARCH_REV_RECIPROCAL,
+  PEER_SEARCH_REV_STREAMING,
+} from "../lib/protocol.js";
+import { createSearchStream } from "./search_stream.js";
 import { escapeHtml, fmtDuration } from "../lib/render.js";
 import {
   analysisTable,
@@ -31,7 +35,6 @@ const el = {
   searchNetworkNote: document.getElementById("search-network-note"),
   searchNetworkReason: document.getElementById("search-network-reason"),
   searchNetworkRoute: document.getElementById("search-network-route"),
-  peerProgress: document.getElementById("peer-progress"),
   peerProgressCaption: document.getElementById("peer-progress-caption"),
   wordCorpus: document.getElementById("word-corpus"),
   wordCorpusMeta: document.getElementById("word-corpus-meta"),
@@ -355,300 +358,53 @@ function hitRow(h, provenance) {
   return li;
 }
 
-function renderHits(res) {
-  el.results.replaceChildren();
-  const hits = res?.hits || [];
-  if (!hits.length) {
-    el.meta.textContent = res?.query
-      ? `Nothing found for “${res.query}”. Keel only searches what it has seen on this device.`
-      : "";
-    return;
-  }
-  el.meta.textContent =
-    `${res.total} match${res.total === 1 ? "" : "es"}` +
-    (res.truncated ? ` · showing ${hits.length}` : "");
-
-  for (const h of hits) {
-    // seen = how many times Keel observed this being recommended. That is
-    // the corpus's own signal and the reason local results are ordered this
-    // way.
-    const provenance = h.seen > 0 ? `seen ${h.seen}×` : `from a shared bundle`;
-    el.results.appendChild(hitRow(h, provenance));
-  }
-}
-
-// appendPeerHits adds network-found rows after whatever local search already
-// rendered, tagged distinctly. A peer-search hit is not a claim this device
-// watched or even has seen the video — it may not even have a title (WO-059:
-// the daemon does not fetch one just to label a search result, since that
-// would bind a catalogue fetch to this exact query).
-function appendPeerHits(hits) {
-  for (const h of hits || []) {
-    el.results.appendChild(hitRow(h, "found on the network"));
-  }
-}
-
-// Validated dark-mode categorical palette (dataviz skill), in its fixed
-// CVD-safe adjacency order. Cycled by dictionary index for queries with
-// more distinct tokens than colors — an accepted departure from "never
-// cycle" here, because these segments carry no user-facing identity to
-// protect long-term the way a tracked chart series would (WO-067).
-const PEER_PROGRESS_COLORS = [
-  "#3987e5", "#d95926", "#199e70", "#c98500",
-  "#d55181", "#008300", "#9085e9", "#e66767",
-];
-
-// Mirrors daemon/store/keyscheme.go's ShardK — frozen, never runtime
-// (WO-060). The tokenizer cuts a word into fixed, non-overlapping blocks of
-// this many characters from the front (daemon/store/shard.go's tokenize),
-// so colorizedWord below has to chop the same way to draw the same blocks.
-const CHAR_TOKENS_K = 3;
-
-// A stable colour for a token, from the token's own characters — no
-// dictionary, no server-assigned index. The word is already sent to this
-// page in plaintext (it's the user's own query), so hashing the substring
-// here is simpler than keying off an id whose only job was picking a
-// colour. Deterministic: the same three characters always land on the same
-// colour, so a repeated block reuses it for free.
-function colorForToken(text) {
-  let h = 0;
-  for (let i = 0; i < text.length; i++) {
-    h = (h * 31 + text.charCodeAt(i)) | 0;
-  }
-  return PEER_PROGRESS_COLORS[Math.abs(h) % PEER_PROGRESS_COLORS.length];
-}
-
-// renderPeerProgress draws one segment per query token the daemon walked,
-// color-coded and shuffled — deliberately not labeled and not in query
-// order, so the bar itself cannot be read back into the query's structure
-// (WO-067). progress entries carry only an opaque token_index, never the
-// token text; the daemon does not send that either.
-function renderPeerProgress(progress) {
-  if (!el.peerProgress) return;
-  el.peerProgress.replaceChildren();
-  if (!progress || !progress.length) {
-    el.peerProgress.hidden = true;
-    el.peerProgress.setAttribute("aria-hidden", "true");
-    if (el.peerProgressCaption) el.peerProgressCaption.hidden = true;
-    return;
-  }
-
-  // One segment per distinct three-gram token. The daemon can report the same
-  // token_index more than once as a walk progresses, and a repeated token would
-  // be drawn as two bars — which reads as more of the query than there is.
-  const seen = new Set();
-  progress = progress.filter((p) => {
-    const k = Number(p.token_index) || 0;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-
-  const order = progress.map((_, i) => i);
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-
-  const fills = [];
-  for (const i of order) {
-    const p = progress[i];
-    const color = PEER_PROGRESS_COLORS[Math.abs(p.token_index || 0) % PEER_PROGRESS_COLORS.length];
-    const seg = document.createElement("div");
-    seg.style.setProperty("--seg-color", color);
-    if (p.known) {
-      const pct = p.target > 0 ? Math.min(100, Math.round((p.fetched / p.target) * 100)) : 100;
-      const fill = document.createElement("div");
-      fill.className = "fill";
-      fill.style.width = "0%";
-      seg.className = "seg";
-      seg.appendChild(fill);
-      seg.title = `~${pct}% of the network's estimated coverage for this part of the search`;
-      fills.push([fill, pct]);
-    } else {
-      seg.className = "seg unknown";
-      seg.title = "No network estimate yet for this part of the search";
-    }
-    el.peerProgress.appendChild(seg);
-  }
-  el.peerProgress.hidden = false;
-  el.peerProgress.setAttribute("aria-hidden", "false");
-  if (el.peerProgressCaption) el.peerProgressCaption.hidden = false;
-  // Width starts at 0 so the CSS transition animates to the final fraction
-  // on the next frame rather than painting already-full.
-  requestAnimationFrame(() => {
-    for (const [fill, pct] of fills) fill.style.width = pct + "%";
-  });
-}
-
 /**
- * The query word, chopped into ShardK-character blocks from the front, each
- * tinted by colorForToken. Purely local string-chopping — no tokenizer, no
- * dictionary, nothing from the wire: the word is already plaintext here, and
- * cutting every 3 characters is the whole algorithm.
- *
- * @param {string} word
- * @returns {DocumentFragment}
+ * WO-095: one submission = one fresh search_id, local results immediately, then
+ * streaming network work. Everything about tokenizing, colouring and counting
+ * now belongs to the daemon's render plan — this page slices strings it was
+ * given (see page/search_stream.js).
  */
-function colorizedWord(word) {
-  const frag = document.createDocumentFragment();
-  const text = String(word ?? "");
-  for (let i = 0; i < text.length; i += CHAR_TOKENS_K) {
-    const block = text.slice(i, i + CHAR_TOKENS_K);
-    const span = document.createElement("span");
-    span.textContent = block;
-    span.className = "tok-char";
-    span.style.color = colorForToken(block);
-    frag.appendChild(span);
-  }
-  return frag;
-}
-
-// renderWordCorpus draws WO-068's two-tier bars: top = per-word global % of
-// observed graphs; bottom = per ShardK char-token coverage from gossiped
-// token sketches. Separate from renderPeerProgress (query-scoped fetch
-// coverage). Word strings shown on the top tier are the user's own query
-// words; token sub-bars stay unlabeled (color only).
-function renderWordCorpus(stats) {
-  if (!el.wordCorpus) return;
-  el.wordCorpus.replaceChildren();
-  if (!stats || !stats.words?.length) {
-    el.wordCorpus.hidden = true;
-    el.wordCorpus.setAttribute("aria-hidden", "true");
-    if (el.wordCorpusMeta) el.wordCorpusMeta.hidden = true;
-    return;
-  }
-
-  const maxTok = Math.max(
-    1,
-    ...stats.words.flatMap((w) => (w.tokens || []).map((t) => (t.known ? Number(t.estimate) || 0 : 0)))
-  );
-
-  for (const w of stats.words) {
-    const row = document.createElement("div");
-    row.className = "word-row";
-
-    const label = document.createElement("div");
-    label.className = "word-label";
-    const pctText =
-      typeof w.pct === "number" ? `~${w.pct}% of observed graphs` : "no estimate yet";
-    // The word is written a ShardK-character block at a time, each tinted by
-    // colorForToken — the same colour as that block's bar below, since both
-    // hash the identical substring computed the identical way.
-    label.appendChild(colorizedWord(w.word));
-    label.appendChild(document.createTextNode(` — ${pctText}`));
-    row.appendChild(label);
-
-    const bar = document.createElement("div");
-    bar.className = "word-bar";
-    const fill = document.createElement("div");
-    fill.className = "fill";
-    fill.style.width = "0%";
-    bar.appendChild(fill);
-    row.appendChild(bar);
-
-    const sub = document.createElement("div");
-    sub.className = "token-subbars";
-    const fills = [[fill, typeof w.pct === "number" ? Math.min(100, w.pct) : 0]];
-    // One bar per ShardK-character block, in word order — the daemon sends
-    // coverage that way, so the nth bar is the nth block and matches the
-    // nth coloured block above it. No sorting or de-duplicating here: a
-    // word with a repeated block really does have two bars for it — they
-    // just share a colour, the same as the label does.
-    const word = String(w.word ?? "");
-    (w.tokens || []).forEach((t, i) => {
-      const block = word.slice(i * CHAR_TOKENS_K, i * CHAR_TOKENS_K + CHAR_TOKENS_K);
-      const color = colorForToken(block);
-      const seg = document.createElement("div");
-      seg.style.setProperty("--seg-color", color);
-      if (t.known) {
-        const est = Number(t.estimate) || 0;
-        const pct = Math.round((est / maxTok) * 100);
-        const past = est > maxTok; // defensive; maxTok is max of estimates
-        const tf = document.createElement("div");
-        tf.className = "fill" + (past ? " past" : "");
-        tf.style.width = "0%";
-        seg.className = "seg";
-        seg.appendChild(tf);
-        seg.title = past
-          ? `est. ${est} graphs (past peer scale)`
-          : `est. ${est} graphs for this part of the word`;
-        fills.push([tf, Math.min(100, pct)]);
-      } else {
-        seg.className = "seg unknown";
-        seg.title = "No network estimate yet for this part of the word";
-      }
-      sub.appendChild(seg);
-    });
-    row.appendChild(sub);
-    el.wordCorpus.appendChild(row);
-
-    requestAnimationFrame(() => {
-      for (const [f, pct] of fills) f.style.width = pct + "%";
-    });
-  }
-
-  el.wordCorpus.hidden = false;
-  el.wordCorpus.setAttribute("aria-hidden", "false");
-  if (el.wordCorpusMeta) {
-    const bits = [];
-    if (stats.distinct_words > 0) {
-      bits.push(`~${stats.distinct_words.toLocaleString()} distinct words in the swarm's view`);
-    }
-    if (stats.peers > 0) bits.push(`${stats.peers} peer pack(s)`);
-    else if (stats.available === false) bits.push("local catalogue only");
-    el.wordCorpusMeta.textContent = bits.join(" · ");
-    el.wordCorpusMeta.hidden = !bits.length;
-  }
-}
+const searchStream = createSearchStream({
+  browser,
+  rpc,
+  el,
+  hitRow,
+  hasStreaming: () =>
+    Number(bridgeCaps.peer_search || 0) >= PEER_SEARCH_REV_STREAMING,
+  onContributionRequired: (detail) => {
+    // The daemon is the authority, and it just told us the checkbox was wrong
+    // — a level change this page missed, or a stale client. Correct the control
+    // from the answer rather than leave it inviting a refusal (WO-085).
+    searchEntitlement = {
+      known: true,
+      allowed: false,
+      level: Number(detail.effective_level) || 1,
+      minLevel: Number(detail.required_level) || 2,
+    };
+    applyCapabilityUi();
+  },
+  log: (...a) => console.warn("[Keel search]", ...a),
+});
 
 el.form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const query = el.q.value.trim();
   if (!query) return;
   el.meta.textContent = "Searching…";
-  renderPeerProgress(null);
-  renderWordCorpus(null);
-  try {
-    const r = await rpc("SEARCH", { query, limit: 100 });
-    renderHits(r.search);
-  } catch (err) {
-    el.meta.textContent = `Search failed: ${err.message}`;
-    return;
-  }
-  // Corpus bars are independent of network-search checkbox: telemetry only.
-  try {
-    const r = await rpc("WORD_STATS", { query });
-    if (r.word_stats) renderWordCorpus(r.word_stats);
-  } catch {
-    // Optional display; local search already succeeded.
-  }
-  if (!el.searchNetwork?.checked) return;
-  try {
-    const r = await rpc("PEER_SEARCH", { query, limit: 100 });
-    if (r.peer_search?.contribution_required) {
-      // The daemon is the authority, and it just told us the checkbox was
-      // wrong — a level change this page missed, or a modified/stale client.
-      // Correct the control from the answer rather than leave it inviting a
-      // request that will be refused again (WO-085).
-      const d = r.peer_search.contribution_required;
-      searchEntitlement = {
-        known: true,
-        allowed: false,
-        level: Number(d.effective_level) || 1,
-        minLevel: Number(d.required_level) || 2,
-      };
-      applyCapabilityUi();
-    } else if (r.peer_search?.available) {
-      appendPeerHits(r.peer_search.hits);
-      renderPeerProgress(r.peer_search.progress);
-    }
-  } catch {
-    // Network search is a bonus on top of local results already shown;
-    // failing quietly here is the right default rather than replacing a
-    // working local result with an error.
-  }
+  await searchStream.run(query, { network: Boolean(el.searchNetwork?.checked) });
 });
+
+// Turning network search off mid-flight cancels the job rather than leaving it
+// running for results nobody will render (WO-095 §4).
+el.searchNetwork?.addEventListener("change", () => {
+  if (!el.searchNetwork.checked) searchStream.cancel();
+});
+
+// Page teardown is one of the listed cancellation triggers. The service worker
+// also cancels orphans when the Port drops, so this is the fast path rather
+// than the only one. Guarded because this module is also loaded by DOM tests
+// that provide a document without a window.
+globalThis.addEventListener?.("pagehide", () => searchStream.cancel());
 
 /* ---------- suggestions ---------- */
 

@@ -64,12 +64,16 @@
             Change contribution level
           </button>
         </p>
-        <div id="peer-progress" class="peer-progress" hidden aria-hidden="true"></div>
-        <p class="meta peer-progress-caption" id="peer-progress-caption" hidden>
-          Filling in as peers answer — each colored segment is one part of
-          your search, not shown in order.
-        </p>
+        <!-- WO-095: one row per query word — the word's completion bar over
+             the schematic token bars showing peer-response work. Filled by
+             page/search_stream.js from the daemon's render plan; the page
+             never tokenizes or counts. -->
         <div id="word-corpus" class="word-corpus" hidden aria-hidden="true"></div>
+        <!-- The network's own state, in words: searching, no peers, completed
+             (and whether the target was met), cancelled, or failed. Never
+             silently empty — a failure or an exhausted budget must not read as
+             a successful search that found nothing. -->
+        <p class="meta peer-progress-caption" id="peer-progress-caption" hidden></p>
         <p class="meta" id="word-corpus-meta" hidden></p>
         <p class="meta" id="search-meta"></p>
         <ol id="results"></ol>

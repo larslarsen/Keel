@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 2026-08-12.
+Updated 2026-08-13.
 
 ## Current stabilization queue
 
@@ -22,13 +22,71 @@ open from this review.
 
 The current implementation queue is:
 
-- **WO-091 — Windows native-host installation.** Release-test blocker. The
-  current `install -all` lets Firefox overwrite the Chromium manifest used by
-  Brave, and installation cannot be diagnosed on the affected no-keyboard
-  machine. Fix and live-verify this first.
+- **WO-097 — complete distributed-search foundation.** **Implemented**
+  2026-08-13. Scheme 2 uses one continuous fixed query grid and every title
+  alignment. Inverted-index generation drops only stopword-only occurrences,
+  while meaningful and boundary windows remain. Token and catalogue/string
+  buckets are completely pageable instead of silently ending at 4,096 rows.
+  Retained HLL/CMS refresh snapshots supply immediate overlap-adjusted word
+  targets without a word dictionary.
+
+  **Rollout note — this release partitions the swarm.** `KeySchemeVersion` is
+  one swarm-wide fence, so bumping it to 2 makes scheme-1 and scheme-2 builds
+  mutually unreachable on *every* scheme-versioned protocol, graph and
+  catalogue included, even though only the tokenizer changed. That is the
+  deliberate cost of refusing silently incompatible shard data (WO-097 §5) and
+  it lasts until installs have updated. `swarm.VersionView` reports
+  `key_scheme`, `incompatible` and `update_required` so the state is
+  diagnosable rather than looking like an empty network (WO-058). Live QA must
+  put **both** machines on the new build; a mixed pair will connect at the
+  transport layer and exchange nothing.
+
+- **WO-095 — responsive streaming peer search and UI.** **Accepted; two-machine
+  live QA remains.**
+  The start RPC acknowledges immediately; four bounded peer responses run
+  independently. Candidate sets are unioned, broad string buckets resolve
+  missing titles, and the daemon streams a result as soon as local full-query
+  matching proves it. Schematic colored token bars show response cycles; live
+  word bars count distinct confirmed candidates against frozen targets. Work
+  stops on target plus saturation or a hard resource bound, never target or
+  saturation alone. WO-096 is folded into these two orders and must not be
+  implemented separately.
+
+- **WO-099 — streaming-search lifecycle and resource correction.** Implemented.
+  Independent page jobs, early-event preservation and prompt downgrade
+  cancellation landed; WO-100 closed its first review findings.
+
+- **WO-100 — finish search-budget and resolution atomicity.** Implemented.
+  Metering moved into reads, catalogue outcomes and successful prefix
+  completion remain explicit, concurrent nominations join, and ordinary job
+  cancellation retires by identity. Architecture review found the four final
+  termination boundaries now isolated in WO-101.
+
+- **WO-101 — close distributed-search termination semantics.** Implemented.
+  Bytes temporarily reserved are distinct from bytes spent; unresolved
+  catalogue work no longer advances saturation; invalid and unavailable paged
+  outcomes split; globally stopped jobs keep their slots until exact
+  retirement. Review accepted those mechanisms and isolated the remaining
+  cause-propagation gaps in WO-102.
+
+- **WO-102 — preserve distributed-search stop causes end to end.** **Accepted;
+  the stacked search branch is merge-ready.** Budget termination survives and
+  short-circuits the full catalogue traversal; local title-read failures leave
+  candidates unresolved; cancelled meter waiters cannot lease refunded
+  capacity; and malformed versus silent peers are distinguished through the
+  real transport. Merge the whole dependent branch as one unit, then run
+  WO-095's two-machine key-scheme-2 QA.
+
+- **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of
+  WO-095. Preserve the three real feed surfaces instead of mapping them to
+  `HOME`; ordinary Explore/Following cards enter the TikTok observation path,
+  while `/live` cards enter Keel's ephemeral Live index through canonical
+  `@creator/live` locators and gossip at Level 2+. This supersedes WO-076 and
+  also repairs the dropped TikTok platform and idle `/@creator/live` path.
+
 - **WO-092 — contribution-impact accounting correctness.** Follow-up to
   implemented WO-086: count only complete replies and enforce/propagate the
-  cumulative counter's database invariant. This follows WO-091.
+  cumulative counter's database invariant. WO-091, its prerequisite, is done.
 
 The remaining operational checks are:
 

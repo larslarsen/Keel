@@ -367,6 +367,10 @@ func (s *swarmSupervisor) resumeAfterConsent(ctx context.Context, st *store.Stor
 // synchronously before teardown begins, so from the first instruction nothing
 // further is offered — regardless of how long stopping the host takes.
 func (s *swarmSupervisor) stopForWithdrawnConsent() {
+	// Before anything else: a running distributed search is outbound network
+	// work this user has just revoked permission for, so it stops promptly
+	// rather than when a worker next polls (WO-099 §3).
+	stopDistributedSearches(cancelConsent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nodeMu.Lock()
@@ -427,6 +431,7 @@ func (s *swarmSupervisor) teardown(n *swarm.Node, stop context.CancelFunc) {
 
 // stopAll tears the current node down for good, for process shutdown.
 func (s *swarmSupervisor) stopAll() {
+	stopDistributedSearches(cancelShutdown)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nodeMu.Lock()
@@ -487,6 +492,11 @@ func (s *swarmSupervisor) apply(
 func (s *swarmSupervisor) downgrade(
 	ctx context.Context, st *store.Store, level int,
 ) (contributionState, error) {
+	// The gate shuts before teardown, and running searches stop with it. A job
+	// started at Level 2 must not keep reaching peers after the user has moved
+	// below it, and it must terminate as CANCELLED rather than COMPLETE — the
+	// search did not finish, it was withdrawn (WO-099 §3).
+	stopDistributedSearches(cancelDowngrade)
 	old, oldStop := s.detachNode()
 	if old != nil {
 		old.CloseOutbound()

@@ -318,10 +318,17 @@ type ExplainResultPayload struct {
 	SlotHistogram    []SlotBucket     `json:"slot_histogram"`
 }
 
-// SearchPayload is the SEARCH request body (WO-022).
+// SearchPayload is the SEARCH request body (WO-022), and the PEER_SEARCH body
+// at revisions 1 and 2.
 type SearchPayload struct {
 	Query string `json:"query"`
 	Limit int    `json:"limit"`
+	// SearchID is present only at peer_search revision 3 (WO-095 §4): the page
+	// mints it with crypto.randomUUID() per submission, so the daemon can bind
+	// every event to the submission that asked for it and the page can discard
+	// events from a search it already replaced. Absent or empty on a revision-2
+	// request, which is what selects the atomic path.
+	SearchID string `json:"search_id,omitempty"`
 }
 
 // SearchHit is one video in the local catalogue.
@@ -346,6 +353,87 @@ type SearchResultPayload struct {
 	Hits      []SearchHit `json:"hits"`
 	Total     int64       `json:"total"`
 	Truncated bool        `json:"truncated"`
+	// Plan is the daemon's canonical render plan for this query (WO-097 §1).
+	// Present on every local search, including when peer search is disabled or
+	// unavailable, because it is how the interface knows what the words and
+	// tokens *are* — the extension never retokenizes a query.
+	Plan *QueryPlanWire `json:"plan,omitempty"`
+}
+
+// QueryPlanWire is the render plan the daemon hands the interface (WO-097 §1,
+// consumed by WO-095).
+//
+// It carries normalized display words — the query, in other words — because
+// there is no way to draw a search box's word bars without them. That crossing
+// is the local native bridge only: the words must not be logged, persisted,
+// broadcast to another page, or placed in browser storage (DESIGN_v2 §2.1).
+//
+// What it deliberately does not carry is token *text*. A token is an opaque id
+// plus a character range and a color slot, which is everything a renderer needs
+// and nothing a log or a screenshot could turn back into a three-gram. The
+// ranges index Normalized, so a fragment is drawn by slicing the string the
+// plan already contains rather than by re-deriving anything.
+type QueryPlanWire struct {
+	Normalized string          `json:"normalized"`
+	Words      []PlanWordWire  `json:"words"`
+	Tokens     []PlanTokenWire `json:"tokens"`
+}
+
+// PlanWordWire is one display-word occurrence. WordID identifies the word
+// *value*, so repeated occurrences share one id, one target and one count.
+type PlanWordWire struct {
+	WordID   int    `json:"word_id"`
+	Word     string `json:"word"`
+	Start    int    `json:"start"`
+	End      int    `json:"end"`
+	Stopword bool   `json:"stopword"`
+}
+
+// PlanTokenWire is one token occurrence of the fixed query grid: an opaque id,
+// the characters it covers, the word fragments it colors, and the word its one
+// bar sits under.
+type PlanTokenWire struct {
+	TokenID   int `json:"token_id"`
+	ColorSlot int `json:"color_slot"`
+	Start     int `json:"start"`
+	End       int `json:"end"`
+	// Discovery is whether this token will be fetched from peers. False for a
+	// token whose letters are all stopword — it still renders, so a person can
+	// see that it is deliberately not network work.
+	Discovery bool `json:"discovery"`
+	// BarWordID is the deterministic placement of this token's bar: the first
+	// word whose letters it covers. -1 when it covers none.
+	BarWordID int                `json:"bar_word_id"`
+	Fragments []PlanFragmentWire `json:"fragments"`
+}
+
+// PlanFragmentWire is the part of one word a token covers — the intersection
+// that lets a cross-space token color both of the words it touches.
+type PlanFragmentWire struct {
+	WordID int `json:"word_id"`
+	Start  int `json:"start"`
+	End    int `json:"end"`
+}
+
+// WordTargetWire is one word's frozen search target from the retained
+// telemetry snapshot (WO-097 §7, §8).
+type WordTargetWire struct {
+	WordID int    `json:"word_id"`
+	Word   string `json:"word"`
+	// Target is the overlap-adjusted estimate — the denominator a word bar
+	// draws against. Actual counts are allowed to exceed it (WO-095 §7): it is
+	// an estimate, not a ceiling.
+	Target uint64 `json:"target"`
+	// Raw is the unadjusted summed estimate, for diagnostics and corpus stats.
+	// Never the search target: on mirrored corpora it can be unreachable.
+	Raw uint64 `json:"raw"`
+	// Known false means show the found count and "target unknown" — never a
+	// fabricated marker.
+	Known bool `json:"known"`
+	// Uncertain marks a target whose overlap correction could not be measured.
+	Uncertain bool `json:"uncertain"`
+	// SnapshotAgeMS is how old the retained round behind this target is.
+	SnapshotAgeMS int64 `json:"snapshot_age_ms"`
 }
 
 // PeerSearchResultPayload is PEER_SEARCH_RESULT body (WO-059).
@@ -390,6 +478,182 @@ type TokenProgress struct {
 	// token before — Fetched/Target should read as "search this deep, no
 	// completeness signal available" rather than a fraction.
 	Known bool `json:"known"`
+}
+
+// ---------------------------------------------------------------------------
+// Streaming distributed search, revision 3 (WO-095).
+//
+// Everything below travels as an unsolicited envelope whose id carries
+// EventIDPrefix, on the session that started the job and on no other. Two rules
+// hold across all of them and both are privacy requirements, not style:
+//
+//  1. **No query content, ever.** Not the raw query, not a normalized word, not
+//     a token string, not a shard id. A token is an opaque `token_id` from the
+//     render plan the session already has; a word is an opaque `word_id`. The
+//     plan itself crosses the bridge once, on SEARCH_RESULT, and is the only
+//     place words appear (DESIGN_v2 §2.1, §4.2).
+//  2. **No peer or corpus identity.** No peer id, no title, no video id in a
+//     progress event. A result carries a video id because a result *is* a
+//     video; progress carries nothing that could be joined against one.
+// ---------------------------------------------------------------------------
+
+// PeerSearchStartedPayload acknowledges that a job exists (WO-095 §3).
+//
+// Prompt and cheap: it means "accepted and running", never "here is what I
+// found". The native request completes here rather than being held open for the
+// life of the search.
+type PeerSearchStartedPayload struct {
+	SearchID string `json:"search_id"`
+	// Tokens is how many distinct discovery tokens this job will work on, so
+	// the interface can lay out bars before any response arrives. A count, not
+	// a list — the render plan already told it which tokens exist.
+	Tokens int `json:"tokens"`
+	// Words is the frozen per-word target snapshot for this job (WO-097 §8),
+	// taken once at start. A later telemetry refresh affects the next search
+	// only, never this one's denominators.
+	Words []WordTargetWire `json:"words"`
+}
+
+// Token-bar phases. A bar is a schematic animation of one logical peer
+// response, not a count, a byte meter, or a coverage estimate (WO-095 §6).
+const (
+	// PhaseQueued: this token has work to do and no response open yet.
+	PhaseQueued = "queued"
+	// PhaseActive: a logical response from one peer is in flight. The bar
+	// resets to 0 and animates.
+	PhaseActive = "active"
+	// PhaseComplete: that response terminated and validated. The bar snaps to
+	// 100. An empty valid response still completes visibly — "this peer had
+	// nothing" is an answer, and hiding it is what made coverage
+	// undiagnosable.
+	PhaseComplete = "complete"
+	// PhaseFailed: that response did not validate or the peer went away.
+	// Another peer may still be tried, which starts a new cycle.
+	PhaseFailed = "failed"
+	// PhaseCancelled: the job ended before this response did.
+	PhaseCancelled = "cancelled"
+	// PhaseDone: no further work will be attempted for this token, whatever the
+	// last cycle did. This is the terminal phase for a bar.
+	PhaseDone = "done"
+)
+
+// PeerSearchProgressPayload is one token bar's state change (WO-095 §6).
+//
+// Cycle counts logical peer responses for this token, so the interface can
+// tell "the same response is still running" from "we moved to another peer and
+// the bar should reset". A response delivered as several bounded pages
+// (WO-097 §6) is still one cycle: page internals must never surface as new
+// query tokens or new bars.
+type PeerSearchProgressPayload struct {
+	SearchID string `json:"search_id"`
+	Seq      uint64 `json:"seq"`
+	TokenID  int    `json:"token_id"`
+	Cycle    int    `json:"cycle"`
+	Phase    string `json:"phase"`
+	// Reason is a short terminal explanation on the phases that have one
+	// ("incomplete", "no_providers", "budget"). Never an error string from a
+	// peer, which could carry anything.
+	Reason string `json:"reason,omitempty"`
+}
+
+// PeerSearchWordProgressPayload is one word bar's confirmed count (WO-095 §7).
+//
+// Found counts *distinct candidate video ids from this search whose resolved
+// title locally confirms this word*. It is deliberately not a download meter
+// and deliberately not the number of results: a candidate matching one word of
+// a two-word query advances that word without ever becoming a result.
+//
+// Found is allowed to exceed Target. The target is an overlap-adjusted
+// estimate from a sketch, not a ceiling, and clamping it would turn an honest
+// over-count into a bar that mysteriously stops moving.
+type PeerSearchWordProgressPayload struct {
+	SearchID string `json:"search_id"`
+	Seq      uint64 `json:"seq"`
+	WordID   int    `json:"word_id"`
+	Found    int    `json:"found"`
+	Target   uint64 `json:"target"`
+	Known    bool   `json:"known"`
+}
+
+// PeerSearchStreamResultPayload is one newly verified result (WO-095 §2).
+//
+// Emitted the moment the daemon's local matcher proves the *complete* query
+// against a resolved title. A streamed result is definitive: it is never
+// speculative and never retracted, which is what lets the interface append it
+// immediately instead of holding a provisional list.
+type PeerSearchStreamResultPayload struct {
+	SearchID string    `json:"search_id"`
+	Seq      uint64    `json:"seq"`
+	Hit      SearchHit `json:"hit"`
+}
+
+// Terminal reasons for a whole job.
+const (
+	// JobReasonComplete: every token's work finished on its own terms.
+	JobReasonComplete = "complete"
+	// JobReasonSaturated: the stop matrix ended it — at or above target and
+	// then saturated (WO-095 §8).
+	JobReasonSaturated = "saturated"
+	// JobReasonExhausted: providers ran out before any target was met. Visibly
+	// incomplete, never an empty success.
+	JobReasonExhausted = "exhausted"
+	// JobReasonBudget: the disk/network budget stopped it. Also visibly
+	// incomplete.
+	JobReasonBudget = "budget"
+	// JobReasonNoPeers: nothing to ask. Distinct from "asked and found
+	// nothing".
+	JobReasonNoPeers = "no_peers"
+	// JobReasonLocalOnly: the query had no discovery tokens, so there was no
+	// distributed work to do (a stopword-only query, WO-097 §3).
+	JobReasonLocalOnly = "local_only"
+	// JobReasonCancelled: the job stopped because the session, the page or the
+	// contribution level withdrew it, not because the work concluded.
+	JobReasonCancelled = "cancelled"
+)
+
+// PeerSearchCompletePayload ends a job that ran to a conclusion (WO-095 §9).
+type PeerSearchCompletePayload struct {
+	SearchID string `json:"search_id"`
+	Seq      uint64 `json:"seq"`
+	Reason   string `json:"reason"`
+	// Results is how many verified results were streamed, so the interface can
+	// check it received them all rather than assume.
+	Results int `json:"results"`
+	// TargetMet is whether every non-stopword word with a known target reached
+	// it. False with Reason complete is a normal, honest outcome and must not
+	// be rendered as failure.
+	TargetMet bool `json:"target_met"`
+	// ElapsedMS is the one aggregate diagnostic WO-095 §10 permits.
+	ElapsedMS int64 `json:"elapsed_ms"`
+}
+
+// PeerSearchCancelledPayload ends a job the session replaced or cancelled.
+type PeerSearchCancelledPayload struct {
+	SearchID string `json:"search_id"`
+	Seq      uint64 `json:"seq"`
+	Results  int    `json:"results"`
+	// Reason is a bounded machine reason: replaced, session_closed,
+	// contribution_downgrade, consent_withdrawn, shutdown. A cancellation the
+	// user did not ask for needs explaining, and "cancelled" alone cannot.
+	Reason string `json:"reason,omitempty"`
+}
+
+// PeerSearchFailedPayload ends a job that broke (WO-095 §3).
+//
+// A typed job failure rather than an unsolicited generic ERROR: an ERROR with
+// no matching request id is how a client learns the *host* is dying, and a
+// failed search must not be mistaken for that.
+type PeerSearchFailedPayload struct {
+	SearchID string `json:"search_id"`
+	Seq      uint64 `json:"seq"`
+	Message  string `json:"message"`
+	Code     string `json:"code"`
+	Results  int    `json:"results"`
+}
+
+// PeerSearchCancelPayload is the PEER_SEARCH_CANCEL request body.
+type PeerSearchCancelPayload struct {
+	SearchID string `json:"search_id"`
 }
 
 // ContributionImpactPayload is GET_CONTRIBUTION_IMPACT_RESULT body (WO-086).

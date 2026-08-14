@@ -10,62 +10,87 @@ import (
 	"github.com/keel-app/keel/daemon/bridge"
 )
 
-// TestTokenizeFixedSizeSpaceAware checks the concrete scheme: fixed,
-// non-overlapping k-grams, cut per word from the front, tail padded. A
-// word's tokens are the same wherever the word appears, which is what makes
-// a query word's tokens equal a document word's tokens.
-func TestTokenizeFixedSizeSpaceAware(t *testing.T) {
-	got := tokenize("Recommendation AI", 3)
-	want := []string{
-		"rec", "omm", "end", "ati", "on ", "ai ",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("tokenize() = %v (%d tokens), want %d", got, len(got), len(want))
+// TestQueryGridIsOneContinuousPass checks the concrete scheme-2 query rule:
+// one fixed, non-overlapping pass over the whole normalized query, padded only
+// at the tail. Spaces are consumed characters, so a chunk may straddle two
+// words — the property scheme 1's per-word cut did not have and the reason a
+// query substring can be found at any alignment in a title.
+func TestQueryGridIsOneContinuousPass(t *testing.T) {
+	spans := queryGrid(NormalizeSearchText("Recommendation AI"))
+	want := []string{"rec", "omm", "end", "ati", "on ", "ai "}
+	if len(spans) != len(want) {
+		t.Fatalf("queryGrid() = %v (%d chunks), want %d", spans, len(spans), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("token %d = %q, want %q", i, got[i], want[i])
+		if spans[i].Token != want[i] {
+			t.Errorf("chunk %d = %q, want %q", i, spans[i].Token, want[i])
+		}
+		if len(spans[i].Token) != ShardK {
+			t.Errorf("chunk %q has length %d, want fixed ShardK=%d", spans[i].Token, len(spans[i].Token), ShardK)
 		}
 	}
-	for _, tok := range got {
-		if len(tok) != 3 {
-			t.Errorf("token %q has length %d, want fixed size 3", tok, len(tok))
-		}
+
+	// A chunk that straddles the space belongs to both words, and its range
+	// says so. `a big` cuts to [a b][ig ], and the first chunk covers a letter
+	// of each word.
+	plan := BuildQueryPlan("a big")
+	if len(plan.Tokens) != 2 || plan.Tokens[0].Token != "a b" {
+		t.Fatalf("plan for %q = %v, want the two chunks [a b][ig ]", "a big", plan.Tokens)
+	}
+	if len(plan.Tokens[0].Fragments) != 2 {
+		t.Errorf("chunk %q covers %d word fragments, want 2 — a cross-space token "+
+			"must color both words it touches", plan.Tokens[0].Token, len(plan.Tokens[0].Fragments))
 	}
 }
 
-// TestTokenizeCrossWordBleed is WO-059 attack #7 under the aligned scheme.
+// TestIndexCoverageIsBroaderThanTheMatcher is the scheme-2 replacement for
+// what used to be TestTokenizeCrossWordBleed, and it records a deliberate
+// reversal.
 //
-// The bleed a sliding window had is gone by construction: tokens are cut per
-// word at fixed offsets, so "men" as a whole word produces exactly "men",
-// and "recommendation" — cut rec|omm|end|ati|on_ — never produces it. A word
-// searched on its own cannot collide with the same letters buried inside a
-// longer word unless they happen to fall on the same offsets.
-func TestTokenizeCrossWordBleed(t *testing.T) {
-	title := tokenize("recommendation", 3)
+// Scheme 1 cut per word, so "recommendation" never produced the token "men"
+// and a "men" query could not collide with it. Scheme 2 generates every
+// alignment, so "men" IS in that title's index — the letters really are there
+// at offsets 5..7. That over-broad discovery is the price of finding a query
+// substring wherever it sits, and it is paid back immediately: shard
+// membership only nominates candidates, and the final matcher — which respects
+// normalized word boundaries — is what rejects this one (WO-097 §4).
+//
+// If this ever regresses to the matcher trusting shard membership, a search
+// for "men" starts returning "recommendation".
+func TestIndexCoverageIsBroaderThanTheMatcher(t *testing.T) {
+	index := map[string]bool{}
+	for _, tok := range TitleTokens("recommendation") {
+		index[tok] = true
+	}
 	query := TokenizeQuery("men")
 	if len(query) != 1 || query[0] != "men" {
-		t.Fatalf("TokenizeQuery(\"men\") = %v, want [men]", query)
+		t.Fatalf("TokenizeQuery(%q) = %v, want [men]", "men", query)
+	}
+	if !index["men"] {
+		t.Errorf("TitleTokens(%q) does not contain %q — every-alignment coverage "+
+			"is what lets a query find a substring off the grid", "recommendation", "men")
 	}
 
-	inTitle := map[string]bool{}
-	for _, tt := range title {
-		inTitle[tt] = true
+	// Discovery nominates it; the matcher throws it out.
+	plan := BuildQueryPlan("men")
+	if plan.MatchTitle("recommendation") {
+		t.Error("the matcher accepted \"recommendation\" for the query \"men\" — " +
+			"token membership has become the semantic test, which it must never be")
 	}
-	if inTitle["men"] {
-		t.Errorf("recommendation tokenizes to %v, which contains the whole-word token %q", title, "men")
+	if !plan.MatchTitle("men at work") {
+		t.Error("the matcher rejected \"men at work\" for the query \"men\"")
 	}
 }
 
-// TestTokenizeQueryNeverFallsBackToADifferentK is the correction to an
-// earlier, wrong design: ShardK is a versioned protocol constant
-// (keyscheme.go, WO-060) that every node's ShardSlice tokenizes titles at.
-// A client falling back to some other k for a short query would compute
-// shards no server populates at that width and silently find nothing — so
-// there must be no fallback, and tail-padding must make even a one- or
-// two-letter query produce a real ShardK token on its own.
-func TestTokenizeQueryNeverFallsBackToADifferentK(t *testing.T) {
-	for _, q := range []string{"a", "ai", "go"} {
+// TestQueryTokensNeverFallBackToADifferentK is the correction to an earlier,
+// wrong design: ShardK is a versioned protocol constant (keyscheme.go,
+// WO-060) that every node generates its title windows at. A client falling
+// back to some other k for a short query would compute shards no server
+// populates at that width and silently find nothing — so there must be no
+// fallback, and tail-padding must make even a one- or two-letter query produce
+// a real ShardK token on its own.
+func TestQueryTokensNeverFallBackToADifferentK(t *testing.T) {
+	for _, q := range []string{"ai", "go", "x"} {
 		got := TokenizeQuery(q)
 		if len(got) == 0 {
 			t.Errorf("TokenizeQuery(%q) produced no tokens — padding should guarantee at least one at ShardK=%d", q, ShardK)
@@ -76,6 +101,16 @@ func TestTokenizeQueryNeverFallsBackToADifferentK(t *testing.T) {
 				t.Errorf("TokenizeQuery(%q) = %v contains a token of length %d, want fixed ShardK=%d",
 					q, got, len(tok), ShardK)
 			}
+		}
+	}
+
+	// A stopword-only query is the one case that legitimately produces no
+	// discovery tokens: there is no distributed work to do, and that has to be
+	// visible rather than look like a failed tokenization (WO-097 §3).
+	for _, q := range []string{"a", "the", "is is", "the a of"} {
+		if got := TokenizeQuery(q); len(got) != 0 {
+			t.Errorf("TokenizeQuery(%q) = %v, want no discovery tokens — a "+
+				"stopword-only query does local search only", q, got)
 		}
 	}
 }
@@ -309,12 +344,12 @@ func TestShardPackSignRoundTrip(t *testing.T) {
 	seedTitle(t, st, "vid00000001", "Recommendation systems explained")
 
 	shard := ShardOf(TokenizeQuery("recommendation")[0])
-	pack, err := st.BuildShardPack(shard, AllSources, 0)
+	pack, err := signWholeShard(t, st, shard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pack.Signature == "" || pack.PublicKey == "" {
-		t.Fatal("BuildShardPack produced an unsigned pack")
+		t.Fatal("SignShardPage produced an unsigned page")
 	}
 	if len(pack.Entries) == 0 {
 		t.Fatal("pack has no entries; the property below would be vacuous")
@@ -331,7 +366,7 @@ func TestShardPackRejectsForgedContent(t *testing.T) {
 	st := openStore(t, "shard-pack-forge.sqlite")
 	seedTitle(t, st, "vid00000001", "Recommendation systems explained")
 	shard := ShardOf(TokenizeQuery("recommendation")[0])
-	pack, err := st.BuildShardPack(shard, AllSources, 0)
+	pack, err := signWholeShard(t, st, shard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,6 +399,17 @@ func TestShardPackRejectsForgedContent(t *testing.T) {
 	if err := VerifyShardPack(&unsigned); err != nil {
 		t.Errorf("VerifyShardPack rejected an honestly-unsigned pack: %v", err)
 	}
+}
+
+// signWholeShard signs one shard's whole row set as a single page — the
+// pre-WO-097 shape, kept for tests about signing rather than about paging.
+func signWholeShard(t *testing.T, st *Store, shard int) (*ShardPack, error) {
+	t.Helper()
+	rows, offset, err := st.ShardRows(shard, AllSources, 0)
+	if err != nil {
+		return nil, err
+	}
+	return st.SignShardPage(shard, 0, offset, rows)
 }
 
 // seedTitle records one impression carrying a title, for tests that only

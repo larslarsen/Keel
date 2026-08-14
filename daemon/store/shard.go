@@ -30,50 +30,11 @@ import (
 
 // shardSchemaVersion is bumped when ShardPack's wire shape changes
 // incompatibly, mirroring catalogueSchemaVersion.
-const shardSchemaVersion = 1
-
-// tokenize splits text into fixed, non-overlapping k-grams, cut per word.
 //
-// Each word is cut at the same offsets every time — characters 0..k-1, then
-// k..2k-1, and so on, padding the last piece with spaces. That is what makes
-// a word's tokens identical wherever the word appears, which is the whole
-// basis of matching here: a query word and a document word chunk the same
-// way, so their token sets are equal.
-//
-// Per word, not across the whole string: chunking a joined string would make
-// a word's tokens depend on the words before it, and the same word would
-// tokenize differently in different queries. That is precisely the
-// determinism this must not lose.
-//
-// A sliding window (every overlapping k-length run) was tried instead: it
-// finds substrings across alignment — "clip" inside "eclipse" — at the cost
-// of one word producing len(word)-k+1 tokens instead of ceil(len(word)/k),
-// and of the same word's tokens depending on what sits next to it. Search
-// here is word-based, so the extra tokens bought a property nothing used.
-func tokenize(text string, k int) []string {
-	if k <= 0 {
-		return nil
-	}
-	var out []string
-	for _, w := range splitWords(text) {
-		// The word's own characters, cut from the front: 0..k-1, k..2k-1, and
-		// so on. No leading space — cutting per word already prevents one
-		// word's letters from joining the next, and a leading space would
-		// only produce a token that is mostly padding.
-		for i := 0; i < len(w); i += k {
-			end := i + k
-			if end > len(w) {
-				// The tail is padded, not dropped: the final letters of a
-				// word still have to contribute a token or they cannot be
-				// searched.
-				out = append(out, w[i:]+strings.Repeat(" ", end-len(w)))
-				continue
-			}
-			out = append(out, w[i:end])
-		}
-	}
-	return out
-}
+// 2 (WO-097): a pack is now one bounded page of a logical response rather than
+// the whole (silently truncated) bucket, so it carries its index and offset and
+// its digest covers them.
+const shardSchemaVersion = 2
 
 // splitWords lowercases and splits on runs of non a-z runes.
 func splitWords(s string) []string {
@@ -97,16 +58,21 @@ func splitWords(s string) []string {
 	return words
 }
 
-// TokenizeQuery tokenizes a whole search query at ShardK — always, with no
-// fallback to a different k for short queries. ShardK is a versioned
-// protocol constant (keyscheme.go, WO-060): every node tokenizes titles for
-// ShardSlice at exactly ShardK, so a client that tokenized a query at some
-// other k would compute shards no server ever populates at that width and
-// silently find nothing. Because tokenize pads a word's last piece rather
-// than dropping it, even a one-letter query still yields a token at k=3 —
-// see tokenize's doc comment.
+// TokenizeQuery returns the distinct discovery tokens for a whole search
+// query under key scheme 2 — the fixed non-overlapping grid over the whole
+// normalized string, with stopword-only chunks dropped. See queryplan.go for
+// the rules and why the index side deliberately differs.
+//
+// ShardK is a versioned protocol constant (keyscheme.go, WO-060) and there is
+// no fallback to a different k for short queries: every node generates its
+// title windows at exactly ShardK, so a client using another width would
+// compute shards no server ever populates and silently find nothing.
+//
+// A stopword-only query returns nothing here, which is the intended visible
+// result — no discovery tokens means no peer contact and a local-only search,
+// not a search that quietly failed.
 func TokenizeQuery(query string) []string {
-	return uniqueSorted(tokenize(query, ShardK))
+	return BuildQueryPlan(query).DiscoveryTokens()
 }
 
 func uniqueSorted(in []string) []string {
@@ -142,13 +108,8 @@ type ShardEntry struct {
 	Tokens  []string `json:"tokens"`
 }
 
-// maxShardEntries bounds one shard reply, mirroring maxCatalogueRows — a
-// shard on a large mirror can hold many videos, and an unbounded reply is a
-// memory hazard and a way for one request to consume a node's upstream.
-const maxShardEntries = 4096
-
 // ShardSlice returns every (video, matched tokens) pair this node holds for
-// one shard.
+// one shard, in the canonical video-id order.
 //
 // `sources` follows catalogue.go's rule 2 exactly, which WO-084 rewrote: a
 // serving node returns the complete shard over the corpus it actually holds,
@@ -158,6 +119,13 @@ const maxShardEntries = 4096
 //
 // A shard is still whole and still never a token: the requester asks for shard
 // G and gets everything in it, so nothing here reintroduces a per-token path.
+//
+// There is no row cap any more (WO-097 §6). This used to stop at 4,096 while
+// iterating an unordered map, so which rows a peer received was arbitrary and
+// everything past the cap was permanently unreachable; sorting the survivors
+// afterwards only made the arbitrary subset look deliberate. The bound now
+// lives on the *reply* — bounded pages of one logical response, see
+// ShardRows and paging.go — not on the dataset.
 //
 // Computed at request time from the same source SearchVideos and
 // heldCatalogue already read, not a separate persisted table — mirrors
@@ -178,7 +146,7 @@ func (s *Store) ShardSlice(shard int, sources SourceSet) ([]ShardEntry, error) {
 			continue
 		}
 		var matched []string
-		for _, t := range tokenize(c.Title, ShardK) {
+		for _, t := range TitleTokens(c.Title) {
 			if ShardOf(t) == shard {
 				matched = append(matched, t)
 			}
@@ -187,12 +155,29 @@ func (s *Store) ShardSlice(shard int, sources SourceSet) ([]ShardEntry, error) {
 			continue
 		}
 		out = append(out, ShardEntry{VideoID: c.VideoID, Tokens: uniqueSorted(matched)})
-		if len(out) >= maxShardEntries {
-			break
-		}
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].VideoID < out[b].VideoID })
 	return out, nil
+}
+
+// ShardRows is ShardSlice rotated to the traversal offset a request nonce
+// selects — the row order one logical response walks.
+//
+// The rotation is what stops every partial-budget traversal from returning the
+// same first rows forever (WO-097 §6). A traversal that runs to completion
+// returns the same set whatever the nonce was; only the order changes, and the
+// caller reassembles by video id regardless.
+func (s *Store) ShardRows(shard int, sources SourceSet, nonce uint64) ([]ShardEntry, int, error) {
+	all, err := s.ShardSlice(shard, sources)
+	if err != nil {
+		return nil, 0, err
+	}
+	offset := PageStart(len(all), nonce)
+	out := make([]ShardEntry, 0, len(all))
+	for _, i := range rotate(len(all), offset) {
+		out = append(out, all[i])
+	}
+	return out, offset, nil
 }
 
 // ShardPack is a shard reply signed as a unit — the WO-067 hardening layer
@@ -203,9 +188,15 @@ func (s *Store) ShardSlice(shard int, sources SourceSet) ([]ShardEntry, error) {
 // ShardEntry has no independent existence outside the bucket it was served
 // in.
 type ShardPack struct {
+	Kind          string       `json:"t"`
 	SchemaVersion int          `json:"schema_version"`
 	Shard         int          `json:"shard"`
-	Entries       []ShardEntry `json:"entries"`
+	// Index is this page's position in the logical response, and Offset is
+	// where it starts in the provider's rotated ordering. Both are covered by
+	// the digest, so a reordered or duplicated frame cannot pass as another.
+	Index   int          `json:"index"`
+	Offset  int          `json:"offset"`
+	Entries []ShardEntry `json:"entries"`
 
 	ContentSHA256 string `json:"content_sha256"`
 	Signature     string `json:"signature,omitempty"`
@@ -219,14 +210,20 @@ type ShardPack struct {
 // reused here directly. ShardSlice already returns entries sorted by
 // VideoID with each Tokens slice deduped and sorted, so this needs no
 // re-sorting to be deterministic across an unchanged corpus.
-func canonicalShardPayload(entries []ShardEntry) ([]byte, error) {
+//
+// Index and shard are inside the payload (WO-097 §6): a page's signature has
+// to bind it to its position in the response, or a peer could replay page 0
+// as page 3 and the terminal's digest list would still line up.
+func canonicalShardPayload(shard, index int, entries []ShardEntry) ([]byte, error) {
 	return json.Marshal(struct {
+		Shard   int          `json:"shard"`
+		Index   int          `json:"index"`
 		Entries []ShardEntry `json:"entries"`
-	}{entries})
+	}{shard, index, entries})
 }
 
-func shardDigest(entries []ShardEntry) (string, error) {
-	b, err := canonicalShardPayload(entries)
+func shardDigest(shard, index int, entries []ShardEntry) (string, error) {
+	b, err := canonicalShardPayload(shard, index, entries)
 	if err != nil {
 		return "", err
 	}
@@ -234,25 +231,25 @@ func shardDigest(entries []ShardEntry) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// BuildShardPack assembles and signs everything this node can serve for one
-// shard. Mirrors BuildCataloguePack (catalogue.go) exactly.
-func (s *Store) BuildShardPack(shard int, sources SourceSet, limit int) (*ShardPack, error) {
-	entries, err := s.ShardSlice(shard, sources)
-	if err != nil {
-		return nil, err
-	}
-	if limit > 0 && len(entries) > limit {
-		entries = entries[:limit]
+// SignShardPage assembles and signs one bounded page of a logical shard
+// response. Mirrors SignCataloguePage (catalogue.go) exactly.
+func (s *Store) SignShardPage(shard, index, offset int, entries []ShardEntry) (*ShardPack, error) {
+	if entries == nil {
+		entries = []ShardEntry{}
 	}
 	pack := &ShardPack{
+		Kind:          "page",
 		SchemaVersion: shardSchemaVersion,
 		Shard:         shard,
+		Index:         index,
+		Offset:        offset,
 		Entries:       entries,
 	}
-	if pack.ContentSHA256, err = shardDigest(entries); err != nil {
+	var err error
+	if pack.ContentSHA256, err = shardDigest(shard, index, entries); err != nil {
 		return nil, err
 	}
-	payload, err := canonicalShardPayload(entries)
+	payload, err := canonicalShardPayload(shard, index, entries)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +260,7 @@ func (s *Store) BuildShardPack(shard int, sources SourceSet, limit int) (*ShardP
 	return pack, nil
 }
 
-// VerifyShardPack checks a pack's digest and, if present, its signature.
+// VerifyShardPack checks a page's digest and, if present, its signature.
 //
 // An unsigned pack is accepted here (matches ImportCataloguePack's policy —
 // refusing one would break interop with any future build that ships
@@ -275,7 +272,7 @@ func VerifyShardPack(pack *ShardPack) error {
 		return fmt.Errorf("shard pack schema %d is newer than this build understands (%d)",
 			pack.SchemaVersion, shardSchemaVersion)
 	}
-	digest, err := shardDigest(pack.Entries)
+	digest, err := shardDigest(pack.Shard, pack.Index, pack.Entries)
 	if err != nil {
 		return err
 	}
@@ -283,7 +280,7 @@ func VerifyShardPack(pack *ShardPack) error {
 		return fmt.Errorf("shard pack contents do not match its digest")
 	}
 	if pack.Signature != "" || pack.PublicKey != "" {
-		payload, err := canonicalShardPayload(pack.Entries)
+		payload, err := canonicalShardPayload(pack.Shard, pack.Index, pack.Entries)
 		if err != nil {
 			return err
 		}
@@ -304,7 +301,7 @@ func (s *Store) LocalShards(sources SourceSet) ([]int, error) {
 	}
 	seen := make(map[int]bool)
 	for _, c := range all {
-		for _, t := range tokenize(c.Title, ShardK) {
+		for _, t := range TitleTokens(c.Title) {
 			seen[ShardOf(t)] = true
 		}
 	}

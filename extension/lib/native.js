@@ -12,6 +12,7 @@ import {
   CLIENT_API,
   CLIENT_REQUIRED,
   CLIENT_OPTIONAL,
+  EVENT_ID_PREFIX,
 } from "./protocol.js";
 
 const LOG = "[Keel native]";
@@ -191,11 +192,19 @@ export function createNativeBridge(hooks) {
         });
       }
     }
-    const w = pending.get(env.id);
-    if (w) {
-      pending.delete(env.id);
-      clearTimeout(w.t);
-      w.resolve(env);
+    // An envelope carrying the reserved event prefix is something the daemon
+    // sent unsolicited — a streaming search's progress, results or terminal
+    // state (WO-095 §3). It is dispatched by type, never correlated, and is
+    // structurally incapable of settling a pending request: without this
+    // guard, a job event whose id happened to collide with a live request's
+    // would resolve that promise with a payload of the wrong type.
+    if (!env.id.startsWith(EVENT_ID_PREFIX)) {
+      const w = pending.get(env.id);
+      if (w) {
+        pending.delete(env.id);
+        clearTimeout(w.t);
+        w.resolve(env);
+      }
     }
     hooks.onMessage(env);
   }
