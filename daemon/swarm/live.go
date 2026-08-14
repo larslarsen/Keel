@@ -16,9 +16,10 @@
 // Search happens entirely in local memory. The daemon never sends a keyword
 // anywhere; it holds the whole index and filters it on this machine.
 //
-// **Messages carry no author, so publishing is ungated.** An earlier version
-// signed them and counted distinct publishers as corroboration, which forced
-// publishing behind Level 2. That was the wrong trade twice over:
+// Messages carry no author, but publication is still Level 2+ sharing. An
+// earlier version treated authorlessness as enough to publish at every level;
+// WO-089 rejected that because a direct neighbour can infer origin from timing
+// and topology. The lack of signatures remains important for the product:
 //
 //   - It broke the product. Most livestreams have one observer, and a feed
 //     showing only corroborated streams is YouTube's live search with extra
@@ -28,11 +29,9 @@
 //     subscriber, not just the first hop, so reporting a stream disclosed that
 //     the reporter saw it.
 //
-// Unsigned and authorless, a report says only "this stream exists". In a gossip
-// mesh originating and forwarding are indistinguishable to neighbours, so even a
-// direct peer cannot tell whether this node saw the stream or is passing on
-// somebody else's report. Every node can therefore report at every level,
-// including the default, which is also what fills the long tail.
+// Unsigned and authorless, a report says only "this stream exists". It is not
+// corroborated by a stable publisher; Level 2+ participants therefore show the
+// long tail without retaining an application author in the wire record.
 //
 // What is given up: records remain unverifiable claims — nothing signs YouTube
 // state (DESIGN_v2 §6.4) — and without authorship they cannot be corroborated by
@@ -65,7 +64,7 @@ import (
 // One topic rather than per-prefix topics: sharding would reintroduce the
 // selection disclosure that subscribing to everything avoids. Shard only if
 // volume ever forces it, and take that cost knowingly.
-const LiveTopic = "keel/live/1"
+const LiveTopic = "keel/live/2"
 
 // LiveSnapshotProtocol hands a joining node the whole current index.
 //
@@ -83,7 +82,7 @@ const LiveTopic = "keel/live/1"
 // which no constant in the key scheme touches — so widening prefix buckets or
 // changing the tokenizer would partition the live mesh for no reason. It is the
 // feature that most needs every node it can get.
-const LiveSnapshotProtocol = protocol.ID("/keel/live-snapshot/1.0.0")
+const LiveSnapshotProtocol = protocol.ID("/keel/live-snapshot/2.0.0")
 
 // maxSnapshotBytes bounds a snapshot reply.
 const maxSnapshotBytes = 16 << 20
@@ -137,9 +136,12 @@ const (
 
 // LiveRecord is one announcement that a stream was seen live.
 type LiveRecord struct {
-	VideoID   string `json:"v"`
-	Title     string `json:"t,omitempty"`
-	ChannelID string `json:"c,omitempty"`
+	VideoID string `json:"v"`
+	// LiveLocator is the canonical TikTok @creator/live identity. It is never
+	// a video id and is primary when both kinds of identity are available.
+	LiveLocator string `json:"l,omitempty"`
+	Title       string `json:"t,omitempty"`
+	ChannelID   string `json:"c,omitempty"`
 	// SeenAt is when the publisher observed it, in unix milliseconds.
 	SeenAt int64 `json:"s"`
 	// Platform the stream is on: "yt", "tt". Absent means YouTube, so records
@@ -377,15 +379,19 @@ func (n *Node) fetchLiveSnapshot(ctx context.Context, p peer.ID) bool {
 	if err := json.Unmarshal(raw, &recs); err != nil {
 		return false
 	}
+	admitted := 0
 	for _, r := range recs {
-		if len(r.VideoID) == 11 {
-			n.live.merge(r, true)
+		if ValidLiveRecord(r) && n.live.merge(r, true) {
+			// merge reports actual admission. Map size is not an admission signal:
+			// an existing entry can refresh without growing, while a tombstoned
+			// peer record is valid syntax but must be refused.
+			admitted++
 		}
 	}
-	if len(recs) > 0 {
-		n.logf("live index backfilled with %d records from %s", len(recs), p)
+	if admitted > 0 {
+		n.logf("live index backfilled with %d records from %s", admitted, p)
 	}
-	return len(recs) > 0
+	return admitted > 0
 }
 
 // validateLiveMessage is the gossipsub validator. It runs before a message is
@@ -398,7 +404,7 @@ func validateLiveMessage(_ context.Context, _ peer.ID, msg *pubsub.Message) bool
 	if err := json.Unmarshal(msg.Data, &r); err != nil {
 		return false
 	}
-	if !validVideoID(r.Platform, r.VideoID) || len(r.Title) > 300 {
+	if !ValidLiveRecord(r) {
 		return false
 	}
 	// A record with no observation time cannot be ranked or filtered honestly —
@@ -454,6 +460,72 @@ func validVideoID(platform, id string) bool {
 	}
 }
 
+// TikTokLiveLocator creates the canonical locator from an already rendered
+// creator handle. URL parsing remains extension-side; the daemon only accepts
+// this restricted canonical shape from its bridge and peers.
+func TikTokLiveLocator(channel string) string {
+	h := strings.TrimPrefix(strings.ToLower(channel), "@")
+	if !validTikTokHandle(h) {
+		return ""
+	}
+	return "@" + h + "/live"
+}
+
+func validTikTokHandle(h string) bool {
+	if len(h) < 1 || len(h) > 64 {
+		return false
+	}
+	for _, c := range h {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func validLiveLocator(v string) bool {
+	if !strings.HasPrefix(v, "@") || !strings.HasSuffix(v, "/live") {
+		return false
+	}
+	return TikTokLiveLocator(strings.TrimSuffix(v, "/live")) == strings.ToLower(v)
+}
+
+// ValidLiveRecord is shared by local publication, gossip, snapshots and merge.
+func ValidLiveRecord(r LiveRecord) bool {
+	p := r.Platform
+	if p == "" {
+		p = "yt"
+	}
+	now := time.Now().UnixMilli()
+	if r.SeenAt <= 0 || r.SeenAt > now+time.Hour.Milliseconds() || now-r.SeenAt > maxLiveAge.Milliseconds() || len(r.Title) > 300 || len(r.ChannelID) > 300 {
+		return false
+	}
+	if r.StartedAt < 0 || r.StartedAt > now+time.Hour.Milliseconds() || (r.StartedAt > 0 && (r.StartedAt > r.SeenAt || now-r.StartedAt > maxLiveAge.Milliseconds())) {
+		return false
+	}
+	if p == "tt" && r.LiveLocator != "" {
+		if !validLiveLocator(r.LiveLocator) {
+			return false
+		}
+		if r.ChannelID != "" && strings.ToLower(r.ChannelID) != strings.TrimSuffix(r.LiveLocator, "/live") {
+			return false
+		}
+		return r.VideoID == "" || validVideoID("tt", r.VideoID)
+	}
+	return validVideoID(p, r.VideoID)
+}
+
+func liveKey(r LiveRecord) string {
+	p := r.Platform
+	if p == "" {
+		p = "yt"
+	}
+	if p == "tt" && r.LiveLocator != "" {
+		return "tt:" + r.LiveLocator
+	}
+	return p + ":" + r.VideoID
+}
+
 func (li *LiveIndex) consume(ctx context.Context) {
 	for {
 		msg, err := li.sub.Next(ctx)
@@ -500,9 +572,9 @@ func (li *LiveIndex) isRetired(key string, now time.Time) bool {
 // node's own local sightings (seedLiveFromLocal) or its own announcement
 // folded in locally (Publish, PublishLive). It exists solely to drive
 // receivedFromPeer; nothing about admission or ranking depends on it.
-func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) {
-	if r.SeenAt <= 0 || !validVideoID(r.Platform, r.VideoID) {
-		return // unplaceable: see validateLiveMessage
+func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) bool {
+	if !ValidLiveRecord(r) {
+		return false // unplaceable: see validateLiveMessage
 	}
 	if r.Platform == "" {
 		r.Platform = "yt"
@@ -519,13 +591,13 @@ func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) {
 	// that has finished; folding it in would re-seed a dead entry (see the
 	// maxLiveAge note on the constant). Drop it.
 	if now.UnixMilli()-r.SeenAt > maxLiveAge.Milliseconds() {
-		return
+		return false
 	}
 
 	// Keyed by platform and id together. Nothing guarantees TikTok and YouTube
 	// will never mint the same string, and one colliding id would merge two
 	// unrelated streams into one entry.
-	key := r.Platform + ":" + r.VideoID
+	key := liveKey(r)
 	e := li.entries[key]
 	// A stream whose start time is older than maxLiveAge cannot still be live
 	// — even a marathon ends. Use StartedAt (the stream's own start, which
@@ -546,17 +618,24 @@ func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) {
 			li.retire(key, now)
 			e.lastSeen = e.firstSeen
 		}
-		return
+		return false
 	}
 	if e == nil {
 		// Refuse to re-admit a stream we have tombstoned as dead. Without
 		// this, a peer re-announcement after the sweep deletes the frozen
-		// entry would re-insert it fresh and it would reappear in the feed.
+		// entry would re-insert it fresh and it would reappear in the feed. A
+		// new local rendered sighting is different: the public @creator/live
+		// route can name a later stream, so it clears the tombstone.
 		if li.isRetired(key, now) {
-			return
+			// Only a fresh local locator observation can name a later stream at
+			// the same public route. Stable video ids remain tombstoned.
+			if fromPeer || r.Platform != "tt" || r.LiveLocator == "" {
+				return false
+			}
+			delete(li.retired, key)
 		}
 		if len(li.entries) >= maxLiveRecords {
-			return // backstop; sweep will make room
+			return false // backstop; sweep will make room
 		}
 		// First insert: if we have a local observation, use it to guard
 		// against incredible peer claims. A peer claiming SeenAt more recent
@@ -594,11 +673,18 @@ func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) {
 	}
 	// Keep the richest version seen: a later report may carry a title an
 	// earlier one lacked.
-	if r.Title != "" {
-		e.rec.Title = r.Title
-	}
-	if r.ChannelID != "" {
-		e.rec.ChannelID = r.ChannelID
+	// Newer observations update mutable display fields. At equal times local
+	// wins, so delayed peer gossip cannot replace local rendered text.
+	if r.SeenAt > e.rec.SeenAt || (!fromPeer && r.SeenAt == e.rec.SeenAt) {
+		if r.Title != "" {
+			e.rec.Title = r.Title
+		}
+		if r.ChannelID != "" {
+			e.rec.ChannelID = r.ChannelID
+		}
+		if r.LiveLocator != "" {
+			e.rec.LiveLocator = r.LiveLocator
+		}
 	}
 	// Only accept a newer SeenAt while this stream is still inside the live
 	// window. Once its last observation is older than LiveRecency the stream is
@@ -631,6 +717,7 @@ func (li *LiveIndex) merge(r LiveRecord, fromPeer bool) {
 		e.rec.SeenAt = r.SeenAt
 	}
 	e.lastSeen = now
+	return true
 }
 
 // sweep expires records. Nothing else removes them, so this is what keeps the
@@ -765,7 +852,7 @@ func (li *LiveIndex) Search(query string, limit int) []LiveEntry {
 		if out[a].LastSeen != out[b].LastSeen {
 			return out[a].LastSeen > out[b].LastSeen
 		}
-		return out[a].VideoID < out[b].VideoID
+		return liveKey(out[a].LiveRecord) < liveKey(out[b].LiveRecord)
 	})
 	if len(out) > limit {
 		out = out[:limit]
@@ -795,6 +882,25 @@ func (li *LiveIndex) ReceivedFromPeer() bool {
 // Keyed by platform and id together, matching `entries` — the resurrection
 // guard reads this map, and a collision between platforms would let one
 // platform's sighting vouch for another's stream.
+func (li *LiveIndex) shouldPublishRecord(r LiveRecord) bool {
+	li.mu.RLock()
+	defer li.mu.RUnlock()
+	e := li.entries[liveKey(r)]
+	return e == nil || time.Since(e.lastSeen) > liveRefreshAfter
+}
+
+func (li *LiveIndex) setLocalSeenRecord(r LiveRecord) {
+	key := liveKey(r)
+	li.mu.Lock()
+	defer li.mu.Unlock()
+	if li.localSeenAt == nil {
+		li.localSeenAt = map[string]int64{}
+	}
+	if r.SeenAt > li.localSeenAt[key] {
+		li.localSeenAt[key] = r.SeenAt
+	}
+}
+
 func (li *LiveIndex) setLocalSeenAt(platform, videoID string, seenAt int64) {
 	if platform == "" {
 		platform = "yt"
@@ -826,21 +932,34 @@ func (n *Node) Live() *LiveIndex { return n.live }
 // stop. The gate check after it is for the downgrade window: the supervisor
 // shuts the gate synchronously and tears the node down afterwards, and a
 // sighting published in between is one the user has already declined to send.
-func (n *Node) PublishLive(ctx context.Context, r LiveRecord) {
+func (n *Node) PublishLive(ctx context.Context, r LiveRecord) bool {
 	if n.live == nil || !n.mayPublishLive() {
-		return
+		return false
 	}
+	// Existing callers may omit SeenAt; assign it before validation so local
+	// publication and wire validation agree on one complete record.
+	if r.SeenAt == 0 {
+		r.SeenAt = time.Now().UnixMilli()
+	}
+	if !ValidLiveRecord(r) {
+		return false
+	}
+	// Decide against the pre-merge state. Merging first makes lastSeen=now and
+	// suppresses every new sighting before it reaches gossip.
+	due := n.live.shouldPublishRecord(r)
 	// Track our local observation so merge can corroborate peer claims.
-	n.live.setLocalSeenAt(r.Platform, r.VideoID, r.SeenAt)
+	n.live.setLocalSeenRecord(r)
 	// Always refresh our own index from our own observation, so the panel's
 	// "seen live" time reflects when we actually saw it — independent of whether
 	// we gossip it. Gossip to peers stays gated on shouldPublish below. Our own
 	// observation, not a peer's, so it must not satisfy backfill.
 	n.live.merge(r, false)
-	if !n.live.shouldPublish(r.Platform, r.VideoID) {
-		return
+	if !due {
+		return true
 	}
 	if err := n.live.Publish(ctx, r); err != nil {
 		n.logf("live publish %s: %v", r.VideoID, err)
+		return false
 	}
+	return true
 }

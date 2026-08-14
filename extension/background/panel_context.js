@@ -122,7 +122,7 @@ export function createPanelContext({
    */
   function panelAllowedFor(url) {
     const { surface, platform } = surfaceFromUrl(url || "");
-    if (platform === "tt") return surface === "WATCH_NEXT" || surface === "HOME";
+    if (platform === "tt") return ["WATCH_NEXT", "HOME", "EXPLORE", "FOLLOWING", "LIVE", "LIVE_ROOM"].includes(surface);
     return surface === "WATCH_NEXT";
   }
 

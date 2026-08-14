@@ -1011,6 +1011,8 @@ func (s *Store) Stats() (*bridge.StatsPayload, error) {
 		BySurface: map[string]int64{
 			"WATCH_NEXT": 0,
 			"HOME":       0,
+			"EXPLORE":    0,
+			"FOLLOWING":  0,
 			"SEARCH":     0,
 			"CHANNEL":    0,
 			"SHORTS":     0,

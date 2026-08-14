@@ -87,7 +87,29 @@
       "[data-e2e=\"recommend-list-item-container\"]",
       "div[class*=\"DivVideoFeed\"]",
       "main"
+    ],
+    "explore": [
+      "[data-e2e=\"explore-list\"]",
+      "div[data-e2e=\"recommend-list\"]"
+    ],
+    "following": [
+      "[data-e2e=\"following-feed\"]",
+      "div[data-e2e=\"recommend-list\"]"
+    ],
+    "liveWall": [
+      "main#tiktok-live-main-container-id"
+    ],
+    "liveRoom": [
+      "[data-e2e=\"live-room\"]",
+      "main[data-e2e=\"live-room\"]"
     ]
+  },
+  "live": {
+    "cards": "[data-e2e=\"discover_category-list-live-card\"]",
+    "active": ["[data-e2e=\"live-player\"]", "[data-e2e=\"live-badge\"]"],
+    "locator": ["a[href^=\"/@\"][href$=\"/live\"]"],
+    "creator": ["a[href^=\"/@\"][href$=\"/live\"] > div:nth-child(2)"],
+    "title": ["a[href^=\"/@\"][href$=\"/live\"] > div:first-child"]
   },
   "rendererKeys": [
     "itemStruct"

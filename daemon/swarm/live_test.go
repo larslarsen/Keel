@@ -4,6 +4,7 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -328,7 +329,7 @@ func TestLiveValidatorRejectsJunk(t *testing.T) {
 			t.Errorf("%s was accepted", name)
 		}
 	}
-	ok := []byte(`{"v":"dQw4w9WgXcQ","t":"Fine","s":1}`) // s: any positive time
+	ok := []byte(fmt.Sprintf(`{"v":"dQw4w9WgXcQ","t":"Fine","s":%d}`, time.Now().UnixMilli()))
 	if !validateLiveMessage(context.Background(), "", newMsg(ok)) {
 		t.Error("a valid record was rejected")
 	}

@@ -588,14 +588,18 @@ describe("TikTok surfaces (WO-057)", () => {
     // project, so it gets the same surface name.
     assert.equal(surfaceFromUrl("https://www.tiktok.com/").surface, "HOME");
     assert.equal(surfaceFromUrl("https://www.tiktok.com/foryou").surface, "HOME");
+    assert.equal(surfaceFromUrl("https://www.tiktok.com/explore/").surface, "EXPLORE");
+    assert.equal(surfaceFromUrl("https://www.tiktok.com/following?x=1").surface, "FOLLOWING");
+    assert.equal(surfaceFromUrl("https://www.tiktok.com/live").surface, "LIVE");
 
-    // A live room reads as a watch page with no clip id of its own.
+    // A live room is a distinct ephemeral context with no fabricated clip id.
     const live = surfaceFromUrl("https://www.tiktok.com/@someone/live");
     assert.equal(live.platform, "tt");
-    assert.equal(live.surface, "WATCH_NEXT");
+    assert.equal(live.surface, "LIVE_ROOM");
 
     // A profile is not a surface Keel records, same as a YouTube channel page.
     assert.equal(surfaceFromUrl("https://www.tiktok.com/@someone").surface, null);
+    assert.equal(surfaceFromUrl("https://m.tiktok.com/live").surface, null);
   });
 
   it("refuses to claim a site Keel does not run on", () => {

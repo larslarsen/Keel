@@ -94,6 +94,19 @@ describe("live page renders a thumbnail per stream row", () => {
     assert.equal(document.querySelectorAll("#live-list tr").length, 0);
   });
 
+  it("renders a locator-only TikTok entry without a thumbnail request", () => {
+    module.renderLive({
+      available: true,
+      streams: [{ p: "tt", l: "@creator.name/live", c: "@creator.name", t: "Live now", s: Date.now() }],
+    });
+    const row = document.querySelector("#live-list tr");
+    const link = row.querySelector("a");
+    assert.equal(link.textContent, "Live now");
+    assert.equal(link.getAttribute("href"), "https://www.tiktok.com/@creator.name/live");
+    assert.ok(row.querySelector("span.thumb"), "locator-only rows retain an empty thumbnail placeholder");
+    assert.equal(row.querySelector("img.thumb"), null, "there is no video id to thumbnail");
+  });
+
   it("labels the seen-live time from the observation, not gossip freshness", () => {
     const now = Date.now();
     // WO-054 Part 3: peers re-announce a finished stream, keeping last_seen

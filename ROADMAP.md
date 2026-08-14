@@ -78,7 +78,7 @@ The current implementation queue is:
   WO-095's two-machine key-scheme-2 QA.
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.**
-  **Architecture-reviewed; ready for GPT-5.6 Terra High on merged `main`.**
+  **Code accepted 2026-08-13; interactive QA continues in WO-103.**
   Preserve the three real feed surfaces instead of mapping them to `HOME`.
   Explore/Following are durable ordinary observations; `LIVE`/`LIVE_ROOM` are
   a disjoint ephemeral sighting schema and can never enter SQLite. Canonical
@@ -86,6 +86,12 @@ The current implementation queue is:
   support and dynamic Level-2 entitlement are separate gates, with one shared
   200-record browser reconnect bound. This supersedes WO-076 and repairs the
   dropped TikTok platform, idle live-room and 11-character snapshot bugs.
+
+- **WO-103 — interactive TikTok surface QA.** Explore, logged-in Following and
+  active/inactive Live-room DOM require a real Brave session with Shields on;
+  automation did not hydrate them. Capture and sanitize the rendered shapes,
+  verify yield/SPA/virtualization behavior, and make selector-data corrections
+  only. Models must not invent replacement fixtures.
 
 - **WO-092 — contribution-impact accounting correctness.** Follow-up to
   implemented WO-086: count only complete replies and enforce/propagate the

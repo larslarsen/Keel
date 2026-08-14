@@ -217,9 +217,13 @@ func announceLive(imps []bridge.Impression) {
 			Title:     imp.Title,
 			SeenAt:    imp.ObservedAt,
 			StartedAt: imp.ObservedAt, // node's earliest-known live sighting = best lower bound on start
+			Platform:  imp.Platform,
 		}
 		if imp.ChannelID != nil {
 			rec.ChannelID = *imp.ChannelID
+			if imp.Platform == "tt" {
+				rec.LiveLocator = swarm.TikTokLiveLocator(*imp.ChannelID)
+			}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		n.PublishLive(ctx, rec)

@@ -10,6 +10,7 @@
 import {
   mutationSel,
   extractFromContainer,
+  extractLiveSightings,
   extractFromYtInitialData,
   parseYtInitialDataFromDom,
   platformFromUrl,
@@ -24,6 +25,7 @@ import {
 import { CONSENT_KEY, consentGranted } from "../lib/prefs.js";
 import { startHide } from "./hide.js";
 import { errText } from "../lib/errors.js";
+import { createLivePolicy } from "./live_policy.js";
 
 const THROTTLE_MS = 750;
 const MAX_ARM_ATTEMPTS = 10;
@@ -56,6 +58,19 @@ let initialParsed = false;
 let generation = 1;
 /** slot_index → video_id of the last extracted rail (change detection). */
 let lastRail = new Map();
+// Dynamic entitlement, deliberately distinct from the negotiated bridge
+// capability. A Level-1 daemon can understand LIVE_SIGHTINGS and still must
+// never receive one.
+const livePolicy = createLivePolicy({
+  onDisable: () => {
+    for (const id of emittedIds) if (id.startsWith("live:")) emittedIds.delete(id);
+    const s = surfaceFromUrl(location.href).surface;
+    if (s === "LIVE" || s === "LIVE_ROOM") disarm();
+  },
+  onEnable: () => {
+    observeDom().then(() => armMo()).catch(() => {});
+  },
+});
 
 /**
  * True once this content script has been orphaned by an extension reload.
@@ -198,6 +213,14 @@ function buildCtx() {
       context_query_hash: null,
     };
   }
+  if (surface === "EXPLORE" || surface === "FOLLOWING") {
+    return { page_load_id: pageLoadId, observed_at: Date.now(), platform, surface,
+      context_video_id: null, context_query_hash: null };
+  }
+  if (surface === "LIVE" || surface === "LIVE_ROOM") {
+    return { page_load_id: pageLoadId, observed_at: Date.now(), platform, surface,
+      context_video_id: null, context_query_hash: null };
+  }
   return null;
 }
 
@@ -216,6 +239,10 @@ function container(surface) {
   const s = surface ?? surfaceFromUrl(location.href).surface;
   if (s === "WATCH_NEXT") return containerWatch();
   if (s === "HOME") return containerHome();
+  if (s === "EXPLORE") return pick(document, selectors.containers.explore);
+  if (s === "FOLLOWING") return pick(document, selectors.containers.following);
+  if (s === "LIVE") return pick(document, selectors.containers.liveWall);
+  if (s === "LIVE_ROOM") return pick(document, selectors.containers.liveRoom);
   return null;
 }
 
@@ -251,11 +278,24 @@ async function emit(impressions, failures) {
   });
 }
 
+async function emitLive(sightings) {
+  if (!livePolicy.enabled() || !sightings.length) return;
+  const fresh = sightings.filter((s) => {
+    if (emittedIds.has(`live:${s.live_locator}`)) return false;
+    emittedIds.add(`live:${s.live_locator}`); return true;
+  });
+  if (fresh.length) await send("LIVE_SIGHTINGS", { sightings: fresh });
+}
+
 async function observeDom() {
   const ctx = buildCtx();
   if (!ctx) return;
   const root = container(ctx.surface);
   if (!root) return;
+  if (ctx.surface === "LIVE" || ctx.surface === "LIVE_ROOM") {
+    await emitLive(extractLiveSightings(root, ctx, selectors));
+    return;
+  }
   const { impressions, failures } = extractFromContainer(root, ctx, selectors);
 
   // Rail change detection: when an occupied slot now holds a different
@@ -267,7 +307,7 @@ async function observeDom() {
     if (!rail.has(imp.slot_index)) rail.set(imp.slot_index, imp.video_id);
   }
   let changed = false;
-  if (lastRail.size > 0) {
+  if (ctx.platform === "yt" && ctx.surface === "WATCH_NEXT" && lastRail.size > 0) {
     for (const [slot, video_id] of rail) {
       if (lastRail.get(slot) !== video_id) {
         changed = true;
@@ -279,7 +319,7 @@ async function observeDom() {
     generation++;
     emittedIds.clear();
   }
-  lastRail = rail;
+  if (ctx.platform === "yt" && ctx.surface === "WATCH_NEXT") lastRail = rail;
 
   await emit(impressions, failures);
 }
@@ -380,6 +420,10 @@ function armMo() {
     disarm();
     return;
   }
+  if ((ctx.surface === "LIVE" || ctx.surface === "LIVE_ROOM") && !livePolicy.enabled()) {
+    disarm();
+    return;
+  }
   const root = container(ctx.surface);
   if (!root) {
     armAttempts++;
@@ -471,6 +515,11 @@ function listenSpa() {
     }, 100);
   });
 }
+
+// The worker forwards daemon policy changes to every content script. Upgrade
+// re-scans an already open live surface; downgrade drops unsent evidence by
+// clearing only Live keys (ordinary durable impressions remain local).
+browser.runtime.onMessage.addListener((msg) => { livePolicy.handle(msg); });
 
 
 /**
@@ -571,6 +620,13 @@ async function start() {
   // applies without waiting for the first scan.
   startHide().catch((e) => console.warn(LOG, "hide", errText(e)));
   await loadSelectors();
+
+  // Unknown/disconnected is off. This asks only for policy state, never
+  // observation data, and is refreshed by the broadcast listener above.
+  try {
+    const r = await browser.runtime.sendMessage({ type: "GET_CONTRIBUTION" });
+    livePolicy.set(r?.ok && r.daemon?.live === true && r.daemon?.transition === "idle");
+  } catch { livePolicy.set(false); }
 
   if (!(await consented())) {
     console.info(LOG, "no consent — not recording");

@@ -264,18 +264,21 @@ export function renderLive(res) {
   for (const s of streams) {
     const tr = document.createElement("tr");
     const platform = s.p || "yt";
+    const locator = s.l || "";
+    const label = s.t || s.c || locator || s.v;
+    const thumb = s.v ? thumbHtml(s.v) : `<span class="thumb" aria-hidden="true"></span>`;
     tr.innerHTML =
-      `<td class="live-thumb">${thumbHtml(s.v)}</td>` +
+      `<td class="live-thumb">${thumb}</td>` +
       `<td class="live-where">${escapeHtml(platformLabel(platform))}</td>` +
-      `<td><a href="${escapeHtml(liveUrl(s.v, platform))}" target="_blank" rel="noreferrer">` +
-      `${escapeHtml(s.t || s.v)}</a>` +
+      `<td><a href="${escapeHtml(liveUrl(s.v, platform, locator, s.c || ""))}" target="_blank" rel="noreferrer">` +
+      `${escapeHtml(label)}</a>` +
       (s.c ? `<span class="r-sub"> · ${escapeHtml(s.c)}</span>` : "") +
       `</td>` +
       `<td>${escapeHtml(liveFor(s))}</td>` +
       `<td>${escapeHtml(fmtAgo(s.s ?? s.last_seen))}</td>`;
     el.liveList.appendChild(tr);
     const img = tr.querySelector("img.thumb[data-vid]");
-    fillThumb(img, s.v);
+    if (s.v) fillThumb(img, s.v);
   }
 }
 
@@ -479,7 +482,9 @@ const LEVELS = [
     body:
       "Unlocks the shared Live feed and searching other people\u2019s " +
       "recommendations, because from here your machine also supplies both: it " +
-      "publishes the livestreams it sees, contributes its word-popularity " +
+      "publishes livestreams it sees, including TikTok's Live discovery wall, " +
+      "using a public video id or creator/live locator (never page id, slot, " +
+      "or sender identity), contributes its word-popularity " +
       "aggregate, and answers other people\u2019s searches. A livestream " +
       "notice carries no sender field, but a peer you are connected to can " +
       "still infer that it started with you from timing alone. " +

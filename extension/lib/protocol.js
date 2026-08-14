@@ -38,7 +38,7 @@ export const CLIENT_REQUIRED = Object.freeze({ core: 1, network_consent: 1 });
  * store.NetworkConsentRevision in the daemon, and must be raised in the same
  * change as the screen's text.
  */
-export const CONSENT_REVISION = 1;
+export const CONSENT_REVISION = 2;
 /** Optional capability ceilings; negotiated map may omit any of these. */
 export const CLIENT_OPTIONAL = Object.freeze({
   selectors: 1,
@@ -59,6 +59,7 @@ export const CLIENT_OPTIONAL = Object.freeze({
   queue: 1,
   contribution_runtime: 1,
   contribution_impact: 1,
+  live_sightings: 1,
 });
 
 /** peer_search revision at which distributed search became Level-2+. */
@@ -83,7 +84,8 @@ export const PEER_SEARCH_REV_STREAMING = 3;
  */
 export const EVENT_ID_PREFIX = "evt-";
 
-const SURFACES = ["WATCH_NEXT", "HOME", "SEARCH", "CHANNEL", "SHORTS"];
+const SURFACES = ["WATCH_NEXT", "HOME", "SEARCH", "CHANNEL", "SHORTS", "EXPLORE", "FOLLOWING"];
+const LIVE_SURFACES = ["LIVE", "LIVE_ROOM"];
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH16 = /^[0-9a-f]{16}$/;
@@ -140,6 +142,9 @@ export function validateImpression(value) {
     e.push("observed_at");
   }
   if (!SURFACES.includes(r.surface)) e.push("surface");
+  if ((r.surface === "EXPLORE" || r.surface === "FOLLOWING") && r.platform !== "tt") {
+    e.push("TikTok surface needs tt platform");
+  }
   if (r.context_video_id !== null && typeof r.context_video_id !== "string") {
     e.push("context_video_id");
   }
@@ -233,6 +238,30 @@ export function validateImpression(value) {
       engagement: r.engagement ?? null,
     },
   };
+}
+
+/** Validate the separate ephemeral Live wire shape (WO-098). */
+export function validateLiveSighting(value) {
+  const r = value || {};
+  const e = [];
+  if (typeof r.page_load_id !== "string" || !UUID_RE.test(r.page_load_id)) e.push("page_load_id");
+  if (!Number.isFinite(r.observed_at) || r.observed_at <= 0) e.push("observed_at");
+  if (!LIVE_SURFACES.includes(r.surface)) e.push("surface");
+  if (!Number.isInteger(r.slot_index) || r.slot_index < 0) e.push("slot_index");
+  if (r.platform !== "tt") e.push("platform");
+  if (typeof r.live_locator !== "string" || !/^@[a-z0-9_.-]{1,64}\/live$/.test(r.live_locator)) e.push("live_locator");
+  if (typeof r.channel_id !== "string" || !/^@[a-z0-9_.-]{1,64}$/i.test(r.channel_id)) e.push("channel_id");
+  if (typeof r.title !== "string" || !r.title || r.title.length > 300) e.push("title");
+  if (!Array.isArray(r.badges) || !r.badges.every((b) => typeof b === "string")) e.push("badges");
+  if (e.length) return { ok: false, errors: e };
+  return { ok: true, value: { page_load_id: r.page_load_id, observed_at: r.observed_at, surface: r.surface, slot_index: r.slot_index, platform: "tt", live_locator: r.live_locator, channel_id: r.channel_id, channel_name: typeof r.channel_name === "string" ? r.channel_name : "", title: r.title, badges: [...r.badges] } };
+}
+
+export function validateLiveSightingList(list) {
+  if (!Array.isArray(list)) return { ok: false, values: [], errors: ["not array"] };
+  const values = [], errors = [];
+  list.forEach((v, i) => { const r = validateLiveSighting(v); if (r.ok) values.push(r.value); else errors.push(`${i}: ${r.errors.join(",")}`); });
+  return { ok: !errors.length, values, errors };
 }
 
 /**
