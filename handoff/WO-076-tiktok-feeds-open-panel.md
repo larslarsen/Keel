@@ -1,12 +1,20 @@
 # WO-076 — TikTok /live, /explore, /following must open the panel
 
 **Addressee:** Sr Dev (Opus)
-**Status:** **Open** 2026-08-11
+**Status:** **Superseded before implementation by WO-098** 2026-08-13
 **Date:** 2026-08-11
 **Source:** Lars, live QA on TikTok in sequence: *"I went to the live page,
 and it won't open there. We probably have to do the same thing Sr Dev just
 did for the tiktok.com/ page."* … *"explore doesn't work either"* … *"or
 following"*.
+
+> **Do not implement the `HOME` mapping proposed below.** Live review showed
+> that `/explore` and `/following` are distinct ordered video feeds, while
+> `/live` is a wall of livestream cards whose primary destination is Keel's
+> Live index. Mapping all three to `HOME` would erase useful surface provenance
+> and would not solve TikTok Live identity, extraction, linking, or gossip.
+> WO-098 is the complete, authoritative replacement. The remainder of this
+> file is retained as the original bug report.
 
 ## The bug
 

@@ -391,10 +391,18 @@ func (n *Node) FetchShard(ctx context.Context, token string) (map[string][]strin
 // or cares that there was more than one frame, which is what keeps a page from
 // surfacing as a new query token or a second bar (WO-095 §5).
 func (n *Node) fetchShardPages(ctx context.Context, p peer.AddrInfo, shard int) (entries []store.ShardEntry, signed, complete bool, err error) {
+	entries, signed, complete, _, err = n.fetchShardPagesCounted(ctx, p, shard)
+	return entries, signed, complete, err
+}
+
+// fetchShardPagesCounted is fetchShardPages plus the wire cost, which a
+// streaming job needs for its aggregate resource backstop (WO-095 §5).
+func (n *Node) fetchShardPagesCounted(ctx context.Context, p peer.AddrInfo, shard int) (entries []store.ShardEntry, signed, complete bool, bytes int, err error) {
 	resp, err := n.requestPaged(ctx, p, fmt.Sprintf("%d %d", shard, requestNonce()), ShardProtocol)
 	if err != nil {
-		return nil, false, false, err
+		return nil, false, false, 0, err
 	}
+	bytes = resp.Bytes
 
 	digests := make([]string, 0, len(resp.Pages))
 	entries = []store.ShardEntry{}
@@ -403,16 +411,16 @@ func (n *Node) fetchShardPages(ctx context.Context, p peer.AddrInfo, shard int) 
 	for i, raw := range resp.Pages {
 		var pack store.ShardPack
 		if err := json.Unmarshal(raw, &pack); err != nil {
-			return nil, false, false, err
+			return nil, false, false, 0, err
 		}
 		if pack.Shard != shard {
-			return nil, false, false, fmt.Errorf("page %d answers shard %d, not %d", i, pack.Shard, shard)
+			return nil, false, false, 0, fmt.Errorf("page %d answers shard %d, not %d", i, pack.Shard, shard)
 		}
 		if pack.Index != i {
-			return nil, false, false, fmt.Errorf("page arrived at position %d claiming index %d", i, pack.Index)
+			return nil, false, false, 0, fmt.Errorf("page arrived at position %d claiming index %d", i, pack.Index)
 		}
 		if err := store.VerifyShardPack(&pack); err != nil {
-			return nil, false, false, err
+			return nil, false, false, 0, err
 		}
 		if pack.Signature == "" {
 			signed = false
@@ -431,9 +439,9 @@ func (n *Node) fetchShardPages(ctx context.Context, p peer.AddrInfo, shard int) 
 		}
 	}
 	if err := pageDigestsMatch(digests, resp.Terminal); err != nil {
-		return nil, false, false, err
+		return nil, false, false, 0, err
 	}
-	return entries, signed, resp.Complete(), nil
+	return entries, signed, resp.Complete(), bytes, nil
 }
 
 // ResolveCandidateTitles downloads the complete broad catalogue/string prefix

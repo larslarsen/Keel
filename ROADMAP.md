@@ -51,6 +51,13 @@ The current implementation queue is:
   saturation alone. WO-096 is folded into these two orders and must not be
   implemented separately.
 
+- **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of
+  WO-095. Preserve the three real feed surfaces instead of mapping them to
+  `HOME`; ordinary Explore/Following cards enter the TikTok observation path,
+  while `/live` cards enter Keel's ephemeral Live index through canonical
+  `@creator/live` locators and gossip at Level 2+. This supersedes WO-076 and
+  also repairs the dropped TikTok platform and idle `/@creator/live` path.
+
 - **WO-092 — contribution-impact accounting correctness.** Follow-up to
   implemented WO-086: count only complete replies and enforce/propagate the
   cumulative counter's database invariant. WO-091, its prerequisite, is done.

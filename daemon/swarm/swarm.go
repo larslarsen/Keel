@@ -148,6 +148,11 @@ type Store interface {
 	// stop condition (WO-067) — see daemon/swarm/shard.go.
 	TokenEstimate(token string) (uint64, bool)
 	RecordTokenSearch(token string, foundVideoIDs []string) error
+	// TitlesFor and DiskBudget back the streaming search orchestrator
+	// (WO-095) — resolved titles are what the local full-query matcher runs
+	// against, and the disk/network budget is the job's aggregate backstop.
+	TitlesFor(ids []string) ([]bridge.SearchHit, error)
+	DiskBudget() int64
 	// LocalWordTelemetry backs on-demand word corpus stats (WO-068).
 	// SaveWordSnapshot/LoadWordSnapshot retain one refresh round so a search
 	// reads its per-word target instantly and offline (WO-097 §7).

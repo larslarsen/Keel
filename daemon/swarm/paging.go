@@ -29,6 +29,11 @@ type pagedResponse struct {
 	Header   store.PageHeader
 	Pages    []json.RawMessage
 	Terminal *store.PageTerminal
+	// Bytes is what this response actually cost on the wire, which is what a
+	// job's aggregate resource backstop has to be measured in (WO-095 §5). Row
+	// counts are not a substitute: a shard of long titles and a shard of short
+	// ones are the same number of rows and wildly different downloads.
+	Bytes int
 }
 
 // Complete reports whether the provider traversed the whole bucket. False
@@ -143,7 +148,24 @@ func (n *Node) requestPaged(ctx context.Context, p peer.AddrInfo, key string, pr
 	if err := s.CloseWrite(); err != nil {
 		return nil, err
 	}
-	return readPagedResponse(io.LimitReader(s, maxBlockBytes))
+	counted := &countingReader{r: io.LimitReader(s, maxBlockBytes)}
+	resp, err := readPagedResponse(counted)
+	if resp != nil {
+		resp.Bytes = counted.n
+	}
+	return resp, err
+}
+
+// countingReader records how many bytes a response actually cost.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
 }
 
 // readPagedResponse decodes and validates a framed logical response.
