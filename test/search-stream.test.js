@@ -299,3 +299,172 @@ describe("streaming search page client", () => {
     );
   });
 });
+
+describe("the start acknowledgement annotates progress instead of erasing it", () => {
+  // WO-099 §2. The page claims its route before issuing PEER_SEARCH so an early
+  // event has somewhere to go — which means events routinely arrive before the
+  // acknowledgement resumes. The first implementation re-rendered the plan when
+  // the frozen targets landed, discarding every count and phase already applied.
+  let document;
+  let createSearchStream;
+  let port;
+  let resolveStart;
+  let stream;
+
+  beforeEach(async () => {
+    const { document: doc } = parseHTML(pageHtml);
+    document = doc;
+    globalThis.document = document;
+    globalThis.requestAnimationFrame = (fn) => fn();
+    let n = 0;
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { randomUUID: () => `late-${++n}` },
+    });
+
+    const mod = await import("../extension/page/search_stream.js");
+    createSearchStream = mod.createSearchStream;
+
+    const listeners = [];
+    port = {
+      posted: [],
+      onMessage: { addListener: (fn) => listeners.push(fn) },
+      onDisconnect: { addListener: () => {} },
+      postMessage(msg) {
+        this.posted.push(msg);
+      },
+      emit(msg) {
+        for (const fn of listeners) fn(msg);
+      },
+    };
+
+    stream = createSearchStream({
+      browser: { runtime: { connect: () => port } },
+      rpc: async (type, payload) => {
+        if (type === "SEARCH") {
+          return {
+            search: { query: "world", hits: [], total: 0, truncated: false, plan: PLAN },
+          };
+        }
+        if (type === "PEER_SEARCH") {
+          // Held open so the test can deliver events first, exactly as a slow
+          // acknowledgement would.
+          return new Promise((resolve) => {
+            resolveStart = () =>
+              resolve({
+                peer_search_started: {
+                  search_id: payload.search_id,
+                  tokens: 2,
+                  words: [
+                    { word_id: 0, word: "world", target: 6, raw: 6, known: true, uncertain: false },
+                  ],
+                },
+              });
+          });
+        }
+        return {};
+      },
+      el: {
+        wordCorpus: document.getElementById("word-corpus"),
+        wordCorpusMeta: document.getElementById("word-corpus-meta"),
+        peerProgressCaption: document.getElementById("peer-progress-caption"),
+        results: document.getElementById("results"),
+        meta: document.getElementById("search-meta"),
+      },
+      hitRow: (hit, provenance) => {
+        const li = document.createElement("li");
+        li.dataset.videoId = hit.video_id;
+        li.dataset.provenance = provenance;
+        return li;
+      },
+      hasStreaming: () => true,
+    });
+  });
+
+  it("keeps counts, token phase, results and sequence across target application", async () => {
+    const running = stream.run("world", { network: true });
+    // Let run() reach the awaited PEER_SEARCH.
+    await new Promise((r) => setTimeout(r, 0));
+    const id = stream.activeSearchId;
+
+    port.emit({
+      type: "PEER_SEARCH_WORD_PROGRESS",
+      payload: { search_id: id, seq: 4, word_id: 0, found: 2 },
+    });
+    port.emit({
+      type: "PEER_SEARCH_PROGRESS",
+      payload: { search_id: id, seq: 5, token_id: 0, cycle: 1, phase: "complete" },
+    });
+    port.emit({
+      type: "PEER_SEARCH_RESULT",
+      payload: { search_id: id, seq: 6, hit: { video_id: "early1", title: "Early world" } },
+    });
+
+    resolveStart();
+    await running;
+
+    const row = document.querySelector("#word-corpus .word-row");
+    assert.match(
+      row.querySelector(".word-target").textContent,
+      /2 of ~6/,
+      "the acknowledgement reset a count that had already been applied"
+    );
+    assert.ok(
+      row.querySelector(".token-subbars .seg").classList.contains("done"),
+      "the acknowledgement reset a token phase that had already been applied"
+    );
+    assert.equal(
+      document.querySelectorAll("#results li").length,
+      1,
+      "the acknowledgement discarded an already-streamed result"
+    );
+
+    // The sequence guard survives too: an event behind the ones already applied
+    // is still rejected.
+    port.emit({
+      type: "PEER_SEARCH_WORD_PROGRESS",
+      payload: { search_id: id, seq: 3, word_id: 0, found: 99 },
+    });
+    assert.doesNotMatch(row.querySelector(".word-target").textContent, /99/);
+  });
+
+  it("leaves a terminal search terminal when the acknowledgement arrives late", async () => {
+    const running = stream.run("world", { network: true });
+    await new Promise((r) => setTimeout(r, 0));
+    const id = stream.activeSearchId;
+
+    port.emit({
+      type: "PEER_SEARCH_COMPLETE",
+      payload: { search_id: id, seq: 1, reason: "no_peers", results: 0 },
+    });
+    assert.equal(stream.activeSearchId, null, "a terminal event did not finish the search");
+
+    resolveStart();
+    await running;
+
+    assert.equal(
+      stream.activeSearchId,
+      null,
+      "a late acknowledgement recreated live state for a finished search"
+    );
+    assert.match(document.getElementById("peer-progress-caption").textContent, /No peers/i);
+  });
+
+  it("explains a cancellation the user did not ask for", async () => {
+    const running = stream.run("world", { network: true });
+    await new Promise((r) => setTimeout(r, 0));
+    const id = stream.activeSearchId;
+    resolveStart();
+    await running;
+
+    port.emit({
+      type: "PEER_SEARCH_CANCELLED",
+      payload: { search_id: id, seq: 9, results: 0, reason: "contribution_downgrade" },
+    });
+    assert.match(
+      document.getElementById("peer-progress-caption").textContent,
+      /contribution level/i,
+      "a downgrade-cancelled search said only 'stopped', leaving the user with no idea why"
+    );
+  });
+});

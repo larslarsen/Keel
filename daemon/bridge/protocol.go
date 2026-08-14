@@ -632,6 +632,10 @@ type PeerSearchCancelledPayload struct {
 	SearchID string `json:"search_id"`
 	Seq      uint64 `json:"seq"`
 	Results  int    `json:"results"`
+	// Reason is a bounded machine reason: replaced, session_closed,
+	// contribution_downgrade, consent_withdrawn, shutdown. A cancellation the
+	// user did not ask for needs explaining, and "cancelled" alone cannot.
+	Reason string `json:"reason,omitempty"`
 }
 
 // PeerSearchFailedPayload ends a job that broke (WO-095 §3).

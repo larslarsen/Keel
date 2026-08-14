@@ -38,9 +38,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"sync"
 	"time"
 
@@ -49,10 +51,46 @@ import (
 	"github.com/keel-app/keel/daemon/swarm"
 )
 
-// maxSearchIDLen bounds the client-minted job id. It is a crypto.randomUUID()
-// in practice; the bound exists because it is client input that gets echoed
-// back on every event.
-const maxSearchIDLen = 64
+// maxActiveSearchJobs bounds how many searches this daemon runs at once, across
+// every session and every page (WO-099 §1).
+//
+// A bound is needed because jobs are no longer one-per-session: several pages
+// in one profile, and several profiles sharing one owner, can each hold a live
+// search. What is NOT an acceptable bound is cancelling somebody else's search
+// to make room — that is what the first implementation did, and it meant
+// opening a search in one tab silently killed the one in another. So excess
+// starts are refused, visibly, and the caller decides what to do about it.
+const maxActiveSearchJobs = 8
+
+// searchIDPattern is the canonical UUID shape crypto.randomUUID() produces.
+//
+// Revision 3 requires it (WO-099 §7). A length check alone accepted an empty
+// id, whitespace, and anything else a modified client cared to send — and the
+// id is echoed on every event and used as a routing key, so a malformed one is
+// not merely untidy: it is a routing key nobody can claim.
+var searchIDPattern = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// Cancellation reasons, bounded and machine-readable (WO-099 §3).
+//
+// The distinction they carry is the point: only the first four are
+// cancellation. Budget exhaustion is a visibly incomplete *success* and a
+// verification error is a *failure*, and collapsing any of them into the others
+// tells the user something untrue about why their search stopped.
+const (
+	cancelReplaced  = "replaced"
+	cancelSession   = "session_closed"
+	cancelDowngrade = "contribution_downgrade"
+	cancelConsent   = "consent_withdrawn"
+	cancelShutdown  = "shutdown"
+)
+
+// errSearchBusy refuses a start rather than displacing a running search.
+var errSearchBusy = errors.New("too many searches are already running")
+
+// errDuplicateSearchID refuses a start that would silently take over another
+// page's route (WO-099 §7).
+var errDuplicateSearchID = errors.New("that search id is already running")
 
 // searchJob is one running distributed search on one session.
 type searchJob struct {
@@ -71,7 +109,80 @@ type searchJob struct {
 	// streamed counts results actually sent, so a terminal frame can report
 	// what the client should have received.
 	streamed int
+
+	// reasonMu guards the cancellation reason, which is written by whoever
+	// stops the job and read by the goroutine that emits its terminal frame.
+	reasonMu sync.Mutex
+	reason   string
 }
+
+// stop cancels the job, recording why. First reason wins: a downgrade that
+// races a page's own cancel should report the downgrade, because that is the
+// one the user did not ask for and may need explaining.
+func (j *searchJob) stop(reason string) {
+	j.reasonMu.Lock()
+	if j.reason == "" {
+		j.reason = reason
+	}
+	j.reasonMu.Unlock()
+	j.cancel()
+}
+
+func (j *searchJob) stopReason() string {
+	j.reasonMu.Lock()
+	defer j.reasonMu.Unlock()
+	return j.reason
+}
+
+// liveSearches is every running job on this daemon, across every session.
+//
+// Session-scoped registration alone cannot serve a contribution downgrade: the
+// gate shuts on the swarm supervisor, which knows nothing about bridge
+// sessions, and it must be able to stop distributed-search work everywhere
+// promptly rather than waiting for each worker to poll (WO-099 §3).
+var liveSearches = &searchRegistry{jobs: map[*searchJob]struct{}{}}
+
+type searchRegistry struct {
+	mu   sync.Mutex
+	jobs map[*searchJob]struct{}
+}
+
+// add registers a job, or reports that the daemon is already at its ceiling.
+// Checked and inserted under one lock so two simultaneous starts cannot both
+// see room for one more.
+func (r *searchRegistry) add(j *searchJob) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.jobs) >= maxActiveSearchJobs {
+		return false
+	}
+	r.jobs[j] = struct{}{}
+	return true
+}
+
+func (r *searchRegistry) remove(j *searchJob) {
+	r.mu.Lock()
+	delete(r.jobs, j)
+	r.mu.Unlock()
+}
+
+// stopAll cancels every running search. Called when the entitlement to run one
+// goes away — a downgrade, a consent withdrawal, process shutdown.
+func (r *searchRegistry) stopAll(reason string) {
+	r.mu.Lock()
+	jobs := make([]*searchJob, 0, len(r.jobs))
+	for j := range r.jobs {
+		jobs = append(jobs, j)
+	}
+	r.jobs = map[*searchJob]struct{}{}
+	r.mu.Unlock()
+	for _, j := range jobs {
+		j.stop(reason)
+	}
+}
+
+// stopDistributedSearches is the supervisor-facing entry point.
+func stopDistributedSearches(reason string) { liveSearches.stopAll(reason) }
 
 // emit assigns a sequence number and writes the event as one step.
 //
@@ -134,36 +245,52 @@ func (e *jobEvents) Result(hit bridge.SearchHit) {
 	})
 }
 
-// startJob registers a job on the session, cancelling whatever it replaces.
+// startJob registers a job on the session without disturbing any other.
 //
-// One active job per session is the contract (WO-095 §4: a page owns at most
-// one). Replacement cancels rather than queues: the previous submission's
-// results are no longer wanted, and letting two jobs run would double the peer
-// load for a query nobody is looking at.
-func (s *bridgeSession) startJob(id string, out io.Writer, cancel context.CancelFunc) *searchJob {
+// It used to cancel every job in the session first, on the reading that a page
+// owns at most one search. That reading was right about pages and wrong about
+// sessions: every search page in one browser profile shares the service
+// worker's single native connection, so "one job per session" meant opening a
+// search in one tab silently cancelled the one in another (WO-099 §1).
+//
+// Replacement is a page decision, expressed by that page cancelling its own id
+// before claiming another. What this enforces instead is a finite ceiling and
+// no duplicate live ids.
+func (s *bridgeSession) startJob(id string, out io.Writer, cancel context.CancelFunc) (*searchJob, error) {
 	s.jobMu.Lock()
-	defer s.jobMu.Unlock()
 	if s.jobs == nil {
 		s.jobs = map[string]*searchJob{}
 	}
-	for prevID, prev := range s.jobs {
-		prev.cancel()
-		delete(s.jobs, prevID)
+	if _, running := s.jobs[id]; running {
+		s.jobMu.Unlock()
+		return nil, errDuplicateSearchID
 	}
 	j := &searchJob{id: id, out: out, cancel: cancel, done: make(chan struct{})}
 	s.jobs[id] = j
-	return j
+	s.jobMu.Unlock()
+
+	if !liveSearches.add(j) {
+		s.jobMu.Lock()
+		delete(s.jobs, id)
+		s.jobMu.Unlock()
+		return nil, errSearchBusy
+	}
+	return j, nil
 }
 
 // finishJob deregisters a job. Safe to call for a job already replaced.
 func (s *bridgeSession) finishJob(id string) {
 	s.jobMu.Lock()
-	defer s.jobMu.Unlock()
+	j := s.jobs[id]
 	delete(s.jobs, id)
+	s.jobMu.Unlock()
+	if j != nil {
+		liveSearches.remove(j)
+	}
 }
 
 // cancelJob stops one job by id and reports whether it existed.
-func (s *bridgeSession) cancelJob(id string) bool {
+func (s *bridgeSession) cancelJob(id, reason string) bool {
 	s.jobMu.Lock()
 	j, ok := s.jobs[id]
 	if ok {
@@ -173,7 +300,8 @@ func (s *bridgeSession) cancelJob(id string) bool {
 	if !ok {
 		return false
 	}
-	j.cancel()
+	liveSearches.remove(j)
+	j.stop(reason)
 	return true
 }
 
@@ -191,7 +319,8 @@ func (s *bridgeSession) cancelAllJobs() {
 	}
 	s.jobMu.Unlock()
 	for _, j := range jobs {
-		j.cancel()
+		liveSearches.remove(j)
+		j.stop(cancelSession)
 	}
 }
 
@@ -211,9 +340,12 @@ func handlePeerSearchStart(
 			Message: "invalid PEER_SEARCH payload", Code: "bad_payload",
 		})
 	}
-	if len(p.SearchID) > maxSearchIDLen {
+	// Validated completely, and before target lookup or peer contact (WO-099
+	// §7): the id is a routing key the page has already claimed, so a malformed
+	// one produces events nobody can receive.
+	if !searchIDPattern.MatchString(p.SearchID) {
 		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
-			Message: "search_id too long", Code: "bad_payload",
+			Message: "search_id must be a UUID", Code: "bad_payload",
 		})
 	}
 	if networkBusy() {
@@ -293,7 +425,20 @@ func handlePeerSearchStart(
 	}
 
 	jobCtx, cancel := context.WithCancel(ctx)
-	job := sess.startJob(p.SearchID, out, cancel)
+	job, err := sess.startJob(p.SearchID, out, cancel)
+	if err != nil {
+		cancel()
+		code := "search_busy"
+		if errors.Is(err, errDuplicateSearchID) {
+			code = "bad_payload"
+		}
+		// Refused, never resolved by displacing somebody else's search: this
+		// daemon serves several pages and several profiles, and making room by
+		// cancelling one of them is invisible to whoever was using it.
+		return reply(out, env.ID, "ERROR", bridge.ErrorPayload{
+			Message: err.Error(), Code: code,
+		})
+	}
 
 	if err := reply(out, env.ID, "PEER_SEARCH_STARTED", bridge.PeerSearchStartedPayload{
 		SearchID: p.SearchID,
@@ -317,11 +462,25 @@ func handlePeerSearchStart(
 		streamed := job.streamed
 		job.mu.Unlock()
 
+		// The terminal mapper (WO-099 §3). Cancellation, incomplete success and
+		// failure are three different things and the user needs them told
+		// apart: only a withdrawal — replacement, session loss, downgrade,
+		// consent, shutdown — is cancellation. Budget exhaustion is a visibly
+		// incomplete SUCCESS, and a verification error is a failure.
+		cancelledBy := job.stopReason()
+		if cancelledBy == "" && outcome.Reason == bridge.JobReasonCancelled {
+			// The orchestrator's own in-loop entitlement backstop noticed a
+			// downgrade before the coordinator reached this job.
+			cancelledBy = cancelDowngrade
+		}
 		switch {
-		case jobCtx.Err() != nil:
+		case cancelledBy != "" || jobCtx.Err() != nil:
+			if cancelledBy == "" {
+				cancelledBy = cancelReplaced
+			}
 			job.emit("PEER_SEARCH_CANCELLED", func(seq uint64) any {
 				return bridge.PeerSearchCancelledPayload{
-					SearchID: job.id, Seq: seq, Results: streamed,
+					SearchID: job.id, Seq: seq, Results: streamed, Reason: cancelledBy,
 				}
 			})
 		case err != nil:
@@ -366,7 +525,7 @@ func handlePeerSearchCancel(env *bridge.Envelope, out io.Writer, sess *bridgeSes
 			Message: "invalid PEER_SEARCH_CANCEL payload", Code: "bad_payload",
 		})
 	}
-	sess.cancelJob(p.SearchID)
+	sess.cancelJob(p.SearchID, cancelReplaced)
 	return reply(out, env.ID, "PEER_SEARCH_CANCEL_RESULT", map[string]any{
 		"search_id": p.SearchID,
 	})

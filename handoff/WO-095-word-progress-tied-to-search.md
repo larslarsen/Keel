@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Addressee** | Sr Dev (Claude Opus) |
-| **Status** | **Done** 2026-08-13 — every acceptance box below is covered by a test; see the implementation note at the end |
+| **Status** | **Implemented** 2026-08-13 — architecture review opened required correction WO-099 before live QA |
 | **Date** | 2026-08-13 |
 | **Depends on** | WO-097 — complete distributed-search index, pagination, and retained word targets |
 | **Source** | Lars's distributed-search design, clarified against live `world` / `wor` / `ld ` QA |
@@ -317,8 +317,10 @@ count.
 
 ## Acceptance
 
-- [x] `world` starts independent work for `wor` and `ld `; neither inherits the
-      other's elapsed deadline and no more than four responses run at once.
+- [ ] `world` starts independent work for `wor` and `ld `; neither inherits the
+      other's elapsed deadline and no more than four responses—including
+      catalogue resolution—run at once. **Shard concurrency is covered; WO-099
+      must bring catalogue work under the same bound.**
 - [x] Candidate sets are unioned. A title discovered through any one token can
       stream once the local matcher proves the whole query.
 - [x] Missing titles arrive only through complete broad catalogue/string
@@ -331,19 +333,25 @@ count.
       bar placement. Repeated token values share color and live state.
 - [x] Word bars count distinct locally checked candidates, update live, can
       exceed 100%, and show `target unknown` without a fake marker.
-- [x] Tests prove the stop matrix: below+saturated continues; above+productive
+- [ ] Tests prove the stop matrix: below+saturated continues; above+productive
       continues; above+saturated stops; hard budget and exhaustion end visibly
-      incomplete.
+      incomplete. **The matrix passes; WO-099 must charge catalogue bytes to
+      the hard budget.**
 - [x] Saturation cannot be declared before candidate string resolution finishes.
 - [x] Peer diversity is preferred within the eligible yield set but lack of a
       second peer never breaks correctness.
-- [x] Start acknowledgement is prompt; two sessions never receive one another's
+- [ ] Start acknowledgement is prompt; two sessions never receive one another's
       events; replacement and every listed lifecycle transition cancel the
-      correct job.
+      correct job. **WO-099 covers multiple page jobs sharing one native
+      session, acknowledgement/event ordering, and contribution-downgrade
+      cancellation.**
 - [x] Local results survive visible peer unavailability, cancellation, empty
       response, budget exhaustion, and failure.
 - [x] Raw query/token text reaches no browser storage, persistence, progress
       envelope, or log line.
+- [ ] Search diagnostics contain no peer, shard, catalogue-prefix, title, or
+      result identifiers. **WO-099 removes inherited identifier-rich catalogue
+      logging from this path.**
 - [ ] Two-machine live QA visibly advances token-response cycles and word counts
       while results arrive, rather than painting one final snapshot.
 

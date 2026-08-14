@@ -300,6 +300,33 @@ export function createSearchStream({
     return frag;
   }
 
+  /**
+   * Apply the frozen targets from PEER_SEARCH_STARTED to render state that
+   * already exists (WO-099 §2).
+   *
+   * The page claims its route before issuing PEER_SEARCH, deliberately, so
+   * daemon events may arrive before the acknowledgement resumes. The first
+   * implementation then called renderPlan() a second time when the targets
+   * landed, which replaced the DOM rows and silently discarded every count,
+   * token phase and cycle already applied — the acknowledgement erased the
+   * progress it was supposed to annotate.
+   *
+   * So targets update entries in place. A bar is allowed to paint against an
+   * unknown target briefly; the acknowledgement supplies the denominator
+   * without rolling the numerator back.
+   */
+  function applyTargets(targets) {
+    if (!active) return;
+    for (const t of targets || []) {
+      const entry = active.words.get(t.word_id);
+      if (!entry) continue;
+      entry.target = Number(t.target) || 0;
+      entry.known = Boolean(t.known);
+      entry.uncertain = Boolean(t.uncertain);
+      paintWord(entry);
+    }
+  }
+
   function paintWord(entry) {
     if (entry.known && entry.target > 0) {
       const pct = (entry.found / entry.target) * 100;
@@ -383,7 +410,7 @@ export function createSearchStream({
         finishActive();
         break;
       case "PEER_SEARCH_CANCELLED":
-        setNetState("Network search stopped. Local results are unchanged.");
+        setNetState(cancelledText(p.reason));
         finishActive();
         break;
       case "PEER_SEARCH_FAILED":
@@ -394,6 +421,24 @@ export function createSearchStream({
         break;
       default:
         break;
+    }
+  }
+
+  /**
+   * A cancellation the user did not ask for needs explaining. "Stopped" alone
+   * would leave someone whose contribution level changed in another tab with no
+   * idea why their search ended.
+   */
+  function cancelledText(reason) {
+    switch (reason) {
+      case "contribution_downgrade":
+        return "Network search stopped: this device's contribution level no longer includes it. Local results are unchanged.";
+      case "consent_withdrawn":
+        return "Network search stopped: network sharing was turned off. Local results are unchanged.";
+      case "shutdown":
+        return "Network search stopped: the desktop app is shutting down. Local results are unchanged.";
+      default:
+        return "Network search stopped. Local results are unchanged.";
     }
   }
 
@@ -475,6 +520,7 @@ export function createSearchStream({
     // acknowledgement still has a route.
     p.postMessage({ type: "CLAIM_SEARCH", search_id: searchId });
 
+    // Built ONCE. Everything after this updates it in place.
     const { words, tokens } = renderPlan(plan, []);
     active = { searchId, generation: myGeneration, words, tokens, seen, lastSeq: 0 };
     setNetState("Asking peers…");
@@ -484,7 +530,12 @@ export function createSearchStream({
       started = await rpc("PEER_SEARCH", { query, limit: 100, search_id: searchId });
     } catch (err) {
       if (myGeneration !== generation) return;
-      setNetState(`Network search unavailable: ${errText(err)}. Local results are unchanged.`);
+      const text = errText(err);
+      setNetState(
+        /already running/i.test(text)
+          ? "Too many searches are running at once. Close one and try again; local results are unchanged."
+          : `Network search unavailable: ${text}. Local results are unchanged.`
+      );
       finishActive();
       return;
     }
@@ -496,12 +547,12 @@ export function createSearchStream({
       finishActive();
       return;
     }
-    // The frozen targets arrive with the acknowledgement, so the bars can show
-    // their denominators before the first response lands.
-    if (started.peer_search_started?.words && active) {
-      const rebuilt = renderPlan(plan, started.peer_search_started.words);
-      active.words = rebuilt.words;
-      active.tokens = rebuilt.tokens;
+    // The frozen targets arrive with the acknowledgement. Applied in place, and
+    // only if this search is still the active one: a terminal event that won
+    // the race has already cleared `active`, and a late acknowledgement must
+    // not recreate live state for a search that has finished (WO-099 §2).
+    if (started.peer_search_started?.words) {
+      applyTargets(started.peer_search_started.words);
     }
   }
 
@@ -550,7 +601,16 @@ export function createSearchStream({
     }
   }
 
-  return { run, cancel, renderPlan, colorizeWord, get activeSearchId() { return active?.searchId || null; } };
+  return {
+    run,
+    cancel,
+    renderPlan,
+    applyTargets,
+    colorizeWord,
+    get activeSearchId() {
+      return active?.searchId || null;
+    },
+  };
 }
 
 export { PEER_SEARCH_REV_STREAMING, SEARCH_PORT };

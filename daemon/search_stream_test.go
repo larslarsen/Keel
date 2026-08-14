@@ -4,6 +4,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -145,8 +147,14 @@ func TestJobsAreScopedToTheirSession(t *testing.T) {
 	a, b := streamingSession(), streamingSession()
 	bufA, bufB := &syncBuf{}, &syncBuf{}
 
-	jobA := a.startJob("search-a", bufA, func() {})
-	jobB := b.startJob("search-b", bufB, func() {})
+	jobA, err := a.startJob("11111111-1111-4111-8111-111111111111", bufA, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobB, err := b.startJob("22222222-2222-4222-8222-222222222222", bufB, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	jobA.emit("PEER_SEARCH_RESULT", func(seq uint64) any {
 		return bridge.PeerSearchStreamResultPayload{SearchID: jobA.id, Seq: seq}
@@ -160,35 +168,108 @@ func TestJobsAreScopedToTheirSession(t *testing.T) {
 	}
 
 	// Cancelling one session's job leaves the other's alone.
-	if !a.cancelJob("search-a") {
+	if !a.cancelJob(jobA.id, cancelReplaced) {
 		t.Error("cancelling a live job reported it did not exist")
 	}
-	if b.cancelJob("search-a") {
+	if b.cancelJob(jobA.id, cancelReplaced) {
 		t.Error("session B cancelled a job belonging to session A")
 	}
+	b.cancelAllJobs()
 	_ = jobB
 }
 
-// TestStartingAJobCancelsTheOneItReplaces is WO-095 §4: a page owns at most
-// one active job, and a replaced submission's work must stop rather than run on
-// for results nobody will render.
-func TestStartingAJobCancelsTheOneItReplaces(t *testing.T) {
+// TestConcurrentPagesOnOneSessionDoNotCancelEachOther is WO-099 §1, and it
+// records a corrected mistake.
+//
+// The first implementation cancelled every job in the native session before
+// registering a new one, reading WO-095 §4's "a page owns at most one active
+// job" as a session rule. It is not: every search page in one browser profile
+// shares the service worker's single native connection, so that reading meant
+// opening a search in one tab silently killed the one in another — with no
+// error anywhere, because cancellation is a legitimate terminal state.
+//
+// Replacement is a page decision, expressed by the page cancelling its own id.
+func TestConcurrentPagesOnOneSessionDoNotCancelEachOther(t *testing.T) {
 	sess := streamingSession()
+	defer sess.cancelAllJobs()
 	buf := &syncBuf{}
 
-	cancelled := false
-	sess.startJob("first", buf, func() { cancelled = true })
-	sess.startJob("second", buf, func() {})
+	pageACancelled := false
+	pageA, err := sess.startJob("11111111-1111-4111-8111-111111111111", buf,
+		func() { pageACancelled = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.startJob("22222222-2222-4222-8222-222222222222", buf, func() {}); err != nil {
+		t.Fatal(err)
+	}
 
-	if !cancelled {
-		t.Error("starting a second search did not cancel the first — two jobs " +
-			"would double the peer load for a query nobody is looking at")
+	if pageACancelled {
+		t.Error("starting a search in a second page cancelled the first page's search")
 	}
-	if sess.cancelJob("first") {
-		t.Error("the replaced job is still registered on the session")
+	if sess.cancelJob(pageA.id, cancelReplaced) != true {
+		t.Error("the first page's job is no longer registered")
 	}
-	if !sess.cancelJob("second") {
-		t.Error("the replacing job was not registered")
+}
+
+// TestDuplicateLiveSearchIDIsRefused is WO-099 §7: a duplicate id would
+// silently take over another page's route rather than starting a search.
+func TestDuplicateLiveSearchIDIsRefused(t *testing.T) {
+	sess := streamingSession()
+	defer sess.cancelAllJobs()
+	buf := &syncBuf{}
+	const id = "33333333-3333-4333-8333-333333333333"
+
+	if _, err := sess.startJob(id, buf, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.startJob(id, buf, func() {}); !errors.Is(err, errDuplicateSearchID) {
+		t.Errorf("a duplicate live search id was accepted (err=%v)", err)
+	}
+}
+
+// TestActiveJobCeilingRefusesRatherThanDisplacing is WO-099 §1's bound. Making
+// room by cancelling somebody else's search is invisible to whoever was using
+// it, so excess starts are refused instead.
+func TestActiveJobCeilingRefusesRatherThanDisplacing(t *testing.T) {
+	sess := streamingSession()
+	defer sess.cancelAllJobs()
+	buf := &syncBuf{}
+
+	cancelled := 0
+	for i := 0; i < maxActiveSearchJobs; i++ {
+		id := fmt.Sprintf("%08d-0000-4000-8000-000000000000", i)
+		if _, err := sess.startJob(id, buf, func() { cancelled++ }); err != nil {
+			t.Fatalf("start %d refused early: %v", i, err)
+		}
+	}
+	_, err := sess.startJob("99999999-9999-4999-8999-999999999999", buf, func() {})
+	if !errors.Is(err, errSearchBusy) {
+		t.Errorf("the ceiling did not refuse an excess start (err=%v)", err)
+	}
+	if cancelled != 0 {
+		t.Errorf("%d running searches were displaced to make room", cancelled)
+	}
+}
+
+// TestDowngradeCancelsEverySearchPromptly is WO-099 §3. A Level-2-to-Level-1
+// transition must not wait for a worker to poll, and must not let a job report
+// COMPLETE.
+func TestDowngradeCancelsEverySearchPromptly(t *testing.T) {
+	sess := streamingSession()
+	defer sess.cancelAllJobs()
+	buf := &syncBuf{}
+
+	job, err := sess.startJob("44444444-4444-4444-8444-444444444444", buf, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopDistributedSearches(cancelDowngrade)
+
+	if got := job.stopReason(); got != cancelDowngrade {
+		t.Errorf("job stop reason = %q, want %q — a cancellation the user did "+
+			"not ask for has to be distinguishable from one they did",
+			got, cancelDowngrade)
 	}
 }
 
@@ -199,12 +280,14 @@ func TestSessionTeardownCancelsEveryJob(t *testing.T) {
 	sess := streamingSession()
 	buf := &syncBuf{}
 	n := 0
-	sess.startJob("only", buf, func() { n++ })
+	if _, err := sess.startJob("55555555-5555-4555-8555-555555555555", buf, func() { n++ }); err != nil {
+		t.Fatal(err)
+	}
 	sess.cancelAllJobs()
 	if n != 1 {
 		t.Errorf("session teardown cancelled %d jobs, want 1", n)
 	}
-	if sess.cancelJob("only") {
+	if sess.cancelJob("55555555-5555-4555-8555-555555555555", cancelReplaced) {
 		t.Error("a job survived session teardown")
 	}
 }

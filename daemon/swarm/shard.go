@@ -480,7 +480,7 @@ func (n *Node) ResolveCandidateTitles(ctx context.Context, ids []string) (int, e
 			return rows, ctx.Err()
 		default:
 		}
-		got, err := n.fetchCataloguePrefix(ctx, p)
+		got, err := n.fetchCataloguePrefixQuiet(ctx, p)
 		if err != nil {
 			continue
 		}

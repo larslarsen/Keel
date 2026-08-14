@@ -234,6 +234,9 @@ type Node struct {
 	live   *LiveIndex
 	yield  *YieldIndex
 	sketch *SketchIndex
+	// searchSem is the node-wide ceiling on search-caused logical responses in
+	// flight — see newSearchPermits.
+	searchSem chan struct{}
 
 	// outbound gates everything this node offers to peers, independently of
 	// cfg.Policy, and can be shut in one atomic store (WO-077).
@@ -348,8 +351,9 @@ func (n *Node) ContributionImpact() (store.ImpactSnapshot, error) {
 func newNode(h host.Host, kdht *dht.IpfsDHT, st Store, cfg Config) *Node {
 	n := &Node{
 		host: h, dht: kdht, st: st, cfg: cfg,
-		inflight: map[string]chan struct{}{},
-		serve:    newServeLimiter(),
+		searchSem: newSearchPermits(),
+		inflight:  map[string]chan struct{}{},
+		serve:     newServeLimiter(),
 	}
 	n.outbound.Store(true)
 	return n
@@ -611,6 +615,31 @@ func prefixCID(prefix string) (cid.Cid, error) {
 	return cid.NewCidV1(cid.Raw, sum), nil
 }
 
+// searchPermits is the node-wide ceiling on search-caused logical responses in
+// flight (WO-099 §1).
+//
+// One semaphore per node, not one per job. A per-job semaphore bounds each
+// search and bounds nothing about the machine: two pages searching at once
+// would together put eight responses on the network while both honestly
+// believed they were within a limit of four. The advertised bound is a
+// statement about what this node asks of the serving population, so it has to
+// be owned by the node.
+func newSearchPermits() chan struct{} {
+	return make(chan struct{}, MaxConcurrentResponses)
+}
+
+// fetchCataloguePrefixQuiet is fetchCataloguePrefix with identifier-free
+// diagnostics, for the search path (WO-099 §6).
+//
+// The ordinary catalogue fetcher logs the prefix it was rejected on and the
+// peer that rejected it, which is right for prewalk and seed traffic and wrong
+// here: WO-095 §10 permits one aggregate terminal diagnostic for a search and
+// no peer or corpus identifiers at all. A search must not inherit another
+// path's logging just because it reuses its transport.
+func (n *Node) fetchCataloguePrefixQuiet(ctx context.Context, prefix string) (int, error) {
+	return n.fetchCataloguePrefixLogging(ctx, prefix, false)
+}
+
 func (n *Node) prefixBits() int {
 	if n.cfg.PrefixBits > 0 {
 		return n.cfg.PrefixBits
@@ -786,8 +815,13 @@ func (n *Node) syncCatalogue(ctx context.Context, blocks []store.Block) {
 	}
 }
 
-// fetchCataloguePrefix retrieves one catalogue bucket from any provider.
+// fetchCataloguePrefix retrieves one catalogue bucket from any provider, with
+// the identifier-rich logging appropriate to prewalk and seed traffic.
 func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, error) {
+	return n.fetchCataloguePrefixLogging(ctx, prefix, true)
+}
+
+func (n *Node) fetchCataloguePrefixLogging(ctx context.Context, prefix string, verbose bool) (int, error) {
 	c, err := prefixCID("catalogue/" + prefix)
 	if err != nil {
 		return 0, err
@@ -799,9 +833,11 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 		if p.ID == n.host.ID() || len(p.Addrs) == 0 {
 			continue
 		}
-		rows, err := n.fetchCataloguePagesFrom(ctx, p, prefix)
+		rows, err := n.fetchCataloguePagesFrom(ctx, p, prefix, verbose)
 		if err != nil {
-			n.logf("catalogue %s from %s rejected: %v", prefix, p.ID, err)
+			if verbose {
+				n.logf("catalogue %s from %s rejected: %v", prefix, p.ID, err)
+			}
 			continue
 		}
 		n.remember(p)
@@ -818,7 +854,7 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 		if err != nil {
 			continue
 		}
-		if rows, err := n.fetchCataloguePagesFrom(ctx, info, prefix); err == nil && rows > 0 {
+		if rows, err := n.fetchCataloguePagesFrom(ctx, info, prefix, verbose); err == nil && rows > 0 {
 			return rows, nil
 		}
 	}
@@ -837,7 +873,7 @@ func (n *Node) fetchCataloguePrefix(ctx context.Context, prefix string) (int, er
 //
 // Rows are imported only after every page has been verified against the signed
 // terminal, so a response with a dropped or reordered frame writes nothing.
-func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, prefix string) (int, error) {
+func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, prefix string, verbose bool) (int, error) {
 	resp, err := n.requestPaged(ctx, p, fmt.Sprintf("%s %d", prefix, requestNonce()), CatalogueProtocol)
 	if err != nil {
 		return 0, err
@@ -874,7 +910,7 @@ func (n *Node) fetchCataloguePagesFrom(ctx context.Context, p peer.AddrInfo, pre
 	if err := pageDigestsMatch(digests, resp.Terminal); err != nil {
 		return 0, err
 	}
-	if !resp.Complete() {
+	if !resp.Complete() && verbose {
 		n.logf("catalogue %s from %s: peer ended the traversal incomplete", prefix, p.ID)
 	}
 	return n.st.ImportCatalogueEntries(entries, publicKey)

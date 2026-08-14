@@ -41,8 +41,8 @@ The current implementation queue is:
   put **both** machines on the new build; a mixed pair will connect at the
   transport layer and exchange nothing.
 
-- **WO-095 — responsive streaming peer search and UI.** **Implemented**
-  2026-08-13; two-machine live QA pending.
+- **WO-095 — responsive streaming peer search and UI.** **Implemented, with
+  WO-099 correction required before acceptance or live QA.**
   The start RPC acknowledges immediately; four bounded peer responses run
   independently. Candidate sets are unioned, broad string buckets resolve
   missing titles, and the daemon streams a result as soon as local full-query
@@ -51,6 +51,14 @@ The current implementation queue is:
   stops on target plus saturation or a hard resource bound, never target or
   saturation alone. WO-096 is folded into these two orders and must not be
   implemented separately.
+
+- **WO-099 — streaming-search lifecycle and resource correction.** Required
+  before WO-095's two-machine QA. Allow independent page jobs on one shared
+  native session without increasing the node-wide peer-load ceiling; preserve
+  events that beat the start acknowledgement; make contribution downgrade a
+  prompt cancellation; include catalogue work in the four-response and byte
+  budgets; keep unresolved candidates retryable; remove identifier-rich search
+  logs; validate job ids.
 
 - **WO-098 — TikTok Explore, Following, and Live discovery.** Independent of
   WO-095. Preserve the three real feed surfaces instead of mapping them to

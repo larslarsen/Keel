@@ -144,7 +144,7 @@ func TestMultiPageCatalogueResponseArrivesWhole(t *testing.T) {
 		t.Fatalf("no 1-bit bucket exceeded one page: %v", counts)
 	}
 
-	got, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), prefix)
+	got, err := cNode.fetchCataloguePagesFrom(ctx, sNode.AddrInfo(), prefix, true)
 	if err != nil {
 		t.Fatal(err)
 	}

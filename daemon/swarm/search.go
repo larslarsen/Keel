@@ -154,14 +154,26 @@ func (n *Node) StreamingSearch(
 		return SearchOutcome{Reason: bridge.JobReasonNoPeers}, nil
 	}
 
+	// The budget cancels the job when it is crossed, so it needs a handle on
+	// the cancellation and every request under it needs a handle on the meter
+	// (WO-099 §4).
+	jobCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	meter := &budgetMeter{limit: searchByteBudget(n.st.DiskBudget()), cancel: cancel}
+	jobCtx = withBudget(jobCtx, meter)
+
 	st := newSearchState(n, plan, targets, limit, ev)
-	sem := make(chan struct{}, MaxConcurrentResponses)
+	st.meter = meter
+
 	var wg sync.WaitGroup
 	for _, tok := range tokens {
 		wg.Add(1)
 		go func(token string) {
 			defer wg.Done()
-			n.runTokenWork(ctx, st, token, sem)
+			// n.searchSem, not a per-job semaphore: every search on this node
+			// shares one peer-load ceiling, so two pages searching at once
+			// cannot together put eight responses in flight (WO-099 §1).
+			n.runTokenWork(jobCtx, st, token, n.searchSem)
 		}(tok)
 	}
 	wg.Wait()
@@ -189,9 +201,19 @@ type searchState struct {
 	// its title repeats the word.
 	wordFound map[int]map[string]bool
 	wordMiss  map[int]int
-	// checked is every candidate already resolved and matched, so a video
-	// nominated by three tokens is resolved once.
-	checked map[string]bool
+	// Candidate lifecycle (WO-099 §5). Three states, not two: a candidate that
+	// was nominated and whose catalogue bucket then failed must remain
+	// RETRYABLE, or one transient peer problem makes a video permanently
+	// invisible to this search. `checked` means "its title is locally
+	// available and it has been matched"; `resolving` means "a traversal for
+	// its prefix is in flight, join that one rather than starting another";
+	// anything in neither is retryable and will be re-nominated by the next
+	// eligible response.
+	checked   map[string]bool
+	resolving map[string]bool
+	// prefixes coalesces catalogue traversals across the whole job.
+	prefixes *prefixGroup
+	meter    *budgetMeter
 	// emitted guards against streaming one video twice.
 	emitted map[string]bool
 	// matched is every verified full-query result; streamed is how many of
@@ -204,8 +226,6 @@ type searchState struct {
 	// broad token-prefix hashing is what supplies privacy, and one peer
 	// answering several tokens is allowed when alternatives are insufficient.
 	usedPeers map[peer.ID]bool
-	bytes     int64
-	budget    int64
 	stopped   string
 }
 
@@ -221,9 +241,10 @@ func newSearchState(n *Node, plan store.QueryPlan, targets map[int]store.WordTar
 		wordFound: map[int]map[string]bool{},
 		wordMiss:  map[int]int{},
 		checked:   map[string]bool{},
+		resolving: map[string]bool{},
+		prefixes:  newPrefixGroup(),
 		emitted:   map[string]bool{},
 		usedPeers: map[peer.ID]bool{},
-		budget:    searchByteBudget(n.st.DiskBudget()),
 	}
 	for _, t := range plan.Tokens {
 		if t.Discovery {
@@ -302,6 +323,12 @@ func (n *Node) runTokenWork(ctx context.Context, st *searchState, token string, 
 			// loop rather than only at the start, because the gate shuts before
 			// the node is torn down and a job started at Level 2 must not keep
 			// reaching peers after the user has said stop.
+			// Marked on the shared state, not only locally: the terminal frame
+			// is decided from the job's outcome, and a downgrade that stayed a
+			// token-local variable let the job report COMPLETE (WO-099 §3).
+			// This is a backstop — the coordinator cancels promptly on the
+			// downgrade itself rather than waiting for a worker to notice.
+			st.markStopped(bridge.JobReasonCancelled)
 			reason = bridge.JobReasonCancelled
 			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseCancelled, "contribution_downgrade")
 			return
@@ -321,25 +348,35 @@ func (n *Node) runTokenWork(ctx context.Context, st *searchState, token string, 
 		// This response's own deadline. Nothing here inherits elapsed time from
 		// another token, and there is no clock over the query as a whole.
 		rctx, cancel := context.WithTimeout(ctx, searchResponseDeadline)
-		entries, signed, complete, nbytes, err := n.fetchShardPagesCounted(rctx, p, shard)
+		entries, signed, complete, _, err := n.fetchShardPagesCounted(rctx, p, shard)
 		cancel()
-		<-sem
 
-		st.addBytes(int64(nbytes))
 		if err != nil {
+			<-sem
 			// Another peer may still answer for this token, which starts a new
 			// cycle and resets the bar. A failed response is visible rather
-			// than silently skipped.
+			// than silently skipped, and carries no identifier (WO-099 §6).
 			st.ev.TokenPhase(tokenID, cycle, bridge.PhaseFailed, "unavailable")
 			continue
 		}
 
 		acc.add(entries, signed)
 
-		// Resolve and check BEFORE the cycle completes. A token-shard response
-		// is not zero-gain merely because its strings are still in flight
-		// (WO-095 §8), so the response is not finished until they are not.
-		gained := st.creditResponse(ctx, token, acc.take())
+		// Resolve and check BEFORE the cycle completes, and BEFORE the permit is
+		// released. Two rules meet here:
+		//
+		//   - a token-shard response is not zero-gain merely because its strings
+		//     are still in flight (WO-095 §8), so the response is not finished
+		//     until they are not; and
+		//   - the four-response ceiling counts every search-caused network
+		//     response, so releasing the permit before catalogue resolution
+		//     would let every token worker start bucket downloads outside the
+		//     advertised bound (WO-099 §4).
+		//
+		// acc.ids() rather than only what this response added: a candidate whose
+		// earlier resolution failed is retryable and gets another chance here.
+		gained := st.creditResponse(ctx, token, acc.ids())
+		<-sem
 
 		terminal := ""
 		if !complete {
@@ -423,20 +460,28 @@ func (s *searchState) claimPeer(id peer.ID) {
 	s.mu.Unlock()
 }
 
-func (s *searchState) addBytes(n int64) {
-	s.mu.Lock()
-	s.bytes += n
-	s.mu.Unlock()
+// overBudget reports whether the shared meter has been exhausted.
+//
+// One meter for the whole job, consulted rather than recomputed: workers that
+// each kept their own view of the remaining balance could each see room for one
+// more response and each spend it (WO-099 §4).
+func (s *searchState) overBudget() bool {
+	if !s.meter.isExhausted() {
+		return false
+	}
+	s.markStopped(bridge.JobReasonBudget)
+	return true
 }
 
-func (s *searchState) overBudget() bool {
+// markStopped records why the job stopped, first writer wins. Budget
+// exhaustion and a contribution downgrade are both "stopped", and they map to
+// very different terminal frames, so the reason has to survive.
+func (s *searchState) markStopped(reason string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.bytes >= s.budget {
-		s.stopped = bridge.JobReasonBudget
-		return true
+	if s.stopped == "" {
+		s.stopped = reason
 	}
-	return false
+	s.mu.Unlock()
 }
 
 // creditResponse resolves the candidates one response newly produced, checks
@@ -452,13 +497,16 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 		gained[id] = 0
 	}
 
+	// Claim the candidates this worker will resolve. A candidate already
+	// checked is done; one already being resolved by another worker is that
+	// worker's to finish; anything else is retryable and claimed here.
 	s.mu.Lock()
 	fresh := make([]string, 0, len(candidates))
 	for _, id := range candidates {
-		if id == "" || s.checked[id] {
+		if id == "" || s.checked[id] || s.resolving[id] {
 			continue
 		}
-		s.checked[id] = true
+		s.resolving[id] = true
 		fresh = append(fresh, id)
 	}
 	s.mu.Unlock()
@@ -466,30 +514,23 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 		return gained
 	}
 
-	// Whole broad string prefixes, coalesced (WO-097 §6). Cover rows may be
-	// cached under the public-catalogue rules; only the ids this search
-	// produced go any further, which is why the matcher below iterates `fresh`
-	// and not whatever arrived.
-	if _, err := s.n.ResolveCandidateTitles(ctx, fresh); err != nil && ctx.Err() == nil {
-		s.n.logf("search: resolving candidate strings: %v", err)
-	}
-	hits, err := s.n.st.TitlesFor(fresh)
-	if err != nil {
-		s.n.logf("search: reading resolved titles: %v", err)
-		return gained
-	}
+	resolved := s.resolveTitles(ctx, fresh)
 
 	touched := map[int]bool{}
 	var results []bridge.SearchHit
 
 	s.mu.Lock()
-	for _, h := range hits {
+	for _, h := range resolved {
+		// Released from `resolving` either way. Only a candidate whose title is
+		// locally available becomes `checked`; the rest fall back to retryable,
+		// so a later eligible response can pick them up (WO-099 §5). Marking a
+		// candidate checked before its bucket resolved is what used to discard
+		// it forever after one transient failure.
+		delete(s.resolving, h.VideoID)
 		if h.Title == "" {
-			// Unresolved: no title means nothing can be confirmed about it. It
-			// is not a match and it is not a miss for any word — it is simply
-			// not evidence either way.
 			continue
 		}
+		s.checked[h.VideoID] = true
 		for _, wordID := range s.plan.WordIDsInTitle(h.Title) {
 			if !s.tracksWord(wordID) {
 				continue
@@ -508,14 +549,17 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 			s.emitted[h.VideoID] = true
 			s.matched++
 			// The presentation cap bounds what is STREAMED, never what is
-			// discovered or counted (WO-095 §8): a page showing a hundred rows
-			// does not mean the word bars should stop moving, and the resource
-			// budget is what ends the work.
+			// discovered or counted (WO-095 §8).
 			if s.limit <= 0 || s.streamed < s.limit {
 				s.streamed++
 				results = append(results, h)
 			}
 		}
+	}
+	// Anything the resolver never returned a row for at all is released too,
+	// or a candidate could be stranded in `resolving` for the rest of the job.
+	for _, id := range fresh {
+		delete(s.resolving, id)
 	}
 	// One update per word per response, carrying the final count, rather than
 	// one per candidate: a single response can confirm hundreds of candidates,
@@ -537,6 +581,39 @@ func (s *searchState) creditResponse(ctx context.Context, token string, candidat
 		s.ev.Result(h)
 	}
 	return gained
+}
+
+// resolveTitles downloads the complete broad prefix buckets these candidates
+// need, coalesced across the whole job, and reads back whatever titles are now
+// locally available.
+//
+// The request is always the complete broad bucket; nothing here narrows to a
+// candidate id, and the traversal completes even once the wanted row has
+// arrived (catalogue.go rule 1). Two workers nominating ids in the same missing
+// prefix join one traversal rather than racing into two identical downloads
+// (WO-099 §4).
+func (s *searchState) resolveTitles(ctx context.Context, ids []string) []bridge.SearchHit {
+	prefixes, err := s.n.st.MissingCataloguePrefixes(ids, s.n.prefixBits())
+	if err != nil {
+		// Identifier-free (WO-099 §6): a category, never a prefix or an id.
+		s.n.logf("search: candidate resolution could not be planned")
+		return nil
+	}
+	for _, prefix := range prefixes {
+		if ctx.Err() != nil {
+			break
+		}
+		p := prefix
+		_, _ = s.prefixes.do(p, func() (int, error) {
+			return s.n.fetchCataloguePrefixQuiet(ctx, p)
+		})
+	}
+	hits, err := s.n.st.TitlesFor(ids)
+	if err != nil {
+		s.n.logf("search: reading resolved titles failed")
+		return nil
+	}
+	return hits
 }
 
 // tracksWord reports whether a word gets a bar and a stop condition at all.

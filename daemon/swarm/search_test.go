@@ -2,7 +2,12 @@
 package swarm
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
@@ -31,7 +36,9 @@ func planState(t *testing.T, query string, targets map[int]store.WordTarget) (*s
 		checked:   map[string]bool{},
 		emitted:   map[string]bool{},
 		usedPeers: map[peer.ID]bool{},
-		budget:    1 << 30,
+		resolving: map[string]bool{},
+		prefixes:  newPrefixGroup(),
+		meter:     &budgetMeter{limit: 1 << 30},
 	}
 	for _, tok := range plan.Tokens {
 		if tok.Discovery {
@@ -325,5 +332,65 @@ func TestMaxDiscoveryTokensIsRefusedBeforePeerContact(t *testing.T) {
 	}
 	if got := len(store.BuildQueryPlan(long).DiscoveryTokens()); got <= MaxDiscoveryTokens {
 		t.Fatalf("test setup: the long query produced only %d tokens", got)
+	}
+}
+
+// TestSearchDiagnosticsCarryNoIdentifiers is WO-099 §6.
+//
+// The search path reuses the catalogue transport, which logs the prefix it was
+// rejected on and the peer that rejected it. That is right for prewalk and seed
+// traffic and wrong here: WO-095 §10 permits one aggregate terminal diagnostic
+// for a search and no peer or corpus identifiers at all. A search must not
+// inherit another path's logging just because it shares its transport.
+func TestSearchDiagnosticsCarryNoIdentifiers(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	capture := func(f string, a ...any) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf(f, a...))
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// A server that will fail every request: it serves nothing, so the client's
+	// shard and catalogue fetches both go wrong and both want to log.
+	server := newStore(t, "diag-server.sqlite")
+	sNode, err := Start(ctx, server, isolated(false, t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sNode.Close()
+
+	client := newStore(t, "diag-client.sqlite")
+	cfg := isolated(true, t)
+	cfg.Log = capture
+	cNode, err := Start(ctx, client, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cNode.Close()
+	cNode.remember(sNode.AddrInfo())
+
+	// Drive the two failing paths a search actually uses.
+	shard := store.ShardOf(store.TokenizeQuery("recommendation")[0])
+	_, _, _, _ = cNode.fetchShardPages(ctx, sNode.AddrInfo(), shard)
+	_, _ = cNode.ResolveCandidateTitles(ctx, []string{"vid00000001", "vid00000002"})
+
+	secret := store.CataloguePrefix("vid00000001", cNode.prefixBits())
+	mu.Lock()
+	defer mu.Unlock()
+	for _, line := range lines {
+		// The catalogue path is the one that used to leak. Anything logged by
+		// the search's own resolution must name a category, never a bucket, a
+		// peer or a video.
+		if strings.Contains(line, "search:") {
+			for _, bad := range []string{secret, sNode.ID().String(), "vid00000001", "recommendation"} {
+				if strings.Contains(line, bad) {
+					t.Errorf("search diagnostic %q contains an identifier (%q)", line, bad)
+				}
+			}
+		}
 	}
 }

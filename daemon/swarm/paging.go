@@ -150,6 +150,11 @@ func (n *Node) requestPaged(ctx context.Context, p peer.AddrInfo, key string, pr
 	}
 	counted := &countingReader{r: io.LimitReader(s, maxBlockBytes)}
 	resp, err := readPagedResponse(counted)
+	// Charged before the response is judged, and charged whatever the verdict
+	// (WO-099 §4). A rejected or malformed reply still cost what was read; a
+	// budget that only charged for accepted responses would be one a hostile
+	// peer walks straight through by sending garbage.
+	meterFrom(ctx).charge(counted.n)
 	if resp != nil {
 		resp.Bytes = counted.n
 	}
