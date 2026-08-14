@@ -34,7 +34,11 @@
  * replaced — by reconnection in production and by the test seam in the suite —
  * and a captured reference would keep answering from a dead port.
  */
-import { validateImpressionList, CONSENT_REVISION } from "../lib/protocol.js";
+import {
+  validateImpressionList,
+  CONSENT_REVISION,
+  PEER_SEARCH_REV_STREAMING,
+} from "../lib/protocol.js";
 import { isChannelId, coerceHideMode, isHideMode } from "../lib/prefs.js";
 import { surfaceFromUrl } from "../content/extract.js";
 import { errText } from "../lib/errors.js";
@@ -62,6 +66,7 @@ export function createRpcRouter({
   prefs,
   panel,
   tabs,
+  searchSessions,
   broadcast,
   broadcastToSiteTabs,
   onHideModeChanged,
@@ -248,6 +253,11 @@ export function createRpcRouter({
    * IMPRESSIONS handler and flushBuffer already emit STORE_UPDATED with counts.
    */
   function onBridgeMessage(env) {
+    // Search events are page-scoped and go to exactly the Port that claimed
+    // their search_id (WO-095 §4) — never through the owner-wide broadcast
+    // below, which exists for settings every surface must react to. Handled
+    // first so a search event can never fall through into a broadcast.
+    if (searchSessions?.deliver?.(env)) return;
     // Owner-wide policy changes are unsolicited events, not RPC replies. Every
     // browser/profile connected to the shared owner receives one (WO-079).
     if (env?.type === "CONTRIBUTION_STATUS") {
@@ -441,9 +451,21 @@ export function createRpcRouter({
         const query = requireQuery(message);
         requireDaemon();
         requireCap("peer_search", "peer search");
+        // WO-095: a search_id selects the streaming contract. The page mints
+        // one per submission and has already claimed it on its Port, so events
+        // that arrive before this acknowledgement still have somewhere to go.
+        // Sent only when the daemon negotiated revision 3 — a revision-2 daemon
+        // would treat the id as noise and answer atomically, and the page must
+        // not then sit waiting for events that are never coming.
+        const searchId = message.payload?.search_id;
+        const streaming =
+          typeof searchId === "string" &&
+          searchId &&
+          hasCap("peer_search", PEER_SEARCH_REV_STREAMING);
         const env = await getBridge().request("PEER_SEARCH", {
           query,
           limit: Number(message.payload?.limit) || 100,
+          ...(streaming ? { search_id: searchId } : {}),
         });
         if (env.type === "ERROR") {
           // WO-085: "you have not opted in" is an answer, not a failure. It is
@@ -468,7 +490,26 @@ export function createRpcRouter({
           }
           throw new Error(env.payload?.message || "PEER_SEARCH failed");
         }
+        if (env.type === "PEER_SEARCH_STARTED") {
+          // Acknowledgement only. Results, counts and bars arrive on the Port.
+          return { peer_search_started: env.payload };
+        }
         return { peer_search: env.payload };
+      }
+
+      /**
+       * WO-095: stop a streaming job. Sent on replacement, explicit cancel,
+       * switching network search off, and page teardown. Idempotent by design —
+       * cancelling a job that already finished is not an error, and reporting
+       * it as one would be noise the page cannot act on.
+       */
+      case "PEER_SEARCH_CANCEL": {
+        requireDaemon();
+        requireCap("peer_search", "peer search");
+        const searchId = message.payload?.search_id;
+        if (typeof searchId !== "string" || !searchId) return { cancelled: false };
+        await getBridge().request("PEER_SEARCH_CANCEL", { search_id: searchId });
+        return { cancelled: true };
       }
 
       /**

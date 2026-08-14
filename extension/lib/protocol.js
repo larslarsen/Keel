@@ -49,7 +49,12 @@ export const CLIENT_OPTIONAL = Object.freeze({
   // A negotiated 1 means the daemon predates that rule and still answers at
   // level 1, so the control must not be presented as level-gated — see
   // PEER_SEARCH_REV_RECIPROCAL.
-  peer_search: 2,
+  // 3 = streaming job (WO-095): PEER_SEARCH starts work and is acknowledged
+  // immediately; progress, results and the terminal state arrive as events. A
+  // negotiated 2 means the daemon still answers atomically, and this build
+  // falls back to that visibly rather than fabricating progress it is not
+  // receiving — see PEER_SEARCH_REV_STREAMING.
+  peer_search: 3,
   word_stats: 1,
   queue: 1,
   contribution_runtime: 1,
@@ -58,6 +63,25 @@ export const CLIENT_OPTIONAL = Object.freeze({
 
 /** peer_search revision at which distributed search became Level-2+. */
 export const PEER_SEARCH_REV_RECIPROCAL = 2;
+
+/**
+ * peer_search revision at which the RPC became a streaming job (WO-095).
+ *
+ * Below this the daemon answers PEER_SEARCH once, with everything it found, and
+ * the page must present that as the one-shot result it is. Fabricating animated
+ * progress against an atomic reply would show the user work that is not
+ * happening — the interface would be lying about the network in the one place
+ * this feature exists to be honest about it.
+ */
+export const PEER_SEARCH_REV_STREAMING = 3;
+
+/**
+ * Envelope-id prefix the daemon puts on unsolicited events (WO-095 §3).
+ *
+ * An id carrying this can never be a reply, so it can never resolve a pending
+ * request. Mirrors bridge.EventIDPrefix in the daemon.
+ */
+export const EVENT_ID_PREFIX = "evt-";
 
 const SURFACES = ["WATCH_NEXT", "HOME", "SEARCH", "CHANNEL", "SHORTS"];
 const UUID_RE =
